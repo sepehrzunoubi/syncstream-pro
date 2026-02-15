@@ -21,7 +21,7 @@ async function withRetry<T>(
 
 export function getOAuth2Client() {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-    throw new Error(
+    console.error(
       "Missing required environment variables: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env.local"
     );
   }
