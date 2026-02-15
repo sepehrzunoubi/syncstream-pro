@@ -25,7 +25,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const tokens = await getTokensFromCode(code);
+    const redirectUri = `${baseUrl}/api/auth/callback`;
+    const tokens = await getTokensFromCode(code, redirectUri);
 
     if (!tokens.access_token) {
       return NextResponse.redirect(new URL("/?error=no_access_token", baseUrl));

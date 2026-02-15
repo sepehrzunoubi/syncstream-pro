@@ -19,7 +19,7 @@ async function withRetry<T>(
   throw new Error("withRetry: unreachable");
 }
 
-export function getOAuth2Client() {
+export function getOAuth2Client(redirectUri?: string) {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     console.error(
       "Missing required environment variables: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env.local"
@@ -28,12 +28,12 @@ export function getOAuth2Client() {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
+    redirectUri || process.env.GOOGLE_REDIRECT_URI
   );
 }
 
-export function getAuthUrl() {
-  const client = getOAuth2Client();
+export function getAuthUrl(redirectUri?: string) {
+  const client = getOAuth2Client(redirectUri);
   return client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
@@ -47,8 +47,8 @@ export function getAuthUrl() {
   });
 }
 
-export async function getTokensFromCode(code: string) {
-  const client = getOAuth2Client();
+export async function getTokensFromCode(code: string, redirectUri?: string) {
+  const client = getOAuth2Client(redirectUri);
   const { tokens } = await client.getToken(code);
   return tokens;
 }
