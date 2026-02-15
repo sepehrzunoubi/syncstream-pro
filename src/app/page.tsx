@@ -8,11 +8,10 @@ import {
   LogOut,
   ShieldAlert,
 } from "lucide-react";
-import Link from "next/link";
-import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { DashboardView } from "@/components/dashboard/dashboard-view";
 import { LoginScreen } from "@/components/dashboard/login-screen";
+import { ParticlesBackground } from "@/components/ui/particles-background";
 
 interface UserInfo {
   name: string;
@@ -30,9 +29,13 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
 
   useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
     async function checkAuth() {
       try {
-        const res = await fetch("/api/auth/me");
+        const res = await fetch("/api/auth/me", { signal: controller.signal });
+        clearTimeout(timeout);
         if (res.ok) {
           const data = await res.json();
           if (data.authenticated) {
@@ -41,12 +44,17 @@ export default function Home() {
           }
         }
       } catch {
-        // not authenticated
+        // not authenticated or request failed/timed out
       } finally {
         setLoading(false);
       }
     }
     checkAuth();
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, []);
 
   const handleLogout = async () => {
@@ -96,7 +104,10 @@ export default function Home() {
 
   if (!authenticated) {
     return (
-      <div className="min-h-screen bg-[#09090b]">
+      <div className="bg-[#09090b] relative">
+        <div className="fixed inset-0 z-0 pointer-events-none">
+          <ParticlesBackground />
+        </div>
         <LoginScreen />
       </div>
     );
@@ -105,14 +116,15 @@ export default function Home() {
   return (
     <div
       className={cn(
-        "flex flex-col md:flex-row bg-[#09090b] w-full flex-1 overflow-hidden",
+        "flex flex-col md:flex-row bg-[#09090b] w-full flex-1 overflow-hidden relative",
         "h-screen"
       )}
     >
+      <ParticlesBackground />
       <Sidebar open={open} setOpen={setOpen}>
         <SidebarBody className="justify-between gap-10">
-          <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden">
-            {open ? <Logo /> : <LogoIcon />}
+          <div className="flex flex-col flex-1 overflow-y-auto">
+            <Logo open={open} />
             <div className="mt-8 flex flex-col gap-2">
               {links.map((link, idx) => {
                 if (link.label === "Logout") {
@@ -120,18 +132,14 @@ export default function Home() {
                     <button
                       key={idx}
                       onClick={handleLogout}
-                      className="flex items-center justify-start gap-2 group/sidebar py-2 w-full"
+                      className={`flex items-center gap-2 group/sidebar py-2 w-full whitespace-nowrap ${!open ? 'justify-center' : ''}`}
                     >
                       {link.icon}
-                      <motion.span
-                        animate={{
-                          display: open ? "inline-block" : "none",
-                          opacity: open ? 1 : 0,
-                        }}
-                        className="text-neutral-700 dark:text-neutral-200 text-sm group-hover/sidebar:translate-x-1 transition duration-150 whitespace-pre inline-block !p-0 !m-0"
-                      >
-                        {link.label}
-                      </motion.span>
+                      {open && (
+                        <span className="text-neutral-200 text-sm group-hover/sidebar:translate-x-1 transition duration-150 whitespace-nowrap">
+                          {link.label}
+                        </span>
+                      )}
                     </button>
                   );
                 }
@@ -139,24 +147,20 @@ export default function Home() {
                   <button
                     key={idx}
                     onClick={() => setActiveTab(link.label.toLowerCase() as Tab)}
-                    className="flex items-center justify-start gap-2 group/sidebar py-2 w-full"
+                    className={`flex items-center gap-2 group/sidebar py-2 w-full whitespace-nowrap ${!open ? 'justify-center' : ''}`}
                   >
                     {link.icon}
-                    <motion.span
-                      animate={{
-                        display: open ? "inline-block" : "none",
-                        opacity: open ? 1 : 0,
-                      }}
-                      className="text-neutral-700 dark:text-neutral-200 text-sm group-hover/sidebar:translate-x-1 transition duration-150 whitespace-pre inline-block !p-0 !m-0"
-                    >
-                      {link.label}
-                    </motion.span>
+                    {open && (
+                      <span className="text-neutral-200 text-sm group-hover/sidebar:translate-x-1 transition duration-150 whitespace-nowrap">
+                        {link.label}
+                      </span>
+                    )}
                   </button>
                 );
               })}
             </div>
           </div>
-          <div>
+          <div className={!open ? 'flex justify-center' : ''}>
             <SidebarLink
               link={{
                 label: user?.name || "User",
@@ -177,7 +181,9 @@ export default function Home() {
           </div>
         </SidebarBody>
       </Sidebar>
-      {activeTab === "dashboard" && <DashboardView />}
+      <div className={activeTab === "dashboard" ? "flex flex-1" : "hidden"}>
+        <DashboardView />
+      </div>
       {activeTab === "settings" && (
         <SettingsPanel user={user} onReauth={handleReauth} />
       )}
@@ -185,32 +191,21 @@ export default function Home() {
   );
 }
 
-const Logo = () => {
+const Logo = ({ open }: { open: boolean }) => {
   return (
-    <Link
-      href="#"
-      className="font-normal flex space-x-2 items-center text-sm text-black py-1 relative z-20"
-    >
-      <div className="h-5 w-6 bg-black dark:bg-white rounded-br-lg rounded-tr-sm rounded-tl-lg rounded-bl-sm flex-shrink-0" />
-      <motion.span
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="font-medium text-black dark:text-white whitespace-pre"
-      >
-        SyncStream Pro
-      </motion.span>
-    </Link>
-  );
-};
-
-const LogoIcon = () => {
-  return (
-    <Link
-      href="#"
-      className="font-normal flex space-x-2 items-center text-sm text-black py-1 relative z-20"
-    >
-      <div className="h-5 w-6 bg-black dark:bg-white rounded-br-lg rounded-tr-sm rounded-tl-lg rounded-bl-sm flex-shrink-0" />
-    </Link>
+    <div className={`flex items-center gap-2 py-1 relative z-20 ${!open ? 'justify-center' : ''}`}>
+      <img
+        src="/sync-icon.png"
+        alt="Sync"
+        style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }}
+        className="flex-shrink-0 object-contain"
+      />
+      {open && (
+        <span className="font-medium text-white whitespace-nowrap text-sm">
+          Google Docs
+        </span>
+      )}
+    </div>
   );
 };
 

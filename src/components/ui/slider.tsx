@@ -34,7 +34,7 @@ const SliderWithTooltip = React.forwardRef<
         </SliderPrimitive.Track>
         <TooltipPrimitive.Root open={showTooltip}>
           <TooltipPrimitive.Trigger asChild>
-            <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full bg-blue-500 border border-blue-400/50 shadow-[0_0_10px_rgba(59,130,246,0.4)] ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-400 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 cursor-grab active:cursor-grabbing active:scale-110" />
+            <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full bg-blue-500 border border-blue-400/50 shadow-[0_0_10px_rgba(59,130,246,0.4)] ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-400 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50 cursor-default hover:bg-blue-600 active:bg-blue-600" />
           </TooltipPrimitive.Trigger>
           <TooltipPrimitive.Portal>
             <TooltipPrimitive.Content

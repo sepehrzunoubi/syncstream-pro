@@ -89,11 +89,17 @@ export const DesktopSidebar = ({
   return (
     <motion.div
       className={cn(
-        "h-full px-4 py-4 hidden md:flex md:flex-col bg-[#121214] border-r border-white/[0.04] w-[300px] flex-shrink-0",
+        "h-full py-4 hidden md:flex md:flex-col bg-[#121214] border-r border-white/[0.04] w-[240px] flex-shrink-0 overflow-hidden",
         className
       )}
       animate={{
-        width: animate ? (open ? "300px" : "60px") : "300px",
+        width: animate ? (open ? "240px" : "60px") : "240px",
+        paddingLeft: animate ? (open ? "12px" : "0px") : "12px",
+        paddingRight: animate ? (open ? "12px" : "0px") : "12px",
+      }}
+      transition={{
+        duration: 0.17,
+        ease: "easeInOut",
       }}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
@@ -163,26 +169,22 @@ export const SidebarLink = ({
   className?: string;
   props?: LinkProps;
 }) => {
-  const { open, animate } = useSidebar();
+  const { open } = useSidebar();
   return (
     <Link
       href={link.href}
       className={cn(
-        "flex items-center justify-start gap-2 group/sidebar py-2",
+        "flex items-center gap-2 group/sidebar py-2 whitespace-nowrap",
         className
       )}
       {...props}
     >
       {link.icon}
-      <motion.span
-        animate={{
-          display: animate ? (open ? "inline-block" : "none") : "inline-block",
-          opacity: animate ? (open ? 1 : 0) : 1,
-        }}
-        className="text-neutral-700 dark:text-neutral-200 text-sm group-hover/sidebar:translate-x-1 transition duration-150 whitespace-pre inline-block !p-0 !m-0"
-      >
-        {link.label}
-      </motion.span>
+      {open && (
+        <span className="text-neutral-700 dark:text-neutral-200 text-sm group-hover/sidebar:translate-x-1 transition duration-150 whitespace-nowrap">
+          {link.label}
+        </span>
+      )}
     </Link>
   );
 };

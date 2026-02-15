@@ -13,7 +13,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SyncStream Pro",
+  title: "Sync - Google Docs",
   description: "Human-cadence text synchronization to Google Docs",
 };
 

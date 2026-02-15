@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+}
+
 :root {
   --bg-root: #09090b;
   --bg-card: #121214;
@@ -10,11 +14,28 @@
   --accent: #3b82f6;
   --foreground: #e4e4e7;
   --muted: #71717a;
+
+  --background: #09090b;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #1e1e22;
+  --secondary-foreground: #e4e4e7;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --muted-foreground: #71717a;
+  --accent-foreground: #e4e4e7;
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: #3b82f6;
+  --ring-offset-background: #09090b;
 }
 
 body {
   color: var(--foreground);
   background: var(--bg-root);
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 /* Scrollbar */
@@ -41,6 +62,23 @@ body {
   @keyframes animateIn {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+  .animate-scroll {
+    animation: scroll 40s linear infinite;
+  }
+  .animate-scroll-fast {
+    animation: scroll 15s linear infinite;
+  }
+  .animate-scroll-faster {
+    animation: scroll 10s linear infinite;
+  }
+  .mask-fade {
+    mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
+  }
+  @keyframes scroll {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
   }
   .card-sovereign {
     background: var(--bg-card);

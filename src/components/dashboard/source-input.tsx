@@ -26,6 +26,7 @@ export function SourceInput({ value, onChange, disabled }: SourceInputProps) {
         disabled={disabled}
         placeholder="Paste the text you want to stream into Google Docs…"
         className="flex-1 min-h-[280px] w-full bg-transparent border-none rounded-lg px-3 py-3 text-[13px] leading-relaxed text-zinc-300 font-mono placeholder:text-zinc-700 resize-none focus:outline-none disabled:opacity-40 transition-colors"
+        style={{ userSelect: 'text', WebkitUserSelect: 'text', MozUserSelect: 'text', msUserSelect: 'text' }}
       />
     </div>
   );

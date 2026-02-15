@@ -6,11 +6,9 @@ import { cn } from "@/lib/utils";
 import type { StreamEvent } from "@/lib/drip-engine";
 
 interface HeroStatusProps {
-  status: "idle" | "syncing" | "done" | "error";
+  status: "idle" | "syncing" | "paused" | "done" | "error";
   metrics: StreamEvent | null;
   scopeError?: boolean;
-  syncStartTime: number;
-  durationMinutes: number;
 }
 
 function formatHMS(ms: number): string {
@@ -25,30 +23,38 @@ export function HeroStatus({
   status,
   metrics,
   scopeError,
-  syncStartTime,
-  durationMinutes,
 }: HeroStatusProps) {
   const pct = metrics
     ? Math.min((metrics.charsSent / metrics.totalChars) * 100, 100)
     : 0;
 
-  // Client-side countdown: Remaining = (StartTime + Duration) - Now
+  // Use server-sent ETA and smooth it client-side between SSE events
   const [remaining, setRemaining] = useState(0);
+  const lastEtaRef = React.useRef<{ eta: number; receivedAt: number }>({ eta: 0, receivedAt: 0 });
 
+  // When we get a new eta from the server, snapshot it
   useEffect(() => {
-    if (status !== "syncing" || !syncStartTime) {
+    if (status === "syncing" && metrics?.eta != null) {
+      lastEtaRef.current = { eta: metrics.eta, receivedAt: Date.now() };
+    }
+  }, [status, metrics?.eta, metrics?.actionIndex]);
+
+  // Smooth countdown between server updates
+  useEffect(() => {
+    if (status !== "syncing") {
       setRemaining(0);
       return;
     }
-    const durationMs = durationMinutes * 60 * 1000;
     const tick = () => {
-      const r = Math.max(0, syncStartTime + durationMs - Date.now());
-      setRemaining(r);
+      const { eta, receivedAt } = lastEtaRef.current;
+      if (!receivedAt) { setRemaining(0); return; }
+      const elapsed = Date.now() - receivedAt;
+      setRemaining(Math.max(0, eta - elapsed));
     };
     tick();
-    const id = setInterval(tick, 50);
+    const id = setInterval(tick, 200);
     return () => clearInterval(id);
-  }, [status, syncStartTime, durationMinutes]);
+  }, [status]);
 
   // Scope error state
   if (scopeError) {
@@ -83,6 +89,7 @@ export function HeroStatus({
             "w-1.5 h-1.5 rounded-full",
             status === "idle" && "bg-zinc-600",
             status === "syncing" && "bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.6)] animate-pulse",
+            status === "paused" && "bg-yellow-500 shadow-[0_0_6px_rgba(234,179,8,0.6)]",
             status === "done" && "bg-emerald-500",
             status === "error" && "bg-red-500"
           )}
@@ -94,6 +101,11 @@ export function HeroStatus({
           {status === "syncing" && (
             <span className="text-[0.5rem] text-zinc-600 font-mono truncate max-w-[100px]">
               {activity}
+            </span>
+          )}
+          {status === "paused" && (
+            <span className="text-[0.5rem] text-yellow-500/70 font-mono">
+              Waiting to resume
             </span>
           )}
         </div>
@@ -109,6 +121,8 @@ export function HeroStatus({
             "font-mono text-2xl font-bold leading-none tracking-wider tabular-nums",
             status === "syncing"
               ? "text-blue-400 drop-shadow-[0_0_20px_rgba(96,165,250,0.4)]"
+              : status === "paused"
+              ? "text-yellow-400/60"
               : "text-zinc-700"
           )}
         >
@@ -138,16 +152,6 @@ export function HeroStatus({
               {metrics.wpm} WPM
             </span>
           ) : null}
-        </div>
-      </div>
-
-      {/* ETA */}
-      <div className="flex-shrink-0 text-right">
-        <div className="text-[0.5rem] font-bold uppercase tracking-[1.5px] text-zinc-600 mb-0.5">
-          ETA
-        </div>
-        <div className="font-mono text-sm font-semibold text-zinc-400 tabular-nums">
-          {formatHMS(metrics?.eta ?? 0)}
         </div>
       </div>
     </div>
