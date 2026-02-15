@@ -308,6 +308,19 @@ export function DashboardView() {
     scheduledTimeRef.current = 0;
   }, []);
 
+  if (docsLoading) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#09090b]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-6 w-6 border-2 border-zinc-700 border-t-zinc-400 rounded-full animate-spin" />
+          <span className="text-zinc-500 font-mono text-xs tracking-wider uppercase">
+            Loading
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-1 items-center justify-center bg-transparent p-4 md:p-8 relative overflow-hidden">
       <div className="w-full max-w-7xl max-h-[85vh] p-4 md:p-6 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-y-auto relative shadow-2xl z-10">

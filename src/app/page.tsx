@@ -94,9 +94,12 @@ export default function Home() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-[#0d1117]">
-        <div className="text-neutral-500 font-mono text-sm animate-pulse">
-          Loading…
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#09090b]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-6 w-6 border-2 border-zinc-700 border-t-zinc-400 rounded-full animate-spin" />
+          <span className="text-zinc-500 font-mono text-xs tracking-wider uppercase">
+            Loading
+          </span>
         </div>
       </div>
     );
