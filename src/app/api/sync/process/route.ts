@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
   } = payload;
   let { accessToken, currentAction, charsSent } = payload;
   let resumeRemainingDelayMs = payload.remainingDelayMs ?? 0;
+  const myGeneration = payload.generation ?? 0;
 
   const totalActions = actions.length;
 
@@ -31,23 +32,30 @@ export async function POST(req: NextRequest) {
     await setPayload({
       jobId, accessToken, refreshToken, documentId,
       actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
-      remainingDelayMs,
+      remainingDelayMs, generation: myGeneration,
     });
   }
 
-  // Helper: check if paused/cancelled, save position if paused
+  // Helper: check if paused/cancelled/stale-generation, save position if paused
   async function checkPaused(remainingDelayMs = 0): Promise<boolean> {
     const job = await getJob(jobId);
-    if (job && (job.status === "cancelled" || job.status === "paused")) {
+    if (!job) return true;
+    // Stale loop: a newer resume has started — exit silently
+    if ((job.generation ?? 0) > myGeneration) return true;
+    if (job.status === "cancelled" || job.status === "paused") {
       if (job.status === "paused") await savePosition(remainingDelayMs);
       return true;
     }
     return false;
   }
 
-  // Check if job was cancelled
+  // Check if job was cancelled or a newer generation already took over
   const existingJob = await getJob(jobId);
-  if (existingJob && (existingJob.status === "cancelled" || existingJob.status === "paused")) {
+  if (!existingJob) return NextResponse.json({ status: "not_found" });
+  if ((existingJob.generation ?? 0) > myGeneration) {
+    return NextResponse.json({ status: "stale" });
+  }
+  if (existingJob.status === "cancelled" || existingJob.status === "paused") {
     return NextResponse.json({ status: existingJob.status });
   }
 
@@ -69,10 +77,15 @@ export async function POST(req: NextRequest) {
   }
 
   // Pre-compute remaining delay for ETA
-  function calcEta(fromIdx: number): number {
+  // currentDelayRemaining: if we're mid-delay, pass how much is left instead of the full action delay
+  function calcEta(fromIdx: number, currentDelayRemaining?: number): number {
     let sum = 0;
     for (let j = fromIdx; j < totalActions; j++) {
-      sum += actions[j].delayMs;
+      if (j === fromIdx && currentDelayRemaining !== undefined) {
+        sum += currentDelayRemaining;
+      } else {
+        sum += actions[j].delayMs;
+      }
     }
     return sum;
   }
@@ -104,9 +117,11 @@ export async function POST(req: NextRequest) {
       eta: currentAction < totalActions ? calcEta(currentAction) : 0,
       activity: currentAction < totalActions ? actions[currentAction].activity : "Done",
       nextDelayMs: currentAction < totalActions ? actions[currentAction].delayMs : 0,
+      nextActionAt: undefined,
       nextTypoAction: getNextTypoAction(currentAction),
       startTime,
       lastUpdate: Date.now(),
+      generation: myGeneration,
       ...overrides,
     };
     await setJob(job);
@@ -133,7 +148,7 @@ export async function POST(req: NextRequest) {
         await selfChain(req, {
           jobId, accessToken, refreshToken, documentId,
           actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
-          remainingDelayMs: resumeRemainingDelayMs,
+          remainingDelayMs: resumeRemainingDelayMs, generation: myGeneration,
         });
         return NextResponse.json({ status: "chained", currentAction });
       }
@@ -163,12 +178,16 @@ export async function POST(req: NextRequest) {
             await selfChain(req, {
               jobId, accessToken, refreshToken, documentId,
               actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
-              remainingDelayMs: remaining,
+              remainingDelayMs: remaining, generation: myGeneration,
             });
             return NextResponse.json({ status: "chained", currentAction });
           }
 
-          await updateJobStore({ activity: action.activity });
+          await updateJobStore({
+            activity: action.activity,
+            nextActionAt: Date.now() + remaining,
+            eta: calcEta(currentAction, remaining),
+          });
         }
       } else {
         resumeRemainingDelayMs = 0; // consumed for typo actions too

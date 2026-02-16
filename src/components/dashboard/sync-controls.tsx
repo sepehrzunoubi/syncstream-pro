@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { RotateCw, Clock, Zap, Shuffle, Info } from "lucide-react";
+import { RotateCw, Clock, Zap, Shuffle, Info, FilePlus } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { SliderWithTooltip } from "@/components/ui/slider";
 
@@ -26,6 +26,8 @@ interface SyncControlsProps {
   sourceText: string;
   disabled?: boolean;
   onRefreshDocs?: () => void;
+  onCreateDoc?: () => void;
+  isCreatingDoc?: boolean;
   isRefreshing?: boolean;
   isScheduled?: boolean;
   scheduleCountdown?: number;
@@ -93,7 +95,7 @@ function Tooltip({ text }: { text: string }) {
   return (
     <span className="relative group inline-flex ml-1.5 cursor-help">
       <Info className="w-3 h-3 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 rounded-md bg-zinc-900 border border-white/[0.08] text-[10px] text-zinc-400 leading-tight whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50 shadow-lg">
+      <span className="absolute bottom-full right-0 mb-1.5 px-3 py-2 rounded-md bg-zinc-900 border border-white/[0.08] text-[10px] text-zinc-400 leading-relaxed max-w-[140px] text-left opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50 shadow-lg">
         {text}
       </span>
     </span>
@@ -120,6 +122,8 @@ export function SyncControls({
   sourceText,
   disabled,
   onRefreshDocs,
+  onCreateDoc,
+  isCreatingDoc,
   isRefreshing,
   isScheduled,
   scheduleCountdown,
@@ -168,16 +172,28 @@ export function SyncControls({
             </option>
           ))}
         </select>
-        {selectedDocId && (
-          <a
-            href={`https://docs.google.com/document/d/${selectedDocId}/edit`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 mt-2 text-[0.6rem] font-mono text-zinc-600 hover:text-blue-400 transition-colors"
-          >
-            Open in Docs &rarr;
-          </a>
-        )}
+        <div className="flex items-center gap-3 mt-2">
+          {selectedDocId && (
+            <a
+              href={`https://docs.google.com/document/d/${selectedDocId}/edit`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[0.6rem] font-mono text-zinc-600 hover:text-blue-400 transition-colors"
+            >
+              Open in Docs &rarr;
+            </a>
+          )}
+          {onCreateDoc && (
+            <button
+              onClick={onCreateDoc}
+              disabled={disabled || isCreatingDoc}
+              className="inline-flex items-center gap-1 text-[0.6rem] font-mono text-zinc-600 hover:text-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <FilePlus className={`w-3 h-3 ${isCreatingDoc ? 'animate-pulse' : ''}`} />
+              {isCreatingDoc ? "Creating…" : "New Doc"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ═══ Writing Rhythm ═══ */}

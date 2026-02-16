@@ -74,6 +74,26 @@ export async function listRecentDocs(accessToken: string, maxResults = 15) {
   }));
 }
 
+export async function createGoogleDoc(
+  accessToken: string,
+  title: string = "Untitled Document"
+): Promise<{ id: string; name: string }> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+
+  const docs = google.docs({ version: "v1", auth: client });
+  const res = await withRetry(() =>
+    docs.documents.create({
+      requestBody: { title },
+    })
+  );
+
+  return {
+    id: res.data.documentId!,
+    name: res.data.title || title,
+  };
+}
+
 export async function appendToDoc(
   accessToken: string,
   documentId: string,

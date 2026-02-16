@@ -15,6 +15,7 @@ export function DashboardView() {
   >([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isCreatingDoc, setIsCreatingDoc] = useState(false);
   const [scopeError, setScopeError] = useState(false);
 
   const [sourceText, setSourceText] = useState("");
@@ -38,6 +39,7 @@ export function DashboardView() {
   const [realWordCount, setRealWordCount] = useState(0);
   const [pausedCharsSent, setPausedCharsSent] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const lastPauseResumeRef = useRef<number>(0);
   const lastCharsSentRef = useRef<number>(0);
   const startSyncRef = useRef<(resumeFromChar?: number) => Promise<void>>();
 
@@ -111,6 +113,26 @@ export function DashboardView() {
   useEffect(() => {
     fetchDocs();
   }, [fetchDocs]);
+
+  const handleCreateDoc = useCallback(async () => {
+    setIsCreatingDoc(true);
+    try {
+      const res = await fetch("/api/docs/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Untitled Document" }),
+      });
+      if (!res.ok) throw new Error("Failed to create doc");
+      const doc = await res.json();
+      // Add the new doc to the list and auto-select it
+      setDocs((prev) => [{ id: doc.id, name: doc.name, modifiedTime: new Date().toISOString() }, ...prev]);
+      setSelectedDocId(doc.id);
+    } catch (err) {
+      console.error("Create doc error:", err);
+    } finally {
+      setIsCreatingDoc(false);
+    }
+  }, []);
 
   const startSync = useCallback(async (resumeFromChar = 0) => {
     const textToSync = resumeFromChar > 0 ? sourceText.slice(resumeFromChar) : sourceText;
@@ -229,6 +251,10 @@ export function DashboardView() {
 
   const pauseSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "syncing") return;
+    // Cooldown: prevent rapid pause/resume spam
+    const now = Date.now();
+    if (now - lastPauseResumeRef.current < 1500) return;
+    lastPauseResumeRef.current = now;
     setIsTransitioning(true);
 
     // Pause the background job (keeps the plan in Redis for resume)
@@ -249,6 +275,10 @@ export function DashboardView() {
 
   const resumeSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "paused" || !jobIdRef.current) return;
+    // Cooldown: prevent rapid pause/resume spam
+    const now = Date.now();
+    if (now - lastPauseResumeRef.current < 1500) return;
+    lastPauseResumeRef.current = now;
     setIsTransitioning(true);
 
     try {
@@ -339,13 +369,23 @@ export function DashboardView() {
     return () => clearInterval(id);
   }, [syncStatus, selectedDocId]);
 
-  // Client-side countdown to next sync action
+  // Client-side countdown to next sync action — uses absolute timestamp from server
   useEffect(() => {
-    if (syncStatus !== "syncing" || !metrics?.nextDelayMs) {
+    if (syncStatus !== "syncing") {
       setNextSyncCountdown(0);
       return;
     }
-    const targetTime = Date.now() + metrics.nextDelayMs;
+    // Prefer absolute nextActionAt timestamp (survives tab close/reopen)
+    // Fall back to relative nextDelayMs for backwards compat
+    const targetTime = metrics?.nextActionAt
+      ? metrics.nextActionAt
+      : metrics?.nextDelayMs
+        ? Date.now() + metrics.nextDelayMs
+        : 0;
+    if (!targetTime) {
+      setNextSyncCountdown(0);
+      return;
+    }
     const tick = () => {
       const remaining = Math.max(0, targetTime - Date.now());
       setNextSyncCountdown(remaining);
@@ -353,7 +393,7 @@ export function DashboardView() {
     tick();
     const id = setInterval(tick, 100);
     return () => clearInterval(id);
-  }, [syncStatus, metrics?.nextDelayMs, metrics?.actionIndex]);
+  }, [syncStatus, metrics?.nextActionAt, metrics?.nextDelayMs, metrics?.actionIndex]);
 
   const nextSyncSec = (nextSyncCountdown / 1000).toFixed(1);
 
@@ -411,7 +451,7 @@ export function DashboardView() {
 
   return (
     <div className="flex flex-1 items-center justify-center bg-transparent p-4 md:p-8 relative overflow-hidden">
-      <div className="w-full max-w-7xl max-h-[85vh] p-4 md:p-6 pb-1 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-y-auto relative shadow-2xl z-10">
+      <div className="w-full max-w-7xl max-h-[92vh] p-4 md:p-6 pb-1 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-y-auto relative shadow-2xl z-10">
 
         {/* ═══ Neon Pulse Bar — 2px at very top ═══ */}
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/[0.02]">
@@ -431,7 +471,7 @@ export function DashboardView() {
         />
 
         {/* ═══ Stats Row — 6 ultra-slim cards ═══ */}
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-2 flex-shrink-0">
           <StatCard
             label="Status"
             value={syncStatus.charAt(0).toUpperCase() + syncStatus.slice(1)}
@@ -522,6 +562,8 @@ export function DashboardView() {
                 sourceText={sourceText}
                 disabled={controlsDisabled}
                 onRefreshDocs={() => fetchDocs(true)}
+                onCreateDoc={handleCreateDoc}
+                isCreatingDoc={isCreatingDoc}
                 isRefreshing={isRefreshing}
                 isScheduled={isScheduled}
                 scheduleCountdown={scheduleCountdown}

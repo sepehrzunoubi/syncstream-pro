@@ -46,6 +46,8 @@ export interface StreamEvent {
   charsSent: number;
   totalChars: number;
   nextDelayMs: number;
+  /** Absolute timestamp (ms) when the current delay ends */
+  nextActionAt?: number;
   eta: number;
   wpm: number;
   activity: string;

@@ -35,15 +35,21 @@ export async function POST(req: NextRequest) {
     refreshToken: refreshToken || savedPayload.refreshToken,
   };
 
-  // Mark job as running again
-  await setJob({ ...job, status: "running", activity: "Resuming…", lastUpdate: Date.now() });
+  // Bump generation so any stale process loops self-terminate
+  const nextGen = (job.generation ?? 0) + 1;
+
+  // Mark job as running again with new generation
+  await setJob({ ...job, status: "running", activity: "Resuming…", lastUpdate: Date.now(), generation: nextGen });
+
+  // Pass generation to the process loop so it can verify it's still current
+  const payloadWithGen = { ...payload, generation: nextGen };
 
   // Fire-and-forget: kick off background processing from saved position
   const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
   fetch(`${origin}/api/sync/process`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payloadWithGen),
   }).catch((err) => {
     console.error("Failed to resume sync/process:", err);
   });

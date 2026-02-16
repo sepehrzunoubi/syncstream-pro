@@ -16,9 +16,13 @@ export interface SyncJob {
   activity: string;
   nextTypoAction?: number;
   nextDelayMs: number;
+  /** Absolute timestamp when the current delay ends — survives tab close */
+  nextActionAt?: number;
   error?: string;
   startTime: number;
   lastUpdate: number;
+  /** Monotonically increasing counter — incremented on each resume to kill stale loops */
+  generation?: number;
 }
 
 export interface SyncJobPayload {
@@ -34,6 +38,8 @@ export interface SyncJobPayload {
   startTime: number;
   /** Remaining delay for current action when paused mid-delay */
   remainingDelayMs?: number;
+  /** Generation counter — process loop exits if it doesn't match the job's generation */
+  generation?: number;
 }
 
 // ── Upstash Redis store ────────────────────────────────────────────────────
@@ -118,6 +124,7 @@ export function jobToEvent(job: SyncJob): StreamEvent {
     charsSent: job.charsSent,
     totalChars: job.totalChars,
     nextDelayMs: job.nextDelayMs,
+    nextActionAt: job.nextActionAt,
     eta: job.eta,
     wpm: job.wpm,
     activity: job.activity,

@@ -81,7 +81,7 @@ export function HeroStatus({
   const activity = metrics?.activity ?? "Idle";
 
   return (
-    <div className="flex items-center gap-6 px-5 py-4 card-sovereign relative overflow-hidden">
+    <div className="flex items-center gap-6 px-5 py-4 card-sovereign relative overflow-hidden flex-shrink-0">
       {/* Status dot + activity */}
       <div className="flex items-center gap-2.5 flex-shrink-0">
         <div
