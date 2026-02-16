@@ -74,11 +74,11 @@ function estimateBurstDuration(
 }
 
 const TYPO_PRESETS = [
-  { label: "Rare", value: 0, desc: "~1 per 800 chars" },
-  { label: "Low", value: 0.25, desc: "~1 per 630 chars" },
-  { label: "Medium", value: 0.5, desc: "~1 per 460 chars" },
-  { label: "High", value: 0.75, desc: "~1 per 290 chars" },
-  { label: "Frequent", value: 1.0, desc: "~1 per 120 chars" },
+  { label: "Rare", value: 0, desc: "~1 per 300 chars" },
+  { label: "Low", value: 0.25, desc: "~1 per 235 chars" },
+  { label: "Medium", value: 0.5, desc: "~1 per 170 chars" },
+  { label: "High", value: 0.75, desc: "~1 per 105 chars" },
+  { label: "Frequent", value: 1.0, desc: "~1 per 40 chars" },
 ];
 
 const PAUSE_PRESETS = [

@@ -31,7 +31,7 @@ export function DashboardView() {
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [metrics, setMetrics] = useState<StreamEvent | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const jobIdRef = useRef<string | null>(null);
   const syncStartRef = useRef<number>(0);
   const [nextSyncCountdown, setNextSyncCountdown] = useState(0);
   const [realWordCount, setRealWordCount] = useState(0);
@@ -39,6 +39,47 @@ export function DashboardView() {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const lastCharsSentRef = useRef<number>(0);
   const startSyncRef = useRef<(resumeFromChar?: number) => Promise<void>>();
+
+  // Persist jobId to localStorage so background sync survives tab close
+  const saveJobId = (id: string | null) => {
+    jobIdRef.current = id;
+    if (id) {
+      localStorage.setItem("syncstream_active_job", id);
+    } else {
+      localStorage.removeItem("syncstream_active_job");
+    }
+  };
+
+  // On mount: check if there's an active background job from a previous session
+  useEffect(() => {
+    const savedJobId = localStorage.getItem("syncstream_active_job");
+    if (!savedJobId) return;
+
+    // Check if the job is still running
+    fetch(`/api/sync/status?jobId=${savedJobId}`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data) {
+          localStorage.removeItem("syncstream_active_job");
+          return;
+        }
+        if (data.jobStatus === "running" || data.jobStatus === "pending") {
+          // Resume polling
+          jobIdRef.current = savedJobId;
+          setMetrics(data.event);
+          setSyncStatus("syncing");
+        } else if (data.jobStatus === "done") {
+          setMetrics(data.event);
+          setSyncStatus("done");
+          localStorage.removeItem("syncstream_active_job");
+        } else {
+          localStorage.removeItem("syncstream_active_job");
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem("syncstream_active_job");
+      });
+  }, []);
 
   // Fetch recent docs on mount
   const fetchDocs = useCallback(async (isRefresh = false) => {
@@ -77,16 +118,20 @@ export function DashboardView() {
     setIsScheduled(false);
     scheduledTimeRef.current = 0;
 
-    // Clean up any previous controller before creating a new one
-    abortRef.current?.abort();
-    abortRef.current = null;
+    // Cancel any previous background job
+    if (jobIdRef.current) {
+      fetch("/api/sync/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: jobIdRef.current }),
+      }).catch(() => {});
+      saveJobId(null);
+    }
 
     setSyncStatus("syncing");
     setMetrics(null);
     lastCharsSentRef.current = 0;
     syncStartRef.current = Date.now();
-    const controller = new AbortController();
-    abortRef.current = controller;
 
     // Small delay to ensure UI updates before fetch starts
     await new Promise(r => setTimeout(r, 50));
@@ -99,7 +144,7 @@ export function DashboardView() {
       : Math.max(1, Math.round(durationMinutes * remainingRatio));
 
     try {
-      const res = await fetch("/api/stream", {
+      const res = await fetch("/api/sync/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -110,7 +155,6 @@ export function DashboardView() {
           typoFrequency,
           pauseVariance,
         }),
-        signal: controller.signal,
       });
 
       if (res.status === 401) {
@@ -118,67 +162,74 @@ export function DashboardView() {
         setSyncStatus("error");
         return;
       }
-      if (!res.ok) throw new Error(`Stream failed: ${res.status}`);
-      if (!res.body) throw new Error("No response body");
+      if (!res.ok) throw new Error(`Sync start failed: ${res.status}`);
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const event: StreamEvent = JSON.parse(line.slice(6));
-              setMetrics(event);
-              // Track last known charsSent for accurate pause snapshots
-              lastCharsSentRef.current = event.charsSent ?? 0;
-
-              if (event.type === "done") {
-                setSyncStatus("done");
-                // Mark all chars as sent (absolute position)
-                setPausedCharsSent(sourceText.length);
-                lastCharsSentRef.current = 0;
-              } else if (event.type === "error") {
-                if (event.error?.includes("Insufficient")) {
-                  setScopeError(true);
-                }
-                setSyncStatus("error");
-                lastCharsSentRef.current = 0;
-                abortRef.current = null;
-              }
-            } catch {
-              // skip malformed events
-            }
-          }
-        }
-      }
-
-      setSyncStatus((prev) => (prev === "syncing" ? "done" : prev));
+      const data = await res.json();
+      saveJobId(data.jobId);
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        console.error("Stream error:", err);
-        setSyncStatus("error");
-        lastCharsSentRef.current = 0;
-      }
-    } finally {
+      console.error("Sync start error:", err);
+      setSyncStatus("error");
       setIsTransitioning(false);
     }
   }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, isTransitioning]);
 
-  const pauseSync = useCallback(() => {
+  // Poll background job status while syncing
+  useEffect(() => {
+    if (syncStatus !== "syncing" || !jobIdRef.current) return;
+
+    const pollInterval = setInterval(async () => {
+      const currentJobId = jobIdRef.current;
+      if (!currentJobId) return;
+
+      try {
+        const res = await fetch(`/api/sync/status?jobId=${currentJobId}`);
+        if (!res.ok) return;
+
+        const data = await res.json();
+        const event: StreamEvent = data.event;
+        setMetrics(event);
+        lastCharsSentRef.current = event.charsSent ?? 0;
+
+        if (data.jobStatus === "done") {
+          setSyncStatus("done");
+          setPausedCharsSent(sourceText.length);
+          lastCharsSentRef.current = 0;
+          saveJobId(null);
+        } else if (data.jobStatus === "error") {
+          if (event.error?.includes("Insufficient")) {
+            setScopeError(true);
+          }
+          setSyncStatus("error");
+          lastCharsSentRef.current = 0;
+          saveJobId(null);
+        } else if (data.jobStatus === "cancelled") {
+          // External cancellation
+          setSyncStatus("idle");
+          saveJobId(null);
+        }
+      } catch {
+        // Polling error — keep trying
+      }
+    }, 2000);
+
+    return () => clearInterval(pollInterval);
+  }, [syncStatus, sourceText.length]);
+
+  const pauseSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "syncing") return;
     setIsTransitioning(true);
 
-    abortRef.current?.abort();
-    abortRef.current = null;
+    // Cancel the background job
+    if (jobIdRef.current) {
+      try {
+        await fetch("/api/sync/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: jobIdRef.current }),
+        });
+      } catch { /* best effort */ }
+      saveJobId(null);
+    }
 
     // Save absolute position: previous paused position + chars sent in this session
     const currentSessionChars = lastCharsSentRef.current;
@@ -198,8 +249,16 @@ export function DashboardView() {
     if (isTransitioning) return;
     setIsTransitioning(true);
 
-    abortRef.current?.abort();
-    abortRef.current = null;
+    // Cancel any active background job
+    if (jobIdRef.current) {
+      fetch("/api/sync/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: jobIdRef.current }),
+      }).catch(() => {});
+      saveJobId(null);
+    }
+
     setSyncStatus("idle");
     setMetrics(null);
     setSourceText("");

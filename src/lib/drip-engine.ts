@@ -256,29 +256,43 @@ function buildHumanPlan(
   }
 
   // Distribute time budget across actions
+  // Typo actions only consume their correction pause (typoPauseMs), NOT a pre-delay.
+  // So the remaining delay budget must be spread only among insert actions.
   const typoCount = textActions.filter((a) => a.kind === "typo").length;
   const typoTimeBudget = typoCount * typoPauseMs;
   const delayBudget = totalBudgetMs - typoTimeBudget;
-  const numGaps = textActions.length;
-  const baseDelay = Math.floor(delayBudget / numGaps);
+  const insertActions = textActions.filter((a) => a.kind === "insert");
+  // Subtract 1 for the first insert which fires immediately (delay=0)
+  const numDelaySlots = Math.max(1, insertActions.length - 1);
+  const baseDelay = Math.floor(delayBudget / numDelaySlots);
 
+  let isFirstInsert = true;
   for (let i = 0; i < textActions.length; i++) {
     if (textActions[i].kind === "typo") {
       textActions[i].delayMs = typoPauseMs;
     } else {
-      const variance = baseDelay * 0.2;
-      textActions[i].delayMs = Math.max(1000, Math.round(baseDelay + randFloat(-variance, variance)));
+      if (isFirstInsert) {
+        textActions[i].delayMs = 0;
+        isFirstInsert = false;
+      } else {
+        const variance = baseDelay * 0.15;
+        textActions[i].delayMs = Math.max(1000, Math.round(baseDelay + randFloat(-variance, variance)));
+      }
     }
   }
 
-  // First action fires immediately, last action absorbs rounding error
-  if (textActions.length > 0) {
-    textActions[0].delayMs = 0;
+  // Spread any rounding error evenly across insert actions (skip first which is 0)
+  if (textActions.length > 1) {
     const actualTotal = textActions.reduce((sum, a) => sum + a.delayMs, 0);
     const diff = totalBudgetMs - actualTotal;
-    if (textActions.length > 1) {
-      const lastIdx = textActions.length - 1;
-      textActions[lastIdx].delayMs = Math.max(0, textActions[lastIdx].delayMs + diff);
+    if (Math.abs(diff) > 500) {
+      const adjustableInserts = textActions.filter((a) => a.kind === "insert" && a.delayMs > 0);
+      if (adjustableInserts.length > 0) {
+        const perAction = Math.round(diff / adjustableInserts.length);
+        for (const a of adjustableInserts) {
+          a.delayMs = Math.max(1000, a.delayMs + perAction);
+        }
+      }
     }
   }
 
