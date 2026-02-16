@@ -64,9 +64,19 @@ function estimateBurstDuration(
   const charCount = wordCount * 5;
   const activeCPM = 175;
   const activeMinutes = charCount / activeCPM;
-  const avgSessionMinutes = 4.5;
-  const sessions = Math.max(1, Math.ceil(activeMinutes / avgSessionMinutes));
+
+  // For shorter texts (< ~10 min active typing, >= 200 chars), the engine
+  // caps session size to ~30-50% of remaining text, guaranteeing at least
+  // 2 sessions and thus at least 1 pause gap. Mirror that here.
+  let avgSessionMin: number;
+  if (activeMinutes < 10 && charCount >= 200) {
+    avgSessionMin = Math.max(1, activeMinutes * 0.4);
+  } else {
+    avgSessionMin = 4.5;
+  }
+  const sessions = Math.max(charCount >= 200 ? 2 : 1, Math.ceil(activeMinutes / avgSessionMin));
   const gaps = Math.max(0, sessions - 1);
+
   // Pause range based on variance — matches engine
   const minPauseMin = 1 + pauseVariance * 29;  // 1 → 30
   const maxPauseMin = 5 + pauseVariance * 115; // 5 → 120

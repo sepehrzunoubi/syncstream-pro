@@ -376,11 +376,23 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
   let sessionIndex = 0;
 
   while (offset < totalChars) {
-    // Session length: 1-8 minutes of active typing
-    const sessionMinutes = randFloat(1, 8);
+    const charsRemaining = totalChars - offset;
+    const remainingActiveMin = charsRemaining / activeCPM;
+
+    // For shorter texts (< ~10 min of active typing), cap session size
+    // so we always get at least 2 sessions and thus at least 1 pause gap.
+    // This ensures the Pause Length slider always affects total duration.
+    let sessionMinutes: number;
+    if (remainingActiveMin < 10 && charsRemaining >= 200) {
+      const maxMin = Math.max(1, remainingActiveMin * randFloat(0.3, 0.5));
+      sessionMinutes = randFloat(Math.min(1, maxMin), maxMin);
+    } else {
+      sessionMinutes = randFloat(1, 8);
+    }
+
     const sessionChars = Math.min(
       Math.ceil(sessionMinutes * activeCPM),
-      totalChars - offset
+      charsRemaining
     );
 
     // Inter-session pause delay (rolled into first insert of this session)
