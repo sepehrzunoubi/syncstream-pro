@@ -32,6 +32,7 @@ export function DashboardView() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [metrics, setMetrics] = useState<StreamEvent | null>(null);
   const jobIdRef = useRef<string | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const syncStartRef = useRef<number>(0);
   const [nextSyncCountdown, setNextSyncCountdown] = useState(0);
   const [realWordCount, setRealWordCount] = useState(0);
@@ -43,6 +44,7 @@ export function DashboardView() {
   // Persist jobId to localStorage so background sync survives tab close
   const saveJobId = (id: string | null) => {
     jobIdRef.current = id;
+    setActiveJobId(id);
     if (id) {
       localStorage.setItem("syncstream_active_job", id);
     } else {
@@ -66,10 +68,12 @@ export function DashboardView() {
         if (data.jobStatus === "running" || data.jobStatus === "pending") {
           // Resume polling
           jobIdRef.current = savedJobId;
+          setActiveJobId(savedJobId);
           setMetrics(data.event);
           setSyncStatus("syncing");
         } else if (data.jobStatus === "done") {
           setMetrics(data.event);
+          setPausedCharsSent(data.event.totalChars ?? 0);
           setSyncStatus("done");
           localStorage.removeItem("syncstream_active_job");
         } else {
@@ -175,9 +179,9 @@ export function DashboardView() {
 
   // Poll background job status while syncing
   useEffect(() => {
-    if (syncStatus !== "syncing" || !jobIdRef.current) return;
+    if (syncStatus !== "syncing" || !activeJobId) return;
 
-    const pollInterval = setInterval(async () => {
+    const poll = async () => {
       const currentJobId = jobIdRef.current;
       if (!currentJobId) return;
 
@@ -192,7 +196,8 @@ export function DashboardView() {
 
         if (data.jobStatus === "done") {
           setSyncStatus("done");
-          setPausedCharsSent(sourceText.length);
+          const doneChars = sourceText.length > 0 ? sourceText.length : (event.totalChars ?? 0);
+          setPausedCharsSent(doneChars);
           lastCharsSentRef.current = 0;
           saveJobId(null);
         } else if (data.jobStatus === "error") {
@@ -210,10 +215,14 @@ export function DashboardView() {
       } catch {
         // Polling error — keep trying
       }
-    }, 2000);
+    };
+
+    // Immediate first poll so stats update right away
+    poll();
+    const pollInterval = setInterval(poll, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [syncStatus, sourceText.length]);
+  }, [syncStatus, activeJobId, sourceText.length]);
 
   const pauseSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "syncing") return;
@@ -281,8 +290,9 @@ export function DashboardView() {
   const totalCharsSent = syncStatus === "syncing"
     ? pausedCharsSent + (metrics?.charsSent ?? 0)
     : pausedCharsSent;
-  const pct = sourceText.length > 0
-    ? Math.min((totalCharsSent / sourceText.length) * 100, 100)
+  const effectiveTotalChars = sourceText.length > 0 ? sourceText.length : (metrics?.totalChars ?? 0);
+  const pct = effectiveTotalChars > 0
+    ? Math.min((totalCharsSent / effectiveTotalChars) * 100, 100)
     : 0;
 
   // Poll real-time word count from Google Doc during sync
@@ -327,8 +337,10 @@ export function DashboardView() {
 
   const nextSyncSec = (nextSyncCountdown / 1000).toFixed(1);
 
-  // Source word count for Word Count stat
-  const sourceWordCount = sourceText.trim() ? sourceText.trim().split(/\s+/).filter(w => w.length > 0).length : 0;
+  // Source word count for Word Count stat — fall back to metrics-based estimate on tab reopen
+  const sourceWordCount = sourceText.trim()
+    ? sourceText.trim().split(/\s+/).filter(w => w.length > 0).length
+    : (metrics?.totalChars ? Math.round(metrics.totalChars / 5) : 0);
 
   // Keep startSyncRef pointing at the latest startSync
   useEffect(() => {
@@ -539,35 +551,28 @@ export function DashboardView() {
             </>
           )}
           {(syncStatus === "done" || syncStatus === "error") && (
-            <button
-              onClick={resetSync}
-              disabled={isTransitioning}
-              className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-blue-500/30 text-zinc-400 hover:text-blue-400 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              New Sync
-            </button>
+            <>
+              <button
+                onClick={resetSync}
+                disabled={isTransitioning}
+                className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-blue-500/30 text-zinc-400 hover:text-blue-400 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                New Sync
+              </button>
+              {syncStatus === "done" && selectedDocId && (
+                <a
+                  href={`https://docs.google.com/document/d/${selectedDocId}/edit`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-[13px] font-semibold tracking-wide transition-all shadow-[0_0_12px_rgba(59,130,246,0.2)] hover:shadow-[0_0_20px_rgba(59,130,246,0.4)] no-underline"
+                >
+                  Open Document &rarr;
+                </a>
+              )}
+            </>
           )}
         </div>
 
-        {/* ═══ Done card ═══ */}
-        {syncStatus === "done" && selectedDocId && (
-          <div className="card-sovereign p-4 text-center animate-in">
-            <span className="inline-block px-2 py-0.5 rounded text-[0.55rem] font-bold tracking-widest uppercase font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mb-2">
-              COMPLETE
-            </span>
-            <p className="text-zinc-500 text-[13px] mb-1">
-              All content streamed successfully.
-            </p>
-            <a
-              href={`https://docs.google.com/document/d/${selectedDocId}/edit`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-400 hover:underline text-[13px] font-mono"
-            >
-              Open Document &rarr;
-            </a>
-          </div>
-        )}
 
         {/* ═══ Error card ═══ */}
         {syncStatus === "error" && metrics?.error && !scopeError && (
