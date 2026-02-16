@@ -303,7 +303,7 @@ function buildHumanPlan(
   // So the remaining delay budget must be spread only among insert actions.
   const typoCount = textActions.filter((a) => a.kind === "typo").length;
   const typoTimeBudget = typoCount * typoPauseMs;
-  const delayBudget = totalBudgetMs - typoTimeBudget;
+  const delayBudget = Math.max(0, totalBudgetMs - typoTimeBudget);
   const insertActions = textActions.filter((a) => a.kind === "insert");
   // Subtract 1 for the first insert which fires immediately (delay=0)
   const numDelaySlots = Math.max(1, insertActions.length - 1);
@@ -383,19 +383,16 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
       totalChars - offset
     );
 
-    // Inter-session pause (not before first session)
+    // Inter-session pause delay (rolled into first insert of this session)
+    // No separate "pause" actions — every action inserts text.
+    let sessionPauseMs = 0;
+    let sessionPauseActivity = "Typing…";
     if (sessionIndex > 0) {
       // pauseVar 0 → 1-5 min, 0.25 → 3-15 min, 0.5 → 5-30 min, 0.75 → 10-60 min, 1 → 30-120 min
       const minPauseMin = 1 + pauseVar * 29;   // 1 → 30
       const maxPauseMin = 5 + pauseVar * 115;  // 5 → 120
-      const pauseMs = randFloat(minPauseMin, maxPauseMin) * 60_000;
-
-      actions.push({
-        kind: "pause",
-        text: "",
-        delayMs: Math.round(pauseMs),
-        activity: BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)],
-      });
+      sessionPauseMs = Math.round(randFloat(minPauseMin, maxPauseMin) * 60_000);
+      sessionPauseActivity = BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)];
     }
 
     // Split session text into small micro-chunks for natural typing feel
@@ -409,11 +406,21 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
     for (let c = 0; c < chunks.length; c++) {
       const chunk = chunks[c];
 
-      // Micro-delay between chunks within a session: 3-18 seconds
-      const delay =
-        c === 0 && sessionIndex === 0
-          ? 0
-          : randInt(3000, 18000);
+      // First chunk of first session → no delay
+      // First chunk of later sessions → inter-session pause (activity shows "Taking a break…" etc.)
+      // Other chunks → micro-delay within session
+      let delay: number;
+      let activity: string;
+      if (c === 0 && sessionIndex === 0) {
+        delay = 0;
+        activity = "Typing…";
+      } else if (c === 0 && sessionPauseMs > 0) {
+        delay = sessionPauseMs;
+        activity = sessionPauseActivity;
+      } else {
+        delay = randInt(3000, 18000);
+        activity = "Typing…";
+      }
 
       // Typo injection
       if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
@@ -426,8 +433,11 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
             kind: "insert",
             text: before,
             delayMs: delay,
-            activity: "Typing…",
+            activity,
           });
+          // If before consumed the session pause delay, subsequent actions use normal delays
+          delay = randInt(800, 2000);
+          activity = "Typing…";
         }
 
         const { typo, correct } = generateSmartTypo(after);
@@ -458,7 +468,7 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
           kind: "insert",
           text: chunk,
           delayMs: delay,
-          activity: "Typing…",
+          activity,
         });
         charsSinceTypo += chunk.length;
       }

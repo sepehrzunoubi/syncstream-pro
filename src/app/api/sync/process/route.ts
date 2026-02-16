@@ -117,7 +117,9 @@ export async function POST(req: NextRequest) {
       eta: currentAction < totalActions ? calcEta(currentAction) : 0,
       activity: currentAction < totalActions ? actions[currentAction].activity : "Done",
       nextDelayMs: currentAction < totalActions ? actions[currentAction].delayMs : 0,
-      nextActionAt: undefined,
+      nextActionAt: currentAction < totalActions && actions[currentAction].delayMs > 0
+        ? Date.now() + actions[currentAction].delayMs
+        : undefined,
       nextTypoAction: getNextTypoAction(currentAction),
       startTime,
       lastUpdate: Date.now(),
