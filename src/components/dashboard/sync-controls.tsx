@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { RotateCw, Clock, Zap, Shuffle } from "lucide-react";
+import { RotateCw, Clock, Zap, Shuffle, Info } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { SliderWithTooltip } from "@/components/ui/slider";
 
@@ -59,15 +59,15 @@ function estimateBurstDuration(
   pauseVariance: number
 ): { minMinutes: number; maxMinutes: number } {
   if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
-  const charCount = wordCount * 5; // avg 5 chars per word
-  const activeCPM = 175; // midpoint of 125-225
+  const charCount = wordCount * 5;
+  const activeCPM = 175;
   const activeMinutes = charCount / activeCPM;
-  const avgSessionMinutes = 4.5; // midpoint of 1-8
+  const avgSessionMinutes = 4.5;
   const sessions = Math.max(1, Math.ceil(activeMinutes / avgSessionMinutes));
   const gaps = Math.max(0, sessions - 1);
-  // Pause range based on variance
-  const minPauseMin = 1 + pauseVariance * 7;
-  const maxPauseMin = 4 + pauseVariance * 21;
+  // Pause range based on variance — matches engine
+  const minPauseMin = 1 + pauseVariance * 29;  // 1 → 30
+  const maxPauseMin = 5 + pauseVariance * 115; // 5 → 120
   const minTotal = Math.ceil(activeMinutes + gaps * minPauseMin);
   const maxTotal = Math.ceil(activeMinutes + gaps * maxPauseMin);
   return { minMinutes: Math.max(1, minTotal), maxMinutes: Math.max(1, maxTotal) };
@@ -82,12 +82,23 @@ const TYPO_PRESETS = [
 ];
 
 const PAUSE_PRESETS = [
-  { label: "Short", value: 0, desc: "1-4m gaps" },
-  { label: "Moderate", value: 0.25, desc: "3-9m gaps" },
-  { label: "Medium", value: 0.5, desc: "5-15m gaps" },
-  { label: "Long", value: 0.75, desc: "6-20m gaps" },
-  { label: "Extended", value: 1.0, desc: "8-25m gaps" },
+  { label: "Short", value: 0, desc: "1-5m breaks" },
+  { label: "Moderate", value: 0.25, desc: "3-15m breaks" },
+  { label: "Medium", value: 0.5, desc: "5-30m breaks" },
+  { label: "Long", value: 0.75, desc: "10-60m breaks" },
+  { label: "Extended", value: 1.0, desc: "30m-2h breaks" },
 ];
+
+function Tooltip({ text }: { text: string }) {
+  return (
+    <span className="relative group inline-flex ml-1.5 cursor-help">
+      <Info className="w-3 h-3 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 rounded-md bg-zinc-900 border border-white/[0.08] text-[10px] text-zinc-400 leading-tight whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50 shadow-lg">
+        {text}
+      </span>
+    </span>
+  );
+}
 
 function closestPresetIndex<T extends { value: number }>(presets: T[], val: number): number {
   return presets.reduce((closest, p, idx) =>
@@ -218,7 +229,7 @@ export function SyncControls({
       {!isBurst && (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <Label>Duration</Label>
+            <Label className="inline-flex items-center">Duration<Tooltip text="Total time to spread typing over" /></Label>
             <span className="text-[0.6rem] font-mono text-zinc-500">
               {formatDuration(durationMinutes)}
             </span>
@@ -264,7 +275,7 @@ export function SyncControls({
         return (
           <div>
             <div className="flex items-center justify-between mb-3">
-              <Label>Pause Length</Label>
+              <Label className="inline-flex items-center">Pause Length<Tooltip text="Break time between typing sessions, like grabbing food or stepping away" /></Label>
               <span className="text-[0.6rem] font-mono text-zinc-500">
                 {PAUSE_PRESETS[idx].label} · {PAUSE_PRESETS[idx].desc}
               </span>
@@ -292,7 +303,7 @@ export function SyncControls({
         return (
           <div>
             <div className="flex items-center justify-between mb-3">
-              <Label>Typo Frequency</Label>
+              <Label className="inline-flex items-center">Typo Frequency<Tooltip text="How often realistic typos are injected and corrected" /></Label>
               <span className="text-[0.6rem] font-mono text-zinc-500">
                 {TYPO_PRESETS[idx].label} · {TYPO_PRESETS[idx].desc}
               </span>

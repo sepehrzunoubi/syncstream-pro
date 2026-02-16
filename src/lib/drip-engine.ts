@@ -15,7 +15,7 @@ export type PaceMode = "human" | "burst";
 export interface PlanOptions {
   /** 0-1 scale. 0 = rare typos (~every 800 chars), 1 = frequent (~every 120 chars). Default 0.5 */
   typoFrequency?: number;
-  /** 0-1 scale. 0 = short gaps (1-4 min), 1 = long gaps (8-25 min). Burst mode only. Default 0.5 */
+  /** 0-1 scale. 0 = short breaks (1-5 min), 1 = extended breaks (30-120 min). Burst mode only. Default 0.5 */
   pauseVariance?: number;
 }
 
@@ -79,20 +79,27 @@ const NEIGHBORS: Record<string, string[]> = {
 
 /**
  * Generate a smart typo from the upcoming text.
+ * Returns the distorted text AND the original correct segment it covers.
  * Strategies: adjacent-key swap, letter transposition, double letter, dropped letter, phonetic swap.
  */
-function generateSmartTypo(upcomingText: string): string {
-  // Find the first word (or first few chars) to distort
+function generateSmartTypo(upcomingText: string): { typo: string; correct: string } {
+  // Find the first 1-3 words to distort
   const trimmed = upcomingText.trimStart();
+  const leadingSpace = upcomingText.length - trimmed.length;
   const words = trimmed.split(/\s+/);
-  // Pick 1-3 words to form the typo segment
   const wordCount = Math.min(words.length, randInt(1, 3));
   const segment = words.slice(0, wordCount).join(" ");
-  if (segment.length < 2) return segment + segment; // fallback
+  // The correct text includes any leading whitespace
+  const correct = upcomingText.slice(0, leadingSpace + segment.length);
+
+  if (segment.length < 2) {
+    return { typo: segment + segment, correct };
+  }
 
   const strategy = randInt(0, 4);
   const chars = segment.split("");
 
+  let distorted: string;
   switch (strategy) {
     case 0: {
       // Adjacent-key replacement: replace 1-2 chars with keyboard neighbors
@@ -108,7 +115,8 @@ function generateSmartTypo(upcomingText: string): string {
             : replacement;
         }
       }
-      return chars.join("");
+      distorted = chars.join("");
+      break;
     }
     case 1: {
       // Letter transposition: swap two adjacent letters
@@ -116,13 +124,15 @@ function generateSmartTypo(upcomingText: string): string {
         const idx = randInt(0, chars.length - 2);
         [chars[idx], chars[idx + 1]] = [chars[idx + 1], chars[idx]];
       }
-      return chars.join("");
+      distorted = chars.join("");
+      break;
     }
     case 2: {
       // Double letter: repeat a random character
       const idx = randInt(0, chars.length - 1);
       chars.splice(idx, 0, chars[idx]);
-      return chars.join("");
+      distorted = chars.join("");
+      break;
     }
     case 3: {
       // Dropped letter: remove a random character
@@ -130,7 +140,8 @@ function generateSmartTypo(upcomingText: string): string {
         const idx = randInt(0, chars.length - 1);
         chars.splice(idx, 1);
       }
-      return chars.join("");
+      distorted = chars.join("");
+      break;
     }
     case 4: {
       // Phonetic swap: common misspelling patterns
@@ -146,7 +157,6 @@ function generateSmartTypo(upcomingText: string): string {
         const idx = result.toLowerCase().indexOf(from);
         result = result.slice(0, idx) + to + result.slice(idx + from.length);
       } else {
-        // Fallback to adjacent-key
         const idx2 = randInt(0, chars.length - 1);
         const lower = chars[idx2].toLowerCase();
         const neighbors = NEIGHBORS[lower];
@@ -155,11 +165,29 @@ function generateSmartTypo(upcomingText: string): string {
         }
         result = chars.join("");
       }
-      return result;
+      distorted = result;
+      break;
     }
     default:
-      return segment;
+      distorted = segment;
   }
+
+  // Ensure the typo is actually different from the correct text
+  if (distorted === segment) {
+    // Force at least one adjacent-key swap
+    const forceChars = segment.split("");
+    const idx = randInt(0, forceChars.length - 1);
+    const lower = forceChars[idx].toLowerCase();
+    const neighbors = NEIGHBORS[lower];
+    if (neighbors) {
+      forceChars[idx] = neighbors[randInt(0, neighbors.length - 1)];
+    } else {
+      forceChars[idx] = forceChars[idx] + forceChars[idx];
+    }
+    distorted = forceChars.join("");
+  }
+
+  return { typo: distorted, correct };
 }
 
 // ── Shared Helpers ────────────────────────────────────────────────────────
@@ -234,15 +262,28 @@ function buildHumanPlan(
         });
       }
 
+      const { typo, correct } = generateSmartTypo(afterTypo);
+      const remainder = afterTypo.slice(correct.length);
+
       textActions.push({
         kind: "typo",
-        text: afterTypo,
-        typoChars: generateSmartTypo(afterTypo),
+        text: correct,
+        typoChars: typo,
         delayMs: 0,
         activity: "Correcting typo…",
       });
 
-      charsSinceLastTypo = afterTypo.length;
+      // Insert the rest of the chunk after the typo correction
+      if (remainder.length > 0) {
+        textActions.push({
+          kind: "insert",
+          text: remainder,
+          delayMs: 0,
+          activity: "Typing…",
+        });
+      }
+
+      charsSinceLastTypo = remainder.length;
       nextTypoAt = randInt(typoMin, typoMax);
     } else {
       textActions.push({
@@ -315,7 +356,8 @@ const BURST_PAUSE_ACTIVITIES = [
  * Duration is auto-calculated from text length + randomized session structure.
  *
  * Each session: 1-8 min of active typing at 25-45 WPM.
- * Between sessions: configurable pauses (1-25 min based on pauseVariance).
+ * Between sessions: realistic human breaks (1 min to 2 hours based on pauseVariance).
+ * Like a real person: type, grab food, come back, type more, take a shower, etc.
  */
 function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
   const typoFreq = options.typoFrequency ?? 0.5;
@@ -341,9 +383,9 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
 
     // Inter-session pause (not before first session)
     if (sessionIndex > 0) {
-      // pauseVariance 0 → 1-4 min, 0.5 → 4.5-14.5 min, 1 → 8-25 min
-      const minPauseMin = 1 + pauseVar * 7;
-      const maxPauseMin = 4 + pauseVar * 21;
+      // pauseVar 0 → 1-5 min, 0.25 → 3-15 min, 0.5 → 5-30 min, 0.75 → 10-60 min, 1 → 30-120 min
+      const minPauseMin = 1 + pauseVar * 29;   // 1 → 30
+      const maxPauseMin = 5 + pauseVar * 115;  // 5 → 120
       const pauseMs = randFloat(minPauseMin, maxPauseMin) * 60_000;
 
       actions.push({
@@ -386,15 +428,28 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
           });
         }
 
+        const { typo, correct } = generateSmartTypo(after);
+        const remainder = after.slice(correct.length);
+
         actions.push({
           kind: "typo",
-          text: after,
-          typoChars: generateSmartTypo(after),
+          text: correct,
+          typoChars: typo,
           delayMs: randInt(800, 2500),
           activity: "Correcting typo…",
         });
 
-        charsSinceTypo = after.length;
+        // Insert the rest of the chunk after the typo correction
+        if (remainder.length > 0) {
+          actions.push({
+            kind: "insert",
+            text: remainder,
+            delayMs: randInt(1000, 4000),
+            activity: "Typing…",
+          });
+        }
+
+        charsSinceTypo = remainder.length;
         nextTypoAt = randInt(typoMin, typoMax);
       } else {
         actions.push({

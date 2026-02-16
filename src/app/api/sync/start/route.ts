@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildDripPlan, type PaceMode } from "@/lib/drip-engine";
-import { createJobId, setJob, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
+import { createJobId, setJob, setPayload, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
 
 export const dynamic = "force-dynamic";
 
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
   };
   await setJob(job);
 
-  // Build payload for the process endpoint
+  // Build payload for the process endpoint — also persist to Redis for pause/resume
   const payload: SyncJobPayload = {
     jobId,
     accessToken: token || "",
@@ -84,6 +84,8 @@ export async function POST(req: NextRequest) {
     totalMinutes: plan.totalMinutes,
     startTime: now,
   };
+
+  await setPayload(payload);
 
   // Fire-and-forget: kick off background processing
   const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;

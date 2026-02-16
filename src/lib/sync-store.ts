@@ -51,8 +51,11 @@ function getRedis(): Redis | null {
   });
 }
 
+const PAYLOAD_PREFIX = "syncpayload:";
+
 // Fallback in-memory store for local dev without Redis
 const localJobs = new Map<string, SyncJob>();
+const localPayloads = new Map<string, SyncJobPayload>();
 
 export async function getJob(id: string): Promise<SyncJob | null> {
   const redis = getRedis();
@@ -76,8 +79,28 @@ export async function deleteJob(id: string): Promise<void> {
   const redis = getRedis();
   if (redis) {
     await redis.del(`${KEY_PREFIX}${id}`);
+    await redis.del(`${PAYLOAD_PREFIX}${id}`);
   } else {
     localJobs.delete(id);
+    localPayloads.delete(id);
+  }
+}
+
+export async function getPayload(id: string): Promise<SyncJobPayload | null> {
+  const redis = getRedis();
+  if (redis) {
+    const data = await redis.get<SyncJobPayload>(`${PAYLOAD_PREFIX}${id}`);
+    return data ?? null;
+  }
+  return localPayloads.get(id) ?? null;
+}
+
+export async function setPayload(payload: SyncJobPayload): Promise<void> {
+  const redis = getRedis();
+  if (redis) {
+    await redis.set(`${PAYLOAD_PREFIX}${payload.jobId}`, payload, { ex: JOB_TTL_SECONDS });
+  } else {
+    localPayloads.set(payload.jobId, payload);
   }
 }
 

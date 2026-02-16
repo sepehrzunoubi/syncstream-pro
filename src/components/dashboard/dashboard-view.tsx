@@ -211,6 +211,9 @@ export function DashboardView() {
           // External cancellation
           setSyncStatus("idle");
           saveJobId(null);
+        } else if (data.jobStatus === "paused") {
+          // Server confirmed pause — keep jobId for resume
+          setSyncStatus("paused");
         }
       } catch {
         // Polling error — keep trying
@@ -228,31 +231,51 @@ export function DashboardView() {
     if (isTransitioning || syncStatus !== "syncing") return;
     setIsTransitioning(true);
 
-    // Cancel the background job
+    // Pause the background job (keeps the plan in Redis for resume)
     if (jobIdRef.current) {
       try {
-        await fetch("/api/sync/cancel", {
+        await fetch("/api/sync/pause", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jobId: jobIdRef.current }),
         });
       } catch { /* best effort */ }
-      saveJobId(null);
+      // Keep jobId — we need it for resume
     }
-
-    // Save absolute position: previous paused position + chars sent in this session
-    const currentSessionChars = lastCharsSentRef.current;
-    setPausedCharsSent((prev) => prev + currentSessionChars);
-    lastCharsSentRef.current = 0;
 
     setSyncStatus("paused");
     setIsTransitioning(false);
   }, [isTransitioning, syncStatus]);
 
-  const resumeSync = useCallback(() => {
-    if (isTransitioning || syncStatus !== "paused") return;
-    startSync(pausedCharsSent);
-  }, [startSync, pausedCharsSent, isTransitioning, syncStatus]);
+  const resumeSync = useCallback(async () => {
+    if (isTransitioning || syncStatus !== "paused" || !jobIdRef.current) return;
+    setIsTransitioning(true);
+    setSyncStatus("syncing");
+
+    try {
+      const res = await fetch("/api/sync/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: jobIdRef.current }),
+      });
+
+      if (!res.ok) {
+        // Fallback: if resume fails (payload lost), restart from scratch
+        console.error("Resume failed, falling back to restart");
+        setSyncStatus("paused");
+        setIsTransitioning(false);
+        return;
+      }
+
+      // Re-trigger polling by updating activeJobId
+      setActiveJobId(jobIdRef.current);
+    } catch (err) {
+      console.error("Resume error:", err);
+      setSyncStatus("paused");
+    } finally {
+      setIsTransitioning(false);
+    }
+  }, [isTransitioning, syncStatus]);
 
   const resetSync = useCallback(() => {
     if (isTransitioning) return;
@@ -391,7 +414,7 @@ export function DashboardView() {
 
   return (
     <div className="flex flex-1 items-center justify-center bg-transparent p-4 md:p-8 relative overflow-hidden">
-      <div className="w-full max-w-7xl max-h-[85vh] p-4 md:p-6 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-y-auto relative shadow-2xl z-10">
+      <div className="w-full max-w-7xl max-h-[85vh] p-4 md:p-6 pb-1 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-y-auto relative shadow-2xl z-10">
 
         {/* ═══ Neon Pulse Bar — 2px at very top ═══ */}
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/[0.02]">
@@ -513,7 +536,7 @@ export function DashboardView() {
         </div>
 
         {/* ═══ Action Bar ═══ */}
-        <div className="flex items-center justify-center gap-3 py-1">
+        <div className="flex items-center justify-center gap-3 py-3">
           {syncStatus === "idle" && (
             <button
               onClick={() => startSync(0)}

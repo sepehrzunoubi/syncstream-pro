@@ -5,7 +5,7 @@ import {
   deleteRange,
   refreshAccessToken,
 } from "@/lib/google";
-import { getJob, setJob, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
+import { getJob, setJob, setPayload, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 minutes max on Vercel Pro
@@ -24,6 +24,14 @@ export async function POST(req: NextRequest) {
   let { accessToken, currentAction, charsSent } = payload;
 
   const totalActions = actions.length;
+
+  // Helper: save current position to payload for resume
+  async function savePosition() {
+    await setPayload({
+      jobId, accessToken, refreshToken, documentId,
+      actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
+    });
+  }
 
   // Check if job was cancelled
   const existingJob = await getJob(jobId);
@@ -101,9 +109,10 @@ export async function POST(req: NextRequest) {
   // ── Main processing loop ────────────────────────────────────────────────
   try {
     while (currentAction < totalActions) {
-      // Check cancellation
+      // Check cancellation/pause
       const check = await getJob(jobId);
       if (check && (check.status === "cancelled" || check.status === "paused")) {
+        if (check.status === "paused") await savePosition();
         return NextResponse.json({ status: check.status });
       }
 
@@ -130,9 +139,10 @@ export async function POST(req: NextRequest) {
           await sleep(chunk);
           remaining -= chunk;
 
-          // Check cancellation during long waits
+          // Check cancellation/pause during long waits
           const mid = await getJob(jobId);
           if (mid && (mid.status === "cancelled" || mid.status === "paused")) {
+            if (mid.status === "paused") await savePosition();
             return NextResponse.json({ status: mid.status });
           }
 
