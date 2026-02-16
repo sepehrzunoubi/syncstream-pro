@@ -250,7 +250,6 @@ export function DashboardView() {
   const resumeSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "paused" || !jobIdRef.current) return;
     setIsTransitioning(true);
-    setSyncStatus("syncing");
 
     try {
       const res = await fetch("/api/sync/resume", {
@@ -260,18 +259,16 @@ export function DashboardView() {
       });
 
       if (!res.ok) {
-        // Fallback: if resume fails (payload lost), restart from scratch
-        console.error("Resume failed, falling back to restart");
-        setSyncStatus("paused");
+        console.error("Resume failed");
         setIsTransitioning(false);
         return;
       }
 
-      // Re-trigger polling by updating activeJobId
+      // Only start polling AFTER the server has marked the job as running
+      setSyncStatus("syncing");
       setActiveJobId(jobIdRef.current);
     } catch (err) {
       console.error("Resume error:", err);
-      setSyncStatus("paused");
     } finally {
       setIsTransitioning(false);
     }
