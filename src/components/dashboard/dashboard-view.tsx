@@ -51,6 +51,7 @@ export function DashboardView() {
       localStorage.setItem("syncstream_active_job", id);
     } else {
       localStorage.removeItem("syncstream_active_job");
+      localStorage.removeItem("syncstream_settings");
     }
   };
 
@@ -73,13 +74,25 @@ export function DashboardView() {
           setActiveJobId(savedJobId);
           setMetrics(data.event);
           setSyncStatus("syncing");
+
+          // Restore UI settings from the session that started this job
+          try {
+            const saved = JSON.parse(localStorage.getItem("syncstream_settings") || "");
+            if (saved.rhythm) setRhythm(saved.rhythm);
+            if (saved.durationMinutes) setDurationMinutes(saved.durationMinutes);
+            if (saved.typoFrequency !== undefined) setTypoFrequency(saved.typoFrequency);
+            if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
+            if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
+          } catch { /* no saved settings */ }
         } else if (data.jobStatus === "done") {
           setMetrics(data.event);
           setPausedCharsSent(data.event.totalChars ?? 0);
           setSyncStatus("done");
           localStorage.removeItem("syncstream_active_job");
+          localStorage.removeItem("syncstream_settings");
         } else {
           localStorage.removeItem("syncstream_active_job");
+          localStorage.removeItem("syncstream_settings");
         }
       })
       .catch(() => {
@@ -158,6 +171,11 @@ export function DashboardView() {
     setMetrics(null);
     lastCharsSentRef.current = 0;
     syncStartRef.current = Date.now();
+
+    // Persist UI settings so they survive tab close/reopen
+    localStorage.setItem("syncstream_settings", JSON.stringify({
+      rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId,
+    }));
 
     // Small delay to ensure UI updates before fetch starts
     await new Promise(r => setTimeout(r, 50));
