@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import React, { useEffect, useId, useMemo, useState } from "react";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { type ISourceOptions } from "@tsparticles/engine";
 import { loadSlim } from "@tsparticles/slim";
@@ -23,7 +23,7 @@ function ensureEngine(): Promise<void> {
   return enginePromise;
 }
 
-export function ParticlesBackground() {
+export const ParticlesBackground = React.memo(function ParticlesBackground() {
   const [init, setInit] = useState(engineReady);
   const uniqueId = useId();
 
@@ -108,4 +108,4 @@ export function ParticlesBackground() {
       className="absolute inset-0 z-0 pointer-events-none"
     />
   );
-}
+});

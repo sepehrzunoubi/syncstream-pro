@@ -51,6 +51,7 @@ export interface StreamEvent {
   activity: string;
   status: string;
   error?: string;
+  nextTypoAction?: number;
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -63,30 +64,114 @@ function randFloat(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }
 
-const TYPO_CHARS = "abcdefghijklmnopqrstuvwxyz";
-function generateTypoChars(len: number): string {
-  let s = "";
-  for (let i = 0; i < len; i++) {
-    s += TYPO_CHARS[randInt(0, TYPO_CHARS.length - 1)];
+/** Keyboard neighbor map for realistic fat-finger typos */
+const NEIGHBORS: Record<string, string[]> = {
+  a: ["s", "q", "z"], b: ["v", "n", "g"], c: ["x", "v", "d"],
+  d: ["s", "f", "e", "c"], e: ["w", "r", "d"], f: ["d", "g", "r", "v"],
+  g: ["f", "h", "t", "b"], h: ["g", "j", "y", "n"], i: ["u", "o", "k"],
+  j: ["h", "k", "u", "n"], k: ["j", "l", "i", "m"], l: ["k", "o", "p"],
+  m: ["n", "k", "l"], n: ["b", "m", "h", "j"], o: ["i", "p", "l"],
+  p: ["o", "l"], q: ["w", "a"], r: ["e", "t", "f"],
+  s: ["a", "d", "w", "z"], t: ["r", "y", "g"], u: ["y", "i", "j"],
+  v: ["c", "b", "f", "g"], w: ["q", "e", "s"], x: ["z", "c", "s"],
+  y: ["t", "u", "h"], z: ["a", "x", "s"],
+};
+
+/**
+ * Generate a smart typo from the upcoming text.
+ * Strategies: adjacent-key swap, letter transposition, double letter, dropped letter, phonetic swap.
+ */
+function generateSmartTypo(upcomingText: string): string {
+  // Find the first word (or first few chars) to distort
+  const trimmed = upcomingText.trimStart();
+  const words = trimmed.split(/\s+/);
+  // Pick 1-3 words to form the typo segment
+  const wordCount = Math.min(words.length, randInt(1, 3));
+  const segment = words.slice(0, wordCount).join(" ");
+  if (segment.length < 2) return segment + segment; // fallback
+
+  const strategy = randInt(0, 4);
+  const chars = segment.split("");
+
+  switch (strategy) {
+    case 0: {
+      // Adjacent-key replacement: replace 1-2 chars with keyboard neighbors
+      const numReplacements = randInt(1, Math.min(2, chars.length));
+      for (let r = 0; r < numReplacements; r++) {
+        const idx = randInt(0, chars.length - 1);
+        const lower = chars[idx].toLowerCase();
+        const neighbors = NEIGHBORS[lower];
+        if (neighbors) {
+          const replacement = neighbors[randInt(0, neighbors.length - 1)];
+          chars[idx] = chars[idx] === chars[idx].toUpperCase()
+            ? replacement.toUpperCase()
+            : replacement;
+        }
+      }
+      return chars.join("");
+    }
+    case 1: {
+      // Letter transposition: swap two adjacent letters
+      if (chars.length >= 2) {
+        const idx = randInt(0, chars.length - 2);
+        [chars[idx], chars[idx + 1]] = [chars[idx + 1], chars[idx]];
+      }
+      return chars.join("");
+    }
+    case 2: {
+      // Double letter: repeat a random character
+      const idx = randInt(0, chars.length - 1);
+      chars.splice(idx, 0, chars[idx]);
+      return chars.join("");
+    }
+    case 3: {
+      // Dropped letter: remove a random character
+      if (chars.length > 2) {
+        const idx = randInt(0, chars.length - 1);
+        chars.splice(idx, 1);
+      }
+      return chars.join("");
+    }
+    case 4: {
+      // Phonetic swap: common misspelling patterns
+      let result = segment;
+      const swaps: [string, string][] = [
+        ["th", "ht"], ["ie", "ei"], ["ea", "ae"], ["ou", "uo"],
+        ["er", "re"], ["an", "na"], ["in", "ni"], ["on", "no"],
+        ["ti", "it"], ["es", "se"], ["al", "la"], ["en", "ne"],
+      ];
+      const applicable = swaps.filter(([from]) => result.toLowerCase().includes(from));
+      if (applicable.length > 0) {
+        const [from, to] = applicable[randInt(0, applicable.length - 1)];
+        const idx = result.toLowerCase().indexOf(from);
+        result = result.slice(0, idx) + to + result.slice(idx + from.length);
+      } else {
+        // Fallback to adjacent-key
+        const idx2 = randInt(0, chars.length - 1);
+        const lower = chars[idx2].toLowerCase();
+        const neighbors = NEIGHBORS[lower];
+        if (neighbors) {
+          chars[idx2] = neighbors[randInt(0, neighbors.length - 1)];
+        }
+        result = chars.join("");
+      }
+      return result;
+    }
+    default:
+      return segment;
   }
-  return s;
 }
-
-// ── Constants ──────────────────────────────────────────────────────────────
-
-const TYPO_WRONG_MIN = 3;         // 3-8 wrong characters
-const TYPO_WRONG_MAX = 8;
 
 // ── Shared Helpers ────────────────────────────────────────────────────────
 
 /**
  * Compute dynamic typo interval from typoFrequency (0-1).
- * 0 → ~800 char interval (rare), 1 → ~120 char interval (frequent).
+ * 0 → ~300 char interval (rare), 1 → ~40 char interval (frequent).
  */
 function typoIntervalRange(typoFrequency: number): [number, number] {
-  const center = Math.round(800 - typoFrequency * 680); // 800 → 120
-  const spread = Math.round(center * 0.2);
-  return [Math.max(60, center - spread), center + spread];
+  const center = Math.round(300 - typoFrequency * 260); // 300 → 40
+  const spread = Math.round(center * 0.25);
+  return [Math.max(20, center - spread), center + spread];
 }
 
 /**
@@ -152,7 +237,7 @@ function buildHumanPlan(
       textActions.push({
         kind: "typo",
         text: afterTypo,
-        typoChars: generateTypoChars(randInt(TYPO_WRONG_MIN, TYPO_WRONG_MAX)),
+        typoChars: generateSmartTypo(afterTypo),
         delayMs: 0,
         activity: "Correcting typo…",
       });
@@ -290,7 +375,7 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
         actions.push({
           kind: "typo",
           text: after,
-          typoChars: generateTypoChars(randInt(TYPO_WRONG_MIN, TYPO_WRONG_MAX)),
+          typoChars: generateSmartTypo(after),
           delayMs: randInt(800, 2500),
           activity: "Correcting typo…",
         });

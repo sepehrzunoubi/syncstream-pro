@@ -106,6 +106,19 @@ export async function POST(req: NextRequest) {
         return actionIdx < totalActions ? remainingDelayFromIndex[actionIdx] : 0;
       }
 
+      // Pre-compute typo action indices for "Next Typo" stat
+      const typoActionIndices: number[] = [];
+      for (let t = 0; t < totalActions; t++) {
+        if (plan.actions[t].kind === "typo") typoActionIndices.push(t);
+      }
+
+      function getNextTypoAction(currentIdx: number): number | undefined {
+        for (const ti of typoActionIndices) {
+          if (ti > currentIdx) return ti;
+        }
+        return undefined;
+      }
+
       function emit(event: StreamEvent) {
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
@@ -136,6 +149,7 @@ export async function POST(req: NextRequest) {
               wpm: calcWpm(),
               activity,
               status: `Action ${actionIdx + 1}/${totalActions}`,
+              nextTypoAction: getNextTypoAction(actionIdx),
             });
           }
         }
@@ -168,6 +182,7 @@ export async function POST(req: NextRequest) {
               wpm: calcWpm(),
               activity: action.activity,
               status: `Action ${i + 1}/${totalActions}`,
+              nextTypoAction: getNextTypoAction(i),
             });
           } else if (action.kind === "typo") {
             // Step 1: Insert wrong characters
@@ -186,6 +201,7 @@ export async function POST(req: NextRequest) {
               wpm: calcWpm(),
               activity: "Correcting typo\u2026",
               status: `Action ${i + 1}/${totalActions}`,
+              nextTypoAction: getNextTypoAction(i),
             });
 
             // Pause to simulate noticing the typo
@@ -217,6 +233,7 @@ export async function POST(req: NextRequest) {
               wpm: calcWpm(),
               activity: action.activity,
               status: `Action ${i + 1}/${totalActions}`,
+              nextTypoAction: getNextTypoAction(i),
             });
           } else if (action.kind === "pause" || action.kind === "heartbeat") {
             // Just send a heartbeat/status update
@@ -231,6 +248,7 @@ export async function POST(req: NextRequest) {
               wpm: calcWpm(),
               activity: action.activity,
               status: `Action ${i + 1}/${totalActions}`,
+              nextTypoAction: getNextTypoAction(i),
             });
           }
         } catch (error) {

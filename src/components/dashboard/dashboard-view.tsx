@@ -268,11 +268,8 @@ export function DashboardView() {
 
   const nextSyncSec = (nextSyncCountdown / 1000).toFixed(1);
 
-  // Source word count for Word Count stat and Est. WPM
+  // Source word count for Word Count stat
   const sourceWordCount = sourceText.trim() ? sourceText.trim().split(/\s+/).filter(w => w.length > 0).length : 0;
-  const estWPM = sourceWordCount > 0 && durationMinutes > 0
-    ? Math.round(sourceWordCount / durationMinutes)
-    : 0;
 
   // Keep startSyncRef pointing at the latest startSync
   useEffect(() => {
@@ -374,8 +371,14 @@ export function DashboardView() {
             active={isBusy}
           />
           <StatCard
-            label="Est. WPM"
-            value={isBusy && metrics?.wpm ? String(metrics.wpm) : estWPM > 0 ? String(estWPM) : "--"}
+            label="Next Typo"
+            value={
+              isBusy && metrics?.nextTypoAction != null
+                ? `#${metrics.nextTypoAction + 1}`
+                : syncStatus === "done"
+                ? "Done"
+                : "--"
+            }
             active={isBusy}
           />
         </div>

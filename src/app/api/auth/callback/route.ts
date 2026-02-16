@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(new URL("/?error=no_access_token", baseUrl));
     }
 
-    const response = NextResponse.redirect(new URL("/", baseUrl));
+    const response = NextResponse.redirect(new URL("/dashboard", baseUrl));
 
     response.cookies.set("google_access_token", tokens.access_token, {
       httpOnly: true,
