@@ -22,15 +22,27 @@ export async function POST(req: NextRequest) {
     startTime,
   } = payload;
   let { accessToken, currentAction, charsSent } = payload;
+  let resumeRemainingDelayMs = payload.remainingDelayMs ?? 0;
 
   const totalActions = actions.length;
 
-  // Helper: save current position to payload for resume
-  async function savePosition() {
+  // Helper: save current position + remaining delay for resume
+  async function savePosition(remainingDelayMs = 0) {
     await setPayload({
       jobId, accessToken, refreshToken, documentId,
       actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
+      remainingDelayMs,
     });
+  }
+
+  // Helper: check if paused/cancelled, save position if paused
+  async function checkPaused(remainingDelayMs = 0): Promise<boolean> {
+    const job = await getJob(jobId);
+    if (job && (job.status === "cancelled" || job.status === "paused")) {
+      if (job.status === "paused") await savePosition(remainingDelayMs);
+      return true;
+    }
+    return false;
   }
 
   // Check if job was cancelled
@@ -110,20 +122,18 @@ export async function POST(req: NextRequest) {
   try {
     while (currentAction < totalActions) {
       // Check cancellation/pause
-      const check = await getJob(jobId);
-      if (check && (check.status === "cancelled" || check.status === "paused")) {
-        if (check.status === "paused") await savePosition();
-        return NextResponse.json({ status: check.status });
+      if (await checkPaused()) {
+        return NextResponse.json({ status: "paused" });
       }
 
       // Check if we need to self-chain before timeout
       const elapsed = Date.now() - invocationStart;
       if (elapsed > (maxDuration * 1000) - SAFETY_MARGIN_MS) {
-        // Save state and self-chain
         await updateJobStore({ activity: "Chaining…" });
         await selfChain(req, {
           jobId, accessToken, refreshToken, documentId,
           actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
+          remainingDelayMs: resumeRemainingDelayMs,
         });
         return NextResponse.json({ status: "chained", currentAction });
       }
@@ -131,19 +141,19 @@ export async function POST(req: NextRequest) {
       const action = actions[currentAction];
 
       // Wait for delay (skip pre-delay for typo actions)
-      if (action.delayMs > 0 && action.kind !== "typo") {
-        // Split long delays into chunks to check for cancellation
-        let remaining = action.delayMs;
+      if (action.kind !== "typo") {
+        // Use saved remaining delay on resume, otherwise full delay
+        let remaining = resumeRemainingDelayMs > 0 ? resumeRemainingDelayMs : action.delayMs;
+        resumeRemainingDelayMs = 0; // consumed
+
         while (remaining > 0) {
-          const chunk = Math.min(remaining, 5000); // check every 5s
+          const chunk = Math.min(remaining, 3000); // check every 3s
           await sleep(chunk);
           remaining -= chunk;
 
-          // Check cancellation/pause during long waits
-          const mid = await getJob(jobId);
-          if (mid && (mid.status === "cancelled" || mid.status === "paused")) {
-            if (mid.status === "paused") await savePosition();
-            return NextResponse.json({ status: mid.status });
+          // Check pause — save how much delay is left
+          if (await checkPaused(remaining > 0 ? remaining : 0)) {
+            return NextResponse.json({ status: "paused" });
           }
 
           // Check timeout during long waits
@@ -153,33 +163,47 @@ export async function POST(req: NextRequest) {
             await selfChain(req, {
               jobId, accessToken, refreshToken, documentId,
               actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
+              remainingDelayMs: remaining,
             });
             return NextResponse.json({ status: "chained", currentAction });
           }
 
           await updateJobStore({ activity: action.activity });
         }
+      } else {
+        resumeRemainingDelayMs = 0; // consumed for typo actions too
       }
 
       // Execute the action
       if (action.kind === "insert" && action.text.length > 0) {
+        if (await checkPaused()) return NextResponse.json({ status: "paused" });
         const endIdx = await withTokenRefresh((t) => getDocEndIndex(t, documentId));
         await withTokenRefresh((t) => insertAtIndex(t, documentId, action.text, endIdx - 1));
         charsSent += action.text.length;
         await updateJobStore({ activity: "Typing…" });
 
       } else if (action.kind === "typo") {
-        // Step 1: Insert wrong characters
-        const endIdx = await withTokenRefresh((t) => getDocEndIndex(t, documentId));
         const typoText = action.typoChars || "xxxxx";
-        await withTokenRefresh((t) => insertAtIndex(t, documentId, typoText, endIdx - 1));
 
+        // Step 1: Insert wrong characters
+        if (await checkPaused()) return NextResponse.json({ status: "paused" });
+        const endIdx = await withTokenRefresh((t) => getDocEndIndex(t, documentId));
+        await withTokenRefresh((t) => insertAtIndex(t, documentId, typoText, endIdx - 1));
         await updateJobStore({ activity: "Correcting typo…" });
 
-        // Step 2: Pause to simulate noticing the typo
-        await sleep(action.delayMs);
+        // Step 2: Pause to simulate noticing the typo (with pause checks)
+        {
+          let typoRemaining = action.delayMs;
+          while (typoRemaining > 0) {
+            const chunk = Math.min(typoRemaining, 1000);
+            await sleep(chunk);
+            typoRemaining -= chunk;
+            if (await checkPaused()) return NextResponse.json({ status: "paused" });
+          }
+        }
 
         // Step 3: Delete the wrong characters
+        if (await checkPaused()) return NextResponse.json({ status: "paused" });
         const endIdx2 = await withTokenRefresh((t) => getDocEndIndex(t, documentId));
         const deleteEnd = endIdx2 - 1;
         const deleteStart = Math.max(1, deleteEnd - typoText.length);
@@ -189,6 +213,7 @@ export async function POST(req: NextRequest) {
 
         // Step 4: Insert correct text
         if (action.text.length > 0) {
+          if (await checkPaused()) return NextResponse.json({ status: "paused" });
           const endIdx3 = await withTokenRefresh((t) => getDocEndIndex(t, documentId));
           await withTokenRefresh((t) => insertAtIndex(t, documentId, action.text, endIdx3 - 1));
           charsSent += action.text.length;

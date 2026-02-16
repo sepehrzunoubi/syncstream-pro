@@ -32,6 +32,8 @@ export interface SyncJobPayload {
   totalChars: number;
   totalMinutes: number;
   startTime: number;
+  /** Remaining delay for current action when paused mid-delay */
+  remainingDelayMs?: number;
 }
 
 // ── Upstash Redis store ────────────────────────────────────────────────────
