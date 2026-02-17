@@ -28,6 +28,9 @@ yarn-error.log*
 # local env files
 .env*.local
 
+# OAuth credential exports (never commit)
+public/client_secret*.json
+
 # vercel
 .vercel
 

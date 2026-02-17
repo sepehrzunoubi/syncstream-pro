@@ -29,12 +29,26 @@ npm install
 
 ### 3. Set environment variables
 
-Edit `.env.local`:
+Copy `.env.example` to `.env.local` and fill in real values:
+
+```bash
+cp .env.example .env.local
+```
+
+Then edit `.env.local`:
 
 ```env
 GOOGLE_CLIENT_ID=your-actual-client-id
 GOOGLE_CLIENT_SECRET=your-actual-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/callback
+NEXT_PUBLIC_BASE_URL=http://localhost:3000
+```
+
+For Vercel/production, set the same variables in **Project Settings → Environment Variables** (do not commit secrets), and set:
+
+```env
+GOOGLE_REDIRECT_URI=https://your-domain.com/api/auth/callback
+NEXT_PUBLIC_BASE_URL=https://your-domain.com
 ```
 
 ### 4. Run the dev server
