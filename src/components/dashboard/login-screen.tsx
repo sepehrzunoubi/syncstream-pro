@@ -399,6 +399,10 @@ export function LoginScreen() {
             />
             <span className="text-xs text-zinc-600">SyncStream</span>
           </div>
+          <div className="flex items-center gap-4">
+            <a href="/privacy" className="text-xs text-zinc-600 hover:text-zinc-300 transition-colors">Privacy Policy</a>
+            <a href="/tos" className="text-xs text-zinc-600 hover:text-zinc-300 transition-colors">Terms of Service</a>
+          </div>
           <span className="text-xs text-zinc-600">
             &copy; {new Date().getFullYear()} SyncStream
           </span>

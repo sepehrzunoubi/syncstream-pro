@@ -16,6 +16,8 @@ import {
   RotateCcw,
   ShieldCheck,
   Loader2,
+  FileText,
+  Shield,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -727,6 +729,36 @@ function SettingsPanel({
                 https://{scope}
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* ═══ Legal ═══ */}
+        <div className="card-sovereign p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <FileText className="h-4 w-4 text-zinc-500" />
+            <div className="text-[0.55rem] font-bold uppercase tracking-[1.5px] text-zinc-600">
+              Legal
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href="/privacy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#09090b] border border-white/[0.06] hover:border-zinc-500/30 text-zinc-400 hover:text-zinc-200 text-[12px] font-semibold transition-all"
+            >
+              <Shield className="w-3.5 h-3.5" />
+              Privacy Policy
+            </a>
+            <a
+              href="/tos"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#09090b] border border-white/[0.06] hover:border-zinc-500/30 text-zinc-400 hover:text-zinc-200 text-[12px] font-semibold transition-all"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Terms of Service
+            </a>
           </div>
         </div>
       </div>
