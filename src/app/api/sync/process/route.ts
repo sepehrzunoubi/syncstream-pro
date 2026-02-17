@@ -29,6 +29,17 @@ export async function POST(req: NextRequest) {
 
   const totalActions = actions.length;
 
+  // V2 burst: read mandatory pause state from the existing job
+  let mandatoryPauses: number[] | undefined;
+  let completedPauses: number[] = [];
+  {
+    const existingForV2 = await getJob(jobId);
+    if (existingForV2) {
+      mandatoryPauses = existingForV2.mandatoryPauses;
+      completedPauses = existingForV2.completedPauses ?? [];
+    }
+  }
+
   // Helper: save current position + remaining delay for resume
   async function savePosition(remainingDelayMs = 0) {
     await setPayload({
@@ -107,6 +118,17 @@ export async function POST(req: NextRequest) {
     return undefined;
   }
 
+  // Find next pause action (>60s delay or mandatory) after a given index
+  function getNextPauseAction(afterIdx: number): number | undefined {
+    for (let t = afterIdx + 1; t < totalActions; t++) {
+      if (actions[t].mandatoryPauseIndex != null) return t;
+      if (actions[t].kind === "pause" && actions[t].delayMs >= 60_000) return t;
+      // Also flag inter-burst gaps (non-pause actions with long delays)
+      if (actions[t].delayMs >= 60_000) return t;
+    }
+    return undefined;
+  }
+
   async function updateJobStore(overrides: Partial<SyncJob> = {}) {
     const job: SyncJob = {
       id: jobId,
@@ -124,9 +146,12 @@ export async function POST(req: NextRequest) {
         ? Date.now() + actions[currentAction].delayMs
         : undefined,
       nextTypoAction: getNextTypoAction(currentAction),
+      nextPauseAction: getNextPauseAction(currentAction),
       startTime,
       lastUpdate: Date.now(),
       generation: myGeneration,
+      mandatoryPauses,
+      completedPauses,
       ...overrides,
     };
     await setJob(job);
@@ -266,6 +291,10 @@ export async function POST(req: NextRequest) {
         await updateJobStore({ activity: "Typing…" });
       }
       // pause/heartbeat actions just consumed their delay above
+      // V2 burst: if this was a mandatory pause, mark it completed
+      if (action.mandatoryPauseIndex != null && !completedPauses.includes(action.mandatoryPauseIndex)) {
+        completedPauses = [...completedPauses, action.mandatoryPauseIndex];
+      }
 
       currentAction++;
       await updateJobStore();

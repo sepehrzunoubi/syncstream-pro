@@ -24,6 +24,7 @@ export function DashboardView() {
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [typoFrequency, setTypoFrequency] = useState(0.5);
   const [pauseVariance, setPauseVariance] = useState(0.5);
+  const [burstVersion, setBurstVersion] = useState<1 | 2>(1);
 
   // Schedule state
   const [isScheduled, setIsScheduled] = useState(false);
@@ -106,6 +107,7 @@ export function DashboardView() {
             if (saved.typoFrequency !== undefined) setTypoFrequency(saved.typoFrequency);
             if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
             if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
+            if (saved.burstVersion) setBurstVersion(saved.burstVersion);
           } catch { /* no saved settings */ }
         } else if (data.jobStatus === "paused") {
           // Restore paused state
@@ -121,6 +123,7 @@ export function DashboardView() {
             if (saved.typoFrequency !== undefined) setTypoFrequency(saved.typoFrequency);
             if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
             if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
+            if (saved.burstVersion) setBurstVersion(saved.burstVersion);
           } catch { /* no saved settings */ }
         } else if (data.jobStatus === "done") {
           setMetrics(data.event);
@@ -227,7 +230,7 @@ export function DashboardView() {
 
     // Persist UI settings so they survive tab close/reopen
     localStorage.setItem("syncstream_settings", JSON.stringify({
-      rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId,
+      rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId, burstVersion,
     }));
     localStorage.setItem("syncstream_progress", JSON.stringify({
       pausedCharsSent: 0, baselineWordCount: baseline, realWordCount: baseline,
@@ -254,6 +257,7 @@ export function DashboardView() {
           durationMinutes: adjustedDuration,
           typoFrequency,
           pauseVariance,
+          burstVersion: rhythm === "burst" ? burstVersion : undefined,
         }),
       });
 
@@ -271,7 +275,7 @@ export function DashboardView() {
       setSyncStatus("error");
       setIsTransitioning(false);
     }
-  }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, isTransitioning]);
+  }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, burstVersion, isTransitioning]);
 
   // Poll background job status while syncing
   useEffect(() => {
@@ -651,17 +655,53 @@ export function DashboardView() {
             active={isBusy}
           />
           <StatCard
-            label="Next Typo"
+            label={rhythm === "burst" ? "Next Pause" : "Next Typo"}
             value={
-              isBusy && metrics?.nextTypoAction != null
-                ? `#${metrics.nextTypoAction + 1}`
-                : syncStatus === "done"
-                ? "Done"
-                : "--"
+              rhythm === "burst"
+                ? (isBusy && metrics?.nextPauseAction != null
+                    ? `#${metrics.nextPauseAction + 1}`
+                    : syncStatus === "done" ? "Done" : "--")
+                : (isBusy && metrics?.nextTypoAction != null
+                    ? `#${metrics.nextTypoAction + 1}`
+                    : syncStatus === "done" ? "Done" : "--")
             }
             active={isBusy}
           />
         </div>
+
+        {/* ═══ V2 Mandatory Pause Checklist ═══ */}
+        {metrics?.mandatoryPauses && metrics.mandatoryPauses.length > 0 && (isBusy || isPaused || syncStatus === "done") && (
+          <div className="card-sovereign px-4 py-3 flex-shrink-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[0.5rem] font-bold uppercase tracking-[1.5px] text-zinc-600">
+                Pause Checkpoints
+              </span>
+              <span className="text-[0.5rem] font-mono text-purple-400/70">
+                {(metrics.completedPauses?.length ?? 0)}/{metrics.mandatoryPauses.length}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {metrics.mandatoryPauses.map((mins, i) => {
+                const done = metrics.completedPauses?.includes(i) ?? false;
+                return (
+                  <div
+                    key={i}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono transition-all ${
+                      done
+                        ? "bg-white/[0.02] border border-white/[0.04] text-zinc-700 line-through"
+                        : "bg-purple-500/8 border border-purple-500/20 text-purple-400"
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      done ? "bg-zinc-700" : "bg-purple-400 shadow-[0_0_4px_rgba(168,85,247,0.4)]"
+                    }`} />
+                    {mins}m
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* ═══ Main Body — 7/5 split ═══ */}
         <div className="grid grid-cols-12 gap-2.5 auto-rows-min">
@@ -718,6 +758,8 @@ export function DashboardView() {
                 scheduleCountdown={scheduleCountdown}
                 onScheduleSync={handleScheduleSync}
                 onCancelSchedule={cancelSchedule}
+                burstVersion={burstVersion}
+                onBurstVersionChange={setBurstVersion}
               />
             )}
           </div>

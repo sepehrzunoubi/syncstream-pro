@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
     durationMinutes = 30,
     typoFrequency = 0.5,
     pauseVariance = 0.5,
+    burstVersion = 1,
   } = body as {
     text: string;
     documentId: string;
@@ -56,6 +57,7 @@ export async function POST(req: NextRequest) {
     durationMinutes: number;
     typoFrequency: number;
     pauseVariance: number;
+    burstVersion?: 1 | 2;
   };
 
   if (!text || !documentId) {
@@ -74,10 +76,11 @@ export async function POST(req: NextRequest) {
   const clampedPauseVariance = Math.max(0, Math.min(1, pauseVariance));
 
   const mode: PaceMode = rhythmKey === "burst" ? "burst" : "human";
+  const clampedBurstVersion: 1 | 2 = burstVersion === 2 ? 2 : 1;
   const plan = buildDripPlan(text, durationMinutes, mode, {
     typoFrequency: clampedTypoFrequency,
     pauseVariance: clampedPauseVariance,
-  });
+  }, clampedBurstVersion);
 
   const jobId = createJobId();
   const now = Date.now();
@@ -97,6 +100,8 @@ export async function POST(req: NextRequest) {
     nextDelayMs: 0,
     startTime: now,
     lastUpdate: now,
+    mandatoryPauses: plan.mandatoryPauses,
+    completedPauses: plan.mandatoryPauses ? [] : undefined,
   };
   await setJob(job);
 

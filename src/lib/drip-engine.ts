@@ -31,12 +31,16 @@ export interface DripAction {
   delayMs: number;
   /** Human-readable activity label for the UI */
   activity: string;
+  /** V2 burst: index into the mandatoryPauses array (only set on mandatory pause actions) */
+  mandatoryPauseIndex?: number;
 }
 
 export interface DripPlan {
   actions: DripAction[];
   totalChars: number;
   totalMinutes: number;
+  /** V2 burst: mandatory pause durations in minutes (in execution order, already shuffled) */
+  mandatoryPauses?: number[];
 }
 
 export interface StreamEvent {
@@ -54,6 +58,12 @@ export interface StreamEvent {
   status: string;
   error?: string;
   nextTypoAction?: number;
+  /** Index of next significant pause action (burst modes) */
+  nextPauseAction?: number;
+  /** V2 burst: mandatory pause durations in minutes */
+  mandatoryPauses?: number[];
+  /** V2 burst: indices of completed mandatory pauses */
+  completedPauses?: number[];
   /** Timestamp of last server-side update — used for client-side stall detection */
   lastUpdate?: number;
 }
@@ -483,15 +493,189 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
  * @param durationMinutes Total sync duration (ignored in burst mode)
  * @param mode            "human" or "burst"
  * @param options         Typo frequency + pause variance
+ * @param burstVersion    1 = random gaps (default), 2 = mandatory pause checkpoints
  */
 export function buildDripPlan(
   text: string,
   durationMinutes: number,
   mode: PaceMode,
-  options: PlanOptions = {}
+  options: PlanOptions = {},
+  burstVersion: 1 | 2 = 1
 ): DripPlan {
   if (mode === "burst") {
-    return buildBurstPlan(text, options);
+    return burstVersion === 2
+      ? buildBurstV2Plan(text, options)
+      : buildBurstPlan(text, options);
   }
   return buildHumanPlan(text, durationMinutes, options);
+}
+
+// ── Burst V2: Mandatory Pause Checkpoints ────────────────────────────────
+
+const V2_PAUSE_ACTIVITIES = [
+  "Break — reviewing notes…",
+  "Break — stepped away…",
+  "Break — thinking…",
+  "Break — re-reading draft…",
+  "Break — researching…",
+  "Break — getting coffee…",
+];
+
+/**
+ * Determine mandatory pause durations (in minutes) based on word count.
+ * Each call generates slightly different durations for natural variation.
+ */
+function getMandatoryPauses(wordCount: number): number[] {
+  if (wordCount <= 100) {
+    // Very short: 3 pauses
+    return [
+      randInt(1, 3),
+      randInt(3, 6),
+      randInt(2, 4),
+    ];
+  }
+  if (wordCount <= 300) {
+    // Short essay: 4 pauses
+    return [
+      randInt(2, 4),
+      randInt(4, 8),
+      randInt(6, 12),
+      randInt(2, 5),
+    ];
+  }
+  if (wordCount <= 700) {
+    // Medium paper: 5 pauses
+    return [
+      randInt(2, 5),
+      randInt(4, 8),
+      randInt(8, 15),
+      randInt(5, 10),
+      randInt(3, 6),
+    ];
+  }
+  if (wordCount <= 1500) {
+    // Long paper: 5 pauses
+    return [
+      randInt(3, 7),
+      randInt(5, 12),
+      randInt(10, 20),
+      randInt(8, 15),
+      randInt(4, 8),
+    ];
+  }
+  // Very long (1500+): 5 pauses
+  return [
+    randInt(5, 10),
+    randInt(8, 15),
+    randInt(12, 25),
+    randInt(10, 20),
+    randInt(5, 12),
+  ];
+}
+
+/** Fisher-Yates shuffle (in place) */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = randInt(0, i);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Build a V2 burst plan: mandatory pause checkpoints + natural typing between them.
+ *
+ * The plan splits text into segments separated by mandatory pauses. Within each
+ * segment, text is dripped in small chunks with short delays (17-55s) just like V1.
+ * The mandatory pauses are shuffled so their durations appear in random order,
+ * making version history look non-systematic.
+ */
+function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
+  const typoFreq = options.typoFrequency ?? 0.5;
+  const [typoMin, typoMax] = typoIntervalRange(typoFreq);
+  const totalChars = text.length;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+  // Determine and shuffle mandatory pauses
+  const mandatoryPauses = shuffle(getMandatoryPauses(wordCount));
+  const numPauses = mandatoryPauses.length;
+
+  // Split text into small chunks
+  const allChunks = chunkText(text, randInt(50, 100));
+
+  // Distribute chunks across numPauses+1 segments
+  const numSegments = numPauses + 1;
+  const basePerSeg = Math.floor(allChunks.length / numSegments);
+  const remainder = allChunks.length % numSegments;
+
+  const segments: string[][] = [];
+  let offset = 0;
+  for (let s = 0; s < numSegments; s++) {
+    const count = basePerSeg + (s < remainder ? 1 : 0);
+    segments.push(allChunks.slice(offset, offset + count));
+    offset += count;
+  }
+
+  const actions: DripAction[] = [];
+  let charsSinceTypo = 0;
+  let nextTypoAt = randInt(typoMin, typoMax);
+  let isFirstChunk = true;
+
+  for (let seg = 0; seg < numSegments; seg++) {
+    const segChunks = segments[seg];
+
+    // Typing actions for this segment
+    for (const chunk of segChunks) {
+      const delay = isFirstChunk ? 0 : randInt(17_000, 55_000);
+      const activity = "Typing…";
+      isFirstChunk = false;
+
+      // Typo injection (same logic as V1)
+      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
+        const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
+        const before = chunk.slice(0, splitPoint);
+        const after = chunk.slice(splitPoint);
+
+        if (before.length > 0) {
+          actions.push({ kind: "insert", text: before, delayMs: delay, activity });
+        }
+
+        const { typo, correct } = generateSmartTypo(after);
+        const rest = after.slice(correct.length);
+
+        actions.push({
+          kind: "typo", text: correct, typoChars: typo,
+          delayMs: randInt(800, 2500), activity: "Correcting typo…",
+        });
+
+        if (rest.length > 0) {
+          actions.push({ kind: "insert", text: rest, delayMs: randInt(1000, 4000), activity: "Typing…" });
+        }
+
+        charsSinceTypo = rest.length;
+        nextTypoAt = randInt(typoMin, typoMax);
+      } else {
+        actions.push({ kind: "insert", text: chunk, delayMs: delay, activity });
+        charsSinceTypo += chunk.length;
+      }
+    }
+
+    // Insert mandatory pause after this segment (except after the last segment)
+    if (seg < numPauses) {
+      const pauseMin = mandatoryPauses[seg];
+      const pauseMs = pauseMin * 60_000;
+      actions.push({
+        kind: "pause",
+        text: "",
+        delayMs: pauseMs,
+        activity: V2_PAUSE_ACTIVITIES[randInt(0, V2_PAUSE_ACTIVITIES.length - 1)],
+        mandatoryPauseIndex: seg,
+      });
+    }
+  }
+
+  const totalMs = actions.reduce((sum, a) => sum + a.delayMs, 0);
+  const totalMinutes = Math.max(1, Math.ceil(totalMs / 60_000));
+
+  return { actions, totalChars, totalMinutes, mandatoryPauses };
 }
