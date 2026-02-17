@@ -357,9 +357,8 @@ const BURST_PAUSE_ACTIVITIES = [
  * Build a burst-mode plan: random writing sessions separated by natural gaps.
  * Duration is auto-calculated from text length + randomized session structure.
  *
- * Each session: 1-8 min of active typing at 25-45 WPM.
- * Between sessions: realistic human breaks (1 min to 2 hours based on pauseVariance).
- * Like a real person: type, grab food, come back, type more, take a shower, etc.
+ * Pauses scale with document size so short docs finish in realistic times.
+ * A 230-word doc at Moderate should take ~15-25 min, not 1 hour+.
  */
 function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
   const typoFreq = options.typoFrequency ?? 0.5;
@@ -369,40 +368,50 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
 
   // Active typing speed during bursts: 25-45 WPM (~125-225 CPM)
   const activeCPM = randFloat(125, 225);
+  const activeMinutes = totalChars / activeCPM;
 
-  // Build sessions: split text into variable-length writing sessions
+  // ── Scale pauses by document size ──────────────────────────────────
+  // Short docs get proportionally shorter pauses.
+  // sizeFactor ramps from 0.15 (tiny docs) → 1.0 (docs ≥ 15 min active typing).
+  const sizeFactor = Math.min(1, Math.max(0.15, activeMinutes / 15));
+
+  // ── Determine target session count ─────────────────────────────────
+  // Short docs → ~1.5-2 min sessions; long docs → ~6 min sessions (capped).
+  const avgSessionMin = Math.min(6, Math.max(1.5, activeMinutes / 3));
+  const targetSessions = Math.max(2, Math.round(activeMinutes / avgSessionMin));
+
+  // Build sessions: evenly distribute text across sessions with ±30% variation
   const actions: DripAction[] = [];
   let offset = 0;
   let sessionIndex = 0;
 
   while (offset < totalChars) {
     const charsRemaining = totalChars - offset;
-    const remainingActiveMin = charsRemaining / activeCPM;
+    const sessionsLeft = Math.max(1, targetSessions - sessionIndex);
 
-    // For shorter texts (< ~10 min of active typing), cap session size
-    // so we always get at least 2 sessions and thus at least 1 pause gap.
-    // This ensures the Pause Length slider always affects total duration.
-    let sessionMinutes: number;
-    if (remainingActiveMin < 10 && charsRemaining >= 200) {
-      const maxMin = Math.max(1, remainingActiveMin * randFloat(0.3, 0.5));
-      sessionMinutes = randFloat(Math.min(1, maxMin), maxMin);
+    // Evenly divide remaining chars, with some randomness
+    let sessionChars: number;
+    if (sessionsLeft <= 1 || charsRemaining < 80) {
+      sessionChars = charsRemaining;
     } else {
-      sessionMinutes = randFloat(1, 8);
+      const targetForThis = Math.ceil(charsRemaining / sessionsLeft);
+      sessionChars = Math.min(
+        charsRemaining,
+        Math.max(
+          Math.ceil(targetForThis * 0.5),
+          Math.ceil(targetForThis * randFloat(0.7, 1.3))
+        )
+      );
     }
-
-    const sessionChars = Math.min(
-      Math.ceil(sessionMinutes * activeCPM),
-      charsRemaining
-    );
 
     // Inter-session pause delay (rolled into first insert of this session)
     // No separate "pause" actions — every action inserts text.
     let sessionPauseMs = 0;
     let sessionPauseActivity = "Typing…";
     if (sessionIndex > 0) {
-      // pauseVar 0 → 1-5 min, 0.25 → 3-15 min, 0.5 → 5-30 min, 0.75 → 10-60 min, 1 → 30-120 min
-      const minPauseMin = 1 + pauseVar * 29;   // 1 → 30
-      const maxPauseMin = 5 + pauseVar * 115;  // 5 → 120
+      // Base pause ranges, scaled down for shorter documents
+      const minPauseMin = (1 + pauseVar * 14) * sizeFactor;   // Short: 1*sf → Extended: 15*sf
+      const maxPauseMin = (5 + pauseVar * 55) * sizeFactor;   // Short: 5*sf → Extended: 60*sf
       sessionPauseMs = Math.round(randFloat(minPauseMin, maxPauseMin) * 60_000);
       sessionPauseActivity = BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)];
     }

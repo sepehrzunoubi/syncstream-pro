@@ -54,7 +54,10 @@ function formatCountdown(ms: number): string {
 
 /**
  * Estimate burst mode total duration client-side for the UI preview.
- * Mirrors the server-side algorithm: random sessions + pauses.
+ * Mirrors the server-side algorithm exactly: sized sessions + scaled pauses.
+ *
+ * Pauses scale with document size so short docs (230 words) show realistic
+ * estimates (~15-25 min at Moderate) instead of 1h+.
  */
 function estimateBurstDuration(
   wordCount: number,
@@ -62,24 +65,20 @@ function estimateBurstDuration(
 ): { minMinutes: number; maxMinutes: number } {
   if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
   const charCount = wordCount * 5;
-  const activeCPM = 175;
+  const activeCPM = 175; // midpoint of engine's 125-225 range
   const activeMinutes = charCount / activeCPM;
 
-  // For shorter texts (< ~10 min active typing, >= 200 chars), the engine
-  // caps session size to ~30-50% of remaining text, guaranteeing at least
-  // 2 sessions and thus at least 1 pause gap. Mirror that here.
-  let avgSessionMin: number;
-  if (activeMinutes < 10 && charCount >= 200) {
-    avgSessionMin = Math.max(1, activeMinutes * 0.4);
-  } else {
-    avgSessionMin = 4.5;
-  }
-  const sessions = Math.max(charCount >= 200 ? 2 : 1, Math.ceil(activeMinutes / avgSessionMin));
+  // Scale pauses by document size — mirrors engine's sizeFactor
+  const sizeFactor = Math.min(1, Math.max(0.15, activeMinutes / 15));
+
+  // Session count — mirrors engine's targeting logic
+  const avgSessionMin = Math.min(6, Math.max(1.5, activeMinutes / 3));
+  const sessions = Math.max(2, Math.round(activeMinutes / avgSessionMin));
   const gaps = Math.max(0, sessions - 1);
 
-  // Pause range based on variance — matches engine
-  const minPauseMin = 1 + pauseVariance * 29;  // 1 → 30
-  const maxPauseMin = 5 + pauseVariance * 115; // 5 → 120
+  // Pause range scaled by document size — matches engine exactly
+  const minPauseMin = (1 + pauseVariance * 14) * sizeFactor;   // 1*sf → 15*sf
+  const maxPauseMin = (5 + pauseVariance * 55) * sizeFactor;   // 5*sf → 60*sf
   const minTotal = Math.ceil(activeMinutes + gaps * minPauseMin);
   const maxTotal = Math.ceil(activeMinutes + gaps * maxPauseMin);
   return { minMinutes: Math.max(1, minTotal), maxMinutes: Math.max(1, maxTotal) };
@@ -95,10 +94,10 @@ const TYPO_PRESETS = [
 
 const PAUSE_PRESETS = [
   { label: "Short", value: 0, desc: "1-5m breaks" },
-  { label: "Moderate", value: 0.25, desc: "3-15m breaks" },
-  { label: "Medium", value: 0.5, desc: "5-30m breaks" },
-  { label: "Long", value: 0.75, desc: "10-60m breaks" },
-  { label: "Extended", value: 1.0, desc: "30m-2h breaks" },
+  { label: "Moderate", value: 0.25, desc: "3-12m breaks" },
+  { label: "Medium", value: 0.5, desc: "5-20m breaks" },
+  { label: "Long", value: 0.75, desc: "10-40m breaks" },
+  { label: "Extended", value: 1.0, desc: "15m-1h breaks" },
 ];
 
 function Tooltip({ text }: { text: string }) {
