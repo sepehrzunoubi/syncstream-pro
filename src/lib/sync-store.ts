@@ -23,6 +23,8 @@ export interface SyncJob {
   lastUpdate: number;
   /** Monotonically increasing counter — incremented on each resume to kill stale loops */
   generation?: number;
+  /** Baseline word count in target doc before sync started (for accurate word count display) */
+  baselineWordCount?: number;
 }
 
 export interface SyncJobPayload {
@@ -40,6 +42,14 @@ export interface SyncJobPayload {
   remainingDelayMs?: number;
   /** Generation counter — process loop exits if it doesn't match the job's generation */
   generation?: number;
+  /**
+   * Typo sub-step tracking for atomic typo handling.
+   * 0 = not in typo, 1 = wrong chars inserted (need delete + correct),
+   * 2 = wrong chars deleted (need correct insert), 3 = complete
+   */
+  typoSubStep?: number;
+  /** Length of typo chars currently in the document (for cleanup on resume) */
+  typoCharsInDoc?: number;
 }
 
 // ── Upstash Redis store ────────────────────────────────────────────────────

@@ -9,6 +9,8 @@ interface HeroStatusProps {
   status: "idle" | "syncing" | "paused" | "done" | "error";
   metrics: StreamEvent | null;
   scopeError?: boolean;
+  /** Progress percentage computed by the parent (accounts for pause/resume cycles) */
+  progressPct?: number;
 }
 
 function formatHMS(ms: number): string {
@@ -23,10 +25,12 @@ export function HeroStatus({
   status,
   metrics,
   scopeError,
+  progressPct,
 }: HeroStatusProps) {
-  const pct = metrics
+  // Use parent-computed pct if available (accounts for pause/resume), else fallback
+  const pct = progressPct ?? (metrics
     ? Math.min((metrics.charsSent / metrics.totalChars) * 100, 100)
-    : 0;
+    : 0);
 
   // Use server-sent ETA and smooth it client-side between SSE events
   const [remaining, setRemaining] = useState(0);
@@ -39,8 +43,12 @@ export function HeroStatus({
     }
   }, [status, metrics?.eta, metrics?.actionIndex]);
 
-  // Smooth countdown between server updates
+  // Smooth countdown between server updates — freeze on pause
   useEffect(() => {
+    if (status === "paused") {
+      // Keep the last known remaining value frozen — don't reset or tick
+      return;
+    }
     if (status !== "syncing") {
       setRemaining(0);
       return;
@@ -126,7 +134,11 @@ export function HeroStatus({
               : "text-zinc-700"
           )}
         >
-          {status === "syncing" ? formatHMS(remaining) : "--:--:--"}
+          {status === "syncing"
+            ? formatHMS(remaining)
+            : status === "paused" && remaining > 0
+            ? formatHMS(remaining)
+            : "--:--:--"}
         </div>
       </div>
 

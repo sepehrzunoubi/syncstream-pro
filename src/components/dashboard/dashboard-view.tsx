@@ -37,13 +37,15 @@ export function DashboardView() {
   const syncStartRef = useRef<number>(0);
   const [nextSyncCountdown, setNextSyncCountdown] = useState(0);
   const [realWordCount, setRealWordCount] = useState(0);
+  const [baselineWordCount, setBaselineWordCount] = useState(0);
   const [pausedCharsSent, setPausedCharsSent] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const lastPauseResumeRef = useRef<number>(0);
   const lastCharsSentRef = useRef<number>(0);
   const startSyncRef = useRef<(resumeFromChar?: number) => Promise<void>>();
+  const pauseConfirmedRef = useRef(false);
 
-  // Persist jobId to localStorage so background sync survives tab close
+  // Persist jobId + sync progress to localStorage so background sync survives tab close
   const saveJobId = (id: string | null) => {
     jobIdRef.current = id;
     setActiveJobId(id);
@@ -52,13 +54,33 @@ export function DashboardView() {
     } else {
       localStorage.removeItem("syncstream_active_job");
       localStorage.removeItem("syncstream_settings");
+      localStorage.removeItem("syncstream_progress");
     }
   };
+
+  // Use refs for progress values so saveProgress has a stable identity
+  const progressRef = useRef({ pausedCharsSent: 0, baselineWordCount: 0, realWordCount: 0 });
+  useEffect(() => {
+    progressRef.current = { pausedCharsSent, baselineWordCount, realWordCount };
+  }, [pausedCharsSent, baselineWordCount, realWordCount]);
+
+  const saveProgress = useCallback((overrides: Record<string, number> = {}) => {
+    const data = { ...progressRef.current, ...overrides };
+    localStorage.setItem("syncstream_progress", JSON.stringify(data));
+  }, []);
 
   // On mount: check if there's an active background job from a previous session
   useEffect(() => {
     const savedJobId = localStorage.getItem("syncstream_active_job");
     if (!savedJobId) return;
+
+    // Restore persisted progress data
+    try {
+      const prog = JSON.parse(localStorage.getItem("syncstream_progress") || "{}");
+      if (typeof prog.pausedCharsSent === "number") setPausedCharsSent(prog.pausedCharsSent);
+      if (typeof prog.baselineWordCount === "number") setBaselineWordCount(prog.baselineWordCount);
+      if (typeof prog.realWordCount === "number") setRealWordCount(prog.realWordCount);
+    } catch { /* no saved progress */ }
 
     // Check if the job is still running
     fetch(`/api/sync/status?jobId=${savedJobId}`)
@@ -66,6 +88,7 @@ export function DashboardView() {
       .then((data) => {
         if (!data) {
           localStorage.removeItem("syncstream_active_job");
+          localStorage.removeItem("syncstream_progress");
           return;
         }
         if (data.jobStatus === "running" || data.jobStatus === "pending") {
@@ -84,19 +107,37 @@ export function DashboardView() {
             if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
             if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
           } catch { /* no saved settings */ }
+        } else if (data.jobStatus === "paused") {
+          // Restore paused state
+          jobIdRef.current = savedJobId;
+          setActiveJobId(savedJobId);
+          setMetrics(data.event);
+          setSyncStatus("paused");
+
+          try {
+            const saved = JSON.parse(localStorage.getItem("syncstream_settings") || "");
+            if (saved.rhythm) setRhythm(saved.rhythm);
+            if (saved.durationMinutes) setDurationMinutes(saved.durationMinutes);
+            if (saved.typoFrequency !== undefined) setTypoFrequency(saved.typoFrequency);
+            if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
+            if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
+          } catch { /* no saved settings */ }
         } else if (data.jobStatus === "done") {
           setMetrics(data.event);
           setPausedCharsSent(data.event.totalChars ?? 0);
           setSyncStatus("done");
           localStorage.removeItem("syncstream_active_job");
           localStorage.removeItem("syncstream_settings");
+          localStorage.removeItem("syncstream_progress");
         } else {
           localStorage.removeItem("syncstream_active_job");
           localStorage.removeItem("syncstream_settings");
+          localStorage.removeItem("syncstream_progress");
         }
       })
       .catch(() => {
         localStorage.removeItem("syncstream_active_job");
+        localStorage.removeItem("syncstream_progress");
       });
   }, []);
 
@@ -167,6 +208,18 @@ export function DashboardView() {
       saveJobId(null);
     }
 
+    // Capture baseline word count in target doc BEFORE sync starts
+    let baseline = 0;
+    try {
+      const wcRes = await fetch(`/api/wordcount?documentId=${selectedDocId}`);
+      if (wcRes.ok) {
+        const wcData = await wcRes.json();
+        baseline = wcData.wordCount || 0;
+      }
+    } catch { /* best effort */ }
+    setBaselineWordCount(baseline);
+    setRealWordCount(baseline);
+
     setSyncStatus("syncing");
     setMetrics(null);
     lastCharsSentRef.current = 0;
@@ -175,6 +228,9 @@ export function DashboardView() {
     // Persist UI settings so they survive tab close/reopen
     localStorage.setItem("syncstream_settings", JSON.stringify({
       rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId,
+    }));
+    localStorage.setItem("syncstream_progress", JSON.stringify({
+      pausedCharsSent: 0, baselineWordCount: baseline, realWordCount: baseline,
     }));
 
     // Small delay to ensure UI updates before fetch starts
@@ -234,11 +290,21 @@ export function DashboardView() {
         setMetrics(event);
         lastCharsSentRef.current = event.charsSent ?? 0;
 
+        // Persist progress on every poll so it survives tab close
+        saveProgress();
+
         if (data.jobStatus === "done") {
           setSyncStatus("done");
           const doneChars = sourceText.length > 0 ? sourceText.length : (event.totalChars ?? 0);
           setPausedCharsSent(doneChars);
           lastCharsSentRef.current = 0;
+          // Final word count fetch so the stat is accurate on completion
+          if (selectedDocId) {
+            fetch(`/api/wordcount?documentId=${selectedDocId}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(d => { if (d?.wordCount) setRealWordCount(d.wordCount); })
+              .catch(() => {});
+          }
           saveJobId(null);
         } else if (data.jobStatus === "error") {
           if (event.error?.includes("Insufficient")) {
@@ -252,7 +318,13 @@ export function DashboardView() {
           setSyncStatus("idle");
           saveJobId(null);
         } else if (data.jobStatus === "paused") {
-          // Server confirmed pause — keep jobId for resume
+          // Only snapshot charsSent if pause was server-initiated (not from our pauseSync).
+          // pauseSync already snapshots — avoid double-counting.
+          if (!pauseConfirmedRef.current) {
+            const currentChars = progressRef.current.pausedCharsSent + (event.charsSent ?? 0);
+            setPausedCharsSent(currentChars);
+            saveProgress({ pausedCharsSent: currentChars });
+          }
           setSyncStatus("paused");
         }
       } catch {
@@ -265,37 +337,49 @@ export function DashboardView() {
     const pollInterval = setInterval(poll, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [syncStatus, activeJobId, sourceText.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncStatus, activeJobId, sourceText.length, selectedDocId]);
 
   const pauseSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "syncing") return;
-    // Cooldown: prevent rapid pause/resume spam
+    // Cooldown: prevent rapid pause/resume spam (2s)
     const now = Date.now();
-    if (now - lastPauseResumeRef.current < 1500) return;
+    if (now - lastPauseResumeRef.current < 2000) return;
     lastPauseResumeRef.current = now;
     setIsTransitioning(true);
+    pauseConfirmedRef.current = false;
 
     // Pause the background job (keeps the plan in Redis for resume)
     if (jobIdRef.current) {
       try {
-        await fetch("/api/sync/pause", {
+        const res = await fetch("/api/sync/pause", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jobId: jobIdRef.current }),
         });
-      } catch { /* best effort */ }
+        if (res.ok) {
+          pauseConfirmedRef.current = true;
+        }
+      } catch { /* best effort — polling will pick up server-side pause */ }
       // Keep jobId — we need it for resume
     }
 
+    // Snapshot current progress so resume picks up from the right place
+    // Read from ref to avoid stale closure (pausedCharsSent not in deps for perf)
+    const snapshotChars = progressRef.current.pausedCharsSent + lastCharsSentRef.current;
+    setPausedCharsSent(snapshotChars);
+    saveProgress({ pausedCharsSent: snapshotChars });
+
     setSyncStatus("paused");
     setIsTransitioning(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTransitioning, syncStatus]);
 
   const resumeSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "paused" || !jobIdRef.current) return;
-    // Cooldown: prevent rapid pause/resume spam
+    // Cooldown: prevent rapid pause/resume spam (2s)
     const now = Date.now();
-    if (now - lastPauseResumeRef.current < 1500) return;
+    if (now - lastPauseResumeRef.current < 2000) return;
     lastPauseResumeRef.current = now;
     setIsTransitioning(true);
 
@@ -313,6 +397,8 @@ export function DashboardView() {
       }
 
       // Only start polling AFTER the server has marked the job as running
+      // Reset lastCharsSent so the polling picks up from 0 in the new session
+      lastCharsSentRef.current = 0;
       setSyncStatus("syncing");
       setActiveJobId(jobIdRef.current);
     } catch (err) {
@@ -341,9 +427,12 @@ export function DashboardView() {
     setSourceText("");
     setScopeError(false);
     setPausedCharsSent(0);
+    setBaselineWordCount(0);
+    setRealWordCount(0);
     lastCharsSentRef.current = 0;
     setIsScheduled(false);
     scheduledTimeRef.current = 0;
+    pauseConfirmedRef.current = false;
 
     setIsTransitioning(false);
   }, [isTransitioning]);
@@ -363,10 +452,14 @@ export function DashboardView() {
     ? Math.min((totalCharsSent / effectiveTotalChars) * 100, 100)
     : 0;
 
-  // Poll real-time word count from Google Doc during sync
+  // Poll real-time word count from Google Doc during sync AND paused state
   useEffect(() => {
-    if (syncStatus !== "syncing" || !selectedDocId) {
-      if (syncStatus === "idle") setRealWordCount(0);
+    const isActive = syncStatus === "syncing" || syncStatus === "paused";
+    if (!isActive || !selectedDocId) {
+      if (syncStatus === "idle") {
+        setRealWordCount(0);
+        setBaselineWordCount(0);
+      }
       return;
     }
     
@@ -375,7 +468,9 @@ export function DashboardView() {
         const res = await fetch(`/api/wordcount?documentId=${selectedDocId}`);
         if (res.ok) {
           const data = await res.json();
-          setRealWordCount(data.wordCount || 0);
+          const wc = data.wordCount || 0;
+          setRealWordCount(wc);
+          saveProgress({ realWordCount: wc });
         }
       } catch (err) {
         console.error("Word count fetch error:", err);
@@ -383,8 +478,11 @@ export function DashboardView() {
     };
     
     fetchWordCount();
-    const id = setInterval(fetchWordCount, 2000); // poll every 2s
+    // Poll every 3s during sync, every 10s when paused (less aggressive)
+    const interval = syncStatus === "paused" ? 10000 : 3000;
+    const id = setInterval(fetchWordCount, interval);
     return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncStatus, selectedDocId]);
 
   // Client-side countdown to next sync action — uses absolute timestamp from server
@@ -473,9 +571,11 @@ export function DashboardView() {
 
         {/* ═══ Neon Pulse Bar — 2px at very top ═══ */}
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/[0.02]">
-          {isBusy && (
+          {(isBusy || isPaused) && (
             <div
-              className="h-full bg-blue-500 neon-pulse transition-all duration-500 ease-out"
+              className={`h-full transition-all duration-500 ease-out ${
+                isBusy ? "bg-blue-500 neon-pulse" : "bg-yellow-500/60"
+              }`}
               style={{ width: `${pct}%` }}
             />
           )}
@@ -486,6 +586,7 @@ export function DashboardView() {
           status={syncStatus}
           metrics={metrics}
           scopeError={scopeError}
+          progressPct={pct}
         />
 
         {/* ═══ Stats Row — 6 ultra-slim cards ═══ */}
@@ -511,7 +612,9 @@ export function DashboardView() {
           />
           <StatCard
             label="Word Count"
-            value={isBusy || syncStatus === "done" || isPaused ? `${realWordCount.toLocaleString()}/${sourceWordCount.toLocaleString()}` : sourceWordCount > 0 ? `0/${sourceWordCount.toLocaleString()}` : "0/0"}
+            value={isBusy || syncStatus === "done" || isPaused
+              ? `${Math.max(0, realWordCount - baselineWordCount).toLocaleString()}/${sourceWordCount.toLocaleString()}`
+              : sourceWordCount > 0 ? `0/${sourceWordCount.toLocaleString()}` : "0/0"}
             active={isBusy}
           />
           <StatCard
