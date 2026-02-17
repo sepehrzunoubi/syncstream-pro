@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { RotateCw, Clock, Zap, Shuffle, Info, FilePlus } from "lucide-react";
+import { RotateCw, Clock, Zap, Shuffle, Info, FilePlus, Timer } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { SliderWithTooltip } from "@/components/ui/slider";
 
@@ -33,6 +33,8 @@ interface SyncControlsProps {
   scheduleCountdown?: number;
   onScheduleSync?: (delayMinutes: number) => void;
   onCancelSchedule?: () => void;
+  burstVersion?: 1 | 2;
+  onBurstVersionChange?: (v: 1 | 2) => void;
 }
 
 function formatDuration(mins: number): string {
@@ -83,6 +85,38 @@ function estimateBurstDuration(
   };
 }
 
+/**
+ * Preview mandatory pause schedule for V2 burst mode (mirrors drip-engine logic).
+ */
+function getV2PausePreview(wordCount: number): number[] {
+  if (wordCount <= 0) return [];
+  if (wordCount <= 100) return [2, 5, 3];
+  if (wordCount <= 300) return [3, 6, 9, 4];
+  if (wordCount <= 700) return [3, 6, 12, 7, 4];
+  if (wordCount <= 1500) return [5, 9, 15, 12, 6];
+  return [8, 12, 18, 15, 8];
+}
+
+function estimateV2Duration(
+  wordCount: number
+): { minMinutes: number; maxMinutes: number } {
+  if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
+  const pauses = getV2PausePreview(wordCount);
+  const pauseTotal = pauses.reduce((s, p) => s + p, 0);
+
+  // Typing time estimate (same as V1)
+  const charCount = wordCount * 5;
+  const chunkSize = 75;
+  const numChunks = Math.max(1, Math.ceil(charCount / chunkSize));
+  const minTypingMs = Math.max(0, numChunks - 1) * 17_000;
+  const maxTypingMs = Math.max(0, numChunks - 1) * 55_000;
+
+  return {
+    minMinutes: Math.max(1, Math.ceil((minTypingMs / 60_000) + pauseTotal)),
+    maxMinutes: Math.max(1, Math.ceil((maxTypingMs / 60_000) + pauseTotal)),
+  };
+}
+
 const TYPO_PRESETS = [
   { label: "Rare", value: 0, desc: "~1 per 300 chars" },
   { label: "Low", value: 0.25, desc: "~1 per 235 chars" },
@@ -128,6 +162,8 @@ export function SyncControls({
   scheduleCountdown,
   onScheduleSync,
   onCancelSchedule,
+  burstVersion = 1,
+  onBurstVersionChange,
 }: SyncControlsProps) {
   const [scheduleDelay, setScheduleDelay] = useState(1); // index into SCHEDULE_PRESETS
 
@@ -137,7 +173,14 @@ export function SyncControls({
   }, [sourceText]);
 
   const burstEstimate = useMemo(
-    () => estimateBurstDuration(sourceWordCount),
+    () => burstVersion === 2
+      ? estimateV2Duration(sourceWordCount)
+      : estimateBurstDuration(sourceWordCount),
+    [sourceWordCount, burstVersion]
+  );
+
+  const v2Pauses = useMemo(
+    () => getV2PausePreview(sourceWordCount),
     [sourceWordCount]
   );
 
@@ -221,7 +264,7 @@ export function SyncControls({
           <button
             onClick={() => onRhythmChange("burst")}
             disabled={disabled}
-            className={`flex-1 px-3 py-2.5 rounded-lg text-left transition-all ${
+            className={`flex-1 px-3 py-2.5 rounded-lg text-left transition-all relative ${
               isBurst
                 ? "bg-purple-500/10 border border-purple-500/30 shadow-[0_0_10px_rgba(168,85,247,0.1)]"
                 : "bg-[#09090b] border border-white/[0.04] hover:border-white/[0.08]"
@@ -236,6 +279,26 @@ export function SyncControls({
             <div className="text-[10px] text-zinc-600 mt-0.5 leading-tight">
               Random sessions with natural gaps
             </div>
+            {/* V2 toggle — top right corner */}
+            {isBurst && (
+              <div
+                className="absolute top-1.5 right-1.5"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onBurstVersionChange?.(burstVersion === 2 ? 1 : 2);
+                }}
+              >
+                <span
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider cursor-pointer transition-all ${
+                    burstVersion === 2
+                      ? "bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-[0_0_6px_rgba(168,85,247,0.2)]"
+                      : "bg-white/[0.04] text-zinc-600 border border-white/[0.06] hover:text-zinc-400 hover:border-white/[0.12]"
+                  }`}
+                >
+                  V2
+                </span>
+              </div>
+            )}
           </button>
         </div>
       </div>
@@ -279,8 +342,35 @@ export function SyncControls({
             </span>
           </div>
           <p className="text-[10px] text-zinc-600 mt-1 leading-tight">
-            Auto-calculated from word count. Burst mode drips sentences at random intervals with natural pauses between writing bursts.
+            {burstVersion === 2
+              ? "V2 mode: mandatory pause checkpoints create realistic version history gaps."
+              : "Auto-calculated from word count. Burst mode drips sentences at random intervals with natural pauses between writing bursts."}
           </p>
+
+          {/* V2 Mandatory Pause Preview */}
+          {burstVersion === 2 && sourceWordCount > 0 && (
+            <div className="mt-2.5 pt-2 border-t border-purple-500/10">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Timer className="w-3 h-3 text-purple-400/60" />
+                <span className="text-[9px] font-bold uppercase tracking-[1.5px] text-zinc-600">
+                  Required Pauses ({v2Pauses.length})
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {v2Pauses.map((mins, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded bg-purple-500/8 border border-purple-500/15 text-[10px] font-mono text-purple-400/80"
+                  >
+                    {mins}m
+                  </span>
+                ))}
+              </div>
+              <p className="text-[9px] text-zinc-700 mt-1.5 leading-tight">
+                Each pause must complete before sync finishes. Order is randomized.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
