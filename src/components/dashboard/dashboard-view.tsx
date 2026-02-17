@@ -420,9 +420,13 @@ export function DashboardView() {
         return;
       }
 
-      // Only start polling AFTER the server has marked the job as running
-      // Reset lastCharsSent so the polling picks up from 0 in the new session
+      // Server charsSent is absolute (includes pre-pause chars), so reset
+      // pausedCharsSent to 0 — otherwise totalCharsSent double-counts.
+      setPausedCharsSent(0);
+      progressRef.current.pausedCharsSent = 0;
+      saveProgress({ pausedCharsSent: 0 });
       lastCharsSentRef.current = 0;
+      pauseConfirmedRef.current = false;
       setSyncStatus("syncing");
       setActiveJobId(jobIdRef.current);
     } catch (err) {
