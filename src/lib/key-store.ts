@@ -193,14 +193,16 @@ export async function redeemKey(
     return { success: false, error: "This Google account already has a key bound to it." };
   }
 
-  // Check if key is already bound to someone else
+  // Check if key is already claimed by anyone
   const licenseKey = await getLicenseKey(normalized);
   if (!licenseKey) {
     return { success: false, error: "Invalid license key." };
   }
 
-  if (licenseKey.boundToGoogleId && licenseKey.boundToGoogleId !== googleId) {
-    return { success: false, error: "This key is already bound to another account." };
+  // If boundToGoogleId is set AT ALL, the key is taken. Period.
+  // The same-user case is already handled above (user already has a binding).
+  if (licenseKey.boundToGoogleId) {
+    return { success: false, error: "This key is already bound to an account." };
   }
 
   // Bind the key
@@ -276,4 +278,26 @@ export async function hasKeyResetBeenUsed(key: string): Promise<boolean> {
   const normalized = key.trim().toUpperCase();
   const licenseKey = await getLicenseKey(normalized);
   return licenseKey?.resetUsed ?? false;
+}
+
+// ── Server-side key access verification ─────────────────────────────────────
+// Called from protected API routes for defense-in-depth beyond the cookie check.
+
+export async function verifyKeyAccess(
+  googleId: string
+): Promise<{ valid: boolean; error?: string }> {
+  await seedKeysIfNeeded();
+
+  const binding = await getUserBinding(googleId);
+  if (!binding) {
+    return { valid: false, error: "No active license key for this account." };
+  }
+
+  // Cross-check: the key itself must still be bound to this user
+  const licenseKey = await getLicenseKey(binding.key);
+  if (!licenseKey || licenseKey.boundToGoogleId !== googleId) {
+    return { valid: false, error: "License key binding mismatch. Key may have been reset." };
+  }
+
+  return { valid: true };
 }
