@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// API paths that require a valid license key (beyond auth)
+const KEY_PROTECTED_PREFIXES = [
+  "/api/sync/",
+  "/api/docs",
+  "/api/wordcount",
+];
+
+// API paths that are exempt from key checks (auth + key management)
+const KEY_EXEMPT_PATHS = [
+  "/api/auth/",
+  "/api/keys/",
+];
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const hasToken = req.cookies.has("google_access_token") || req.cookies.has("google_refresh_token");
@@ -14,9 +27,26 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL("/", req.url));
   }
 
+  // Key-gate enforcement for protected API routes
+  if (pathname.startsWith("/api/")) {
+    const isExempt = KEY_EXEMPT_PATHS.some((p) => pathname.startsWith(p));
+    if (!isExempt) {
+      const isProtected = KEY_PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
+      if (isProtected) {
+        const hasLicense = req.cookies.has("syncstream_licensed");
+        if (!hasLicense) {
+          return NextResponse.json(
+            { error: "License key required. Please activate your key." },
+            { status: 403 }
+          );
+        }
+      }
+    }
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/", "/dashboard"],
+  matcher: ["/", "/dashboard", "/api/:path*"],
 };

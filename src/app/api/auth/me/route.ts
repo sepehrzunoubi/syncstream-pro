@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   if (token) {
     try {
       const user = await getUserInfo(token);
-      return NextResponse.json({ authenticated: true, user });
+      return NextResponse.json({ authenticated: true, user, googleId: user.id });
     } catch {
       // Token might be expired, try refreshing below
     }
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     if (refreshed) {
       try {
         const user = await getUserInfo(refreshed.access_token);
-        const response = NextResponse.json({ authenticated: true, user });
+        const response = NextResponse.json({ authenticated: true, user, googleId: user.id });
         response.cookies.set("google_access_token", refreshed.access_token, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",

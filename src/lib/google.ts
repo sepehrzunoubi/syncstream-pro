@@ -247,6 +247,7 @@ export async function getUserInfo(accessToken: string) {
   const oauth2 = google.oauth2({ version: "v2", auth: client });
   const res = await oauth2.userinfo.get();
   return {
+    id: res.data.id || "",
     name: res.data.name || "User",
     email: res.data.email || "",
     picture: res.data.picture || "",
