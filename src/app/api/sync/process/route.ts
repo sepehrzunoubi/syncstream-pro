@@ -292,12 +292,19 @@ function sleep(ms: number): Promise<void> {
 async function selfChain(req: NextRequest, payload: SyncJobPayload) {
   const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
   try {
-    fetch(`${origin}/api/sync/process`, {
+    // Await with timeout — we need the request to actually reach the server
+    // before this function terminates, otherwise the chain silently dies.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    await fetch(`${origin}/api/sync/process`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     }).catch(() => {});
+    clearTimeout(timer);
   } catch {
-    // Best effort — if this fails, the job stalls and client can restart
+    // AbortError (timeout) is expected — the new invocation runs for minutes.
+    // What matters is the request was sent before we aborted.
   }
 }

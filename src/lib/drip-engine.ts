@@ -15,7 +15,7 @@ export type PaceMode = "human" | "burst";
 export interface PlanOptions {
   /** 0-1 scale. 0 = rare typos (~every 800 chars), 1 = frequent (~every 120 chars). Default 0.5 */
   typoFrequency?: number;
-  /** 0-1 scale. 0 = short breaks (1-5 min), 1 = extended breaks (30-120 min). Burst mode only. Default 0.5 */
+  /** 0-1 scale. Currently unused — burst mode auto-manages pauses. Kept for future use. Default 0.5 */
   pauseVariance?: number;
 }
 
@@ -54,6 +54,8 @@ export interface StreamEvent {
   status: string;
   error?: string;
   nextTypoAction?: number;
+  /** Timestamp of last server-side update — used for client-side stall detection */
+  lastUpdate?: number;
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -354,149 +356,115 @@ const BURST_PAUSE_ACTIVITIES = [
 ];
 
 /**
- * Build a burst-mode plan: random writing sessions separated by natural gaps.
- * Duration is auto-calculated from text length + randomized session structure.
+ * Build a burst-mode plan: simple sentence-level dripping with random gaps.
  *
- * Pauses scale with document size so short docs finish in realistic times.
- * A 230-word doc at Moderate should take ~15-25 min, not 1 hour+.
+ * Pattern: bursts of rapid typing (17-55s between chunks) separated by
+ * natural pauses (1-4 minutes). This creates realistic Google Docs version
+ * history — visible editing activity, then silence, then more editing.
+ *
+ * All delays are short enough to fit within Vercel's 5-min function timeout,
+ * eliminating the chaining problems that plagued the old session-based design.
+ *
+ * No user-configurable pause length — burst mode is fully automatic.
+ * Only typoFrequency is user-controllable.
  */
 function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
   const typoFreq = options.typoFrequency ?? 0.5;
-  const pauseVar = options.pauseVariance ?? 0.5;
   const [typoMin, typoMax] = typoIntervalRange(typoFreq);
   const totalChars = text.length;
 
-  // Active typing speed during bursts: 25-45 WPM (~125-225 CPM)
-  const activeCPM = randFloat(125, 225);
-  const activeMinutes = totalChars / activeCPM;
+  // Split text into sentence-sized chunks (50-100 chars on word boundaries)
+  const chunks = chunkText(text, randInt(50, 100));
 
-  // ── Scale pauses by document size ──────────────────────────────────
-  // Short docs get proportionally shorter pauses.
-  // sizeFactor ramps from 0.15 (tiny docs) → 1.0 (docs ≥ 15 min active typing).
-  const sizeFactor = Math.min(1, Math.max(0.15, activeMinutes / 15));
-
-  // ── Determine target session count ─────────────────────────────────
-  // Short docs → ~1.5-2 min sessions; long docs → ~6 min sessions (capped).
-  const avgSessionMin = Math.min(6, Math.max(1.5, activeMinutes / 3));
-  const targetSessions = Math.max(2, Math.round(activeMinutes / avgSessionMin));
-
-  // Build sessions: evenly distribute text across sessions with ±30% variation
   const actions: DripAction[] = [];
-  let offset = 0;
-  let sessionIndex = 0;
+  let charsSinceTypo = 0;
+  let nextTypoAt = randInt(typoMin, typoMax);
 
-  while (offset < totalChars) {
-    const charsRemaining = totalChars - offset;
-    const sessionsLeft = Math.max(1, targetSessions - sessionIndex);
+  // Tracks how many chunks remain in the current "burst" before a gap
+  let chunksUntilBreak = randInt(2, 6);
 
-    // Evenly divide remaining chars, with some randomness
-    let sessionChars: number;
-    if (sessionsLeft <= 1 || charsRemaining < 80) {
-      sessionChars = charsRemaining;
-    } else {
-      const targetForThis = Math.ceil(charsRemaining / sessionsLeft);
-      sessionChars = Math.min(
-        charsRemaining,
-        Math.max(
-          Math.ceil(targetForThis * 0.5),
-          Math.ceil(targetForThis * randFloat(0.7, 1.3))
-        )
-      );
-    }
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
 
-    // Inter-session pause delay (rolled into first insert of this session)
-    // No separate "pause" actions — every action inserts text.
-    let sessionPauseMs = 0;
-    let sessionPauseActivity = "Typing…";
-    if (sessionIndex > 0) {
-      // Base pause ranges, scaled down for shorter documents
-      const minPauseMin = (1 + pauseVar * 14) * sizeFactor;   // Short: 1*sf → Extended: 15*sf
-      const maxPauseMin = (5 + pauseVar * 55) * sizeFactor;   // Short: 5*sf → Extended: 60*sf
-      sessionPauseMs = Math.round(randFloat(minPauseMin, maxPauseMin) * 60_000);
-      sessionPauseActivity = BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)];
-    }
+    let delay: number;
+    let activity: string;
 
-    // Split session text into small micro-chunks for natural typing feel
-    const sessionText = text.slice(offset, offset + sessionChars);
-    const microChunkSize = randInt(15, 60);
-    const chunks = chunkText(sessionText, microChunkSize);
-
-    let charsSinceTypo = 0;
-    let nextTypoAt = randInt(typoMin, typoMax);
-
-    for (let c = 0; c < chunks.length; c++) {
-      const chunk = chunks[c];
-
-      // First chunk of first session → no delay
-      // First chunk of later sessions → inter-session pause (activity shows "Taking a break…" etc.)
-      // Other chunks → micro-delay within session
-      let delay: number;
-      let activity: string;
-      if (c === 0 && sessionIndex === 0) {
-        delay = 0;
-        activity = "Typing…";
-      } else if (c === 0 && sessionPauseMs > 0) {
-        delay = sessionPauseMs;
-        activity = sessionPauseActivity;
+    if (i === 0) {
+      // First chunk fires immediately
+      delay = 0;
+      activity = "Typing…";
+    } else if (chunksUntilBreak <= 0) {
+      // Start of a new burst — insert an inter-burst gap
+      const roll = Math.random();
+      if (roll < 0.15) {
+        // Quick resume — looks like the writer came right back
+        delay = randInt(15_000, 45_000);
+      } else if (roll < 0.70) {
+        // Normal gap — 1-2.5 minutes
+        delay = randInt(60_000, 150_000);
       } else {
-        delay = randInt(3000, 18000);
-        activity = "Typing…";
+        // Longer gap — 2.5-4 minutes
+        delay = randInt(150_000, 240_000);
       }
+      activity = BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)];
+      // Reset burst counter
+      chunksUntilBreak = randInt(2, 6);
+    } else {
+      // Within a burst — short delay simulating active typing
+      delay = randInt(17_000, 55_000);
+      activity = "Typing…";
+    }
 
-      // Typo injection
-      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
-        const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
-        const before = chunk.slice(0, splitPoint);
-        const after = chunk.slice(splitPoint);
+    chunksUntilBreak--;
 
-        if (before.length > 0) {
-          actions.push({
-            kind: "insert",
-            text: before,
-            delayMs: delay,
-            activity,
-          });
-          // If before consumed the session pause delay, subsequent actions use normal delays
-          delay = randInt(800, 2000);
-          activity = "Typing…";
-        }
+    // Typo injection
+    if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
+      const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
+      const before = chunk.slice(0, splitPoint);
+      const after = chunk.slice(splitPoint);
 
-        const { typo, correct } = generateSmartTypo(after);
-        const remainder = after.slice(correct.length);
-
-        actions.push({
-          kind: "typo",
-          text: correct,
-          typoChars: typo,
-          delayMs: randInt(800, 2500),
-          activity: "Correcting typo…",
-        });
-
-        // Insert the rest of the chunk after the typo correction
-        if (remainder.length > 0) {
-          actions.push({
-            kind: "insert",
-            text: remainder,
-            delayMs: randInt(1000, 4000),
-            activity: "Typing…",
-          });
-        }
-
-        charsSinceTypo = remainder.length;
-        nextTypoAt = randInt(typoMin, typoMax);
-      } else {
+      if (before.length > 0) {
         actions.push({
           kind: "insert",
-          text: chunk,
+          text: before,
           delayMs: delay,
           activity,
         });
-        charsSinceTypo += chunk.length;
+        delay = randInt(800, 2000);
+        activity = "Typing…";
       }
-    }
 
-    offset += sessionChars;
-    sessionIndex++;
+      const { typo, correct } = generateSmartTypo(after);
+      const remainder = after.slice(correct.length);
+
+      actions.push({
+        kind: "typo",
+        text: correct,
+        typoChars: typo,
+        delayMs: randInt(800, 2500),
+        activity: "Correcting typo…",
+      });
+
+      if (remainder.length > 0) {
+        actions.push({
+          kind: "insert",
+          text: remainder,
+          delayMs: randInt(1000, 4000),
+          activity: "Typing…",
+        });
+      }
+
+      charsSinceTypo = remainder.length;
+      nextTypoAt = randInt(typoMin, typoMax);
+    } else {
+      actions.push({
+        kind: "insert",
+        text: chunk,
+        delayMs: delay,
+        activity,
+      });
+      charsSinceTypo += chunk.length;
+    }
   }
 
   // Calculate total duration from the generated plan

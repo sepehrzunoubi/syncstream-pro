@@ -21,8 +21,8 @@ interface SyncControlsProps {
   onDurationChange: (d: number) => void;
   typoFrequency: number;
   onTypoFrequencyChange: (f: number) => void;
-  pauseVariance: number;
-  onPauseVarianceChange: (v: number) => void;
+  pauseVariance?: number;
+  onPauseVarianceChange?: (v: number) => void;
   sourceText: string;
   disabled?: boolean;
   onRefreshDocs?: () => void;
@@ -54,34 +54,33 @@ function formatCountdown(ms: number): string {
 
 /**
  * Estimate burst mode total duration client-side for the UI preview.
- * Mirrors the server-side algorithm exactly: sized sessions + scaled pauses.
- *
- * Pauses scale with document size so short docs (230 words) show realistic
- * estimates (~15-25 min at Moderate) instead of 1h+.
+ * Mirrors the new simple burst algorithm: sentence-sized chunks grouped
+ * into bursts with short intra-burst delays and 1-4 minute gaps between.
  */
 function estimateBurstDuration(
-  wordCount: number,
-  pauseVariance: number
+  wordCount: number
 ): { minMinutes: number; maxMinutes: number } {
   if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
   const charCount = wordCount * 5;
-  const activeCPM = 175; // midpoint of engine's 125-225 range
-  const activeMinutes = charCount / activeCPM;
+  const chunkSize = 75; // midpoint of engine's 50-100 range
+  const numChunks = Math.max(1, Math.ceil(charCount / chunkSize));
+  const avgBurstSize = 4;
+  const numBursts = Math.max(1, Math.ceil(numChunks / avgBurstSize));
+  const numGaps = Math.max(0, numBursts - 1);
 
-  // Scale pauses by document size — mirrors engine's sizeFactor
-  const sizeFactor = Math.min(1, Math.max(0.15, activeMinutes / 15));
+  // Intra-burst: 17-55s per chunk (excluding first chunk of each burst)
+  const intraChunks = Math.max(0, numChunks - numBursts);
+  const minIntraMs = intraChunks * 17_000;
+  const maxIntraMs = intraChunks * 55_000;
 
-  // Session count — mirrors engine's targeting logic
-  const avgSessionMin = Math.min(6, Math.max(1.5, activeMinutes / 3));
-  const sessions = Math.max(2, Math.round(activeMinutes / avgSessionMin));
-  const gaps = Math.max(0, sessions - 1);
+  // Inter-burst gaps: 60-240s
+  const minGapMs = numGaps * 60_000;
+  const maxGapMs = numGaps * 240_000;
 
-  // Pause range scaled by document size — matches engine exactly
-  const minPauseMin = (1 + pauseVariance * 14) * sizeFactor;   // 1*sf → 15*sf
-  const maxPauseMin = (5 + pauseVariance * 55) * sizeFactor;   // 5*sf → 60*sf
-  const minTotal = Math.ceil(activeMinutes + gaps * minPauseMin);
-  const maxTotal = Math.ceil(activeMinutes + gaps * maxPauseMin);
-  return { minMinutes: Math.max(1, minTotal), maxMinutes: Math.max(1, maxTotal) };
+  return {
+    minMinutes: Math.max(1, Math.ceil((minIntraMs + minGapMs) / 60_000)),
+    maxMinutes: Math.max(1, Math.ceil((maxIntraMs + maxGapMs) / 60_000)),
+  };
 }
 
 const TYPO_PRESETS = [
@@ -92,13 +91,6 @@ const TYPO_PRESETS = [
   { label: "Frequent", value: 1.0, desc: "~1 per 40 chars" },
 ];
 
-const PAUSE_PRESETS = [
-  { label: "Short", value: 0, desc: "1-5m breaks" },
-  { label: "Moderate", value: 0.25, desc: "3-12m breaks" },
-  { label: "Medium", value: 0.5, desc: "5-20m breaks" },
-  { label: "Long", value: 0.75, desc: "10-40m breaks" },
-  { label: "Extended", value: 1.0, desc: "15m-1h breaks" },
-];
 
 function Tooltip({ text }: { text: string }) {
   return (
@@ -126,8 +118,6 @@ export function SyncControls({
   onDurationChange,
   typoFrequency,
   onTypoFrequencyChange,
-  pauseVariance,
-  onPauseVarianceChange,
   sourceText,
   disabled,
   onRefreshDocs,
@@ -147,8 +137,8 @@ export function SyncControls({
   }, [sourceText]);
 
   const burstEstimate = useMemo(
-    () => estimateBurstDuration(sourceWordCount, pauseVariance),
-    [sourceWordCount, pauseVariance]
+    () => estimateBurstDuration(sourceWordCount),
+    [sourceWordCount]
   );
 
   const isBurst = rhythm === "burst";
@@ -289,38 +279,12 @@ export function SyncControls({
             </span>
           </div>
           <p className="text-[10px] text-zinc-600 mt-1 leading-tight">
-            Auto-calculated from word count. Burst mode picks its own timing with random writing sessions and natural pauses.
+            Auto-calculated from word count. Burst mode drips sentences at random intervals with natural pauses between writing bursts.
           </p>
         </div>
       )}
 
-      {/* ═══ Pause Length (Burst Mode only) ═══ */}
-      {isBurst && (() => {
-        const idx = closestPresetIndex(PAUSE_PRESETS, pauseVariance);
-        return (
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <Label className="inline-flex items-center">Pause Length<Tooltip text="Break time between typing sessions, like grabbing food or stepping away" /></Label>
-              <span className="text-[0.6rem] font-mono text-zinc-500">
-                {PAUSE_PRESETS[idx].label} · {PAUSE_PRESETS[idx].desc}
-              </span>
-            </div>
-            <SliderWithTooltip
-              value={[idx]}
-              onValueChange={(v: number[]) => onPauseVarianceChange(PAUSE_PRESETS[v[0]].value)}
-              min={0}
-              max={PAUSE_PRESETS.length - 1}
-              step={1}
-              disabled={disabled}
-              formatValue={(i) => PAUSE_PRESETS[i].label}
-            />
-            <div className="flex justify-between text-[0.5rem] text-zinc-700 mt-1.5 font-mono">
-              <span>Short</span>
-              <span>Extended</span>
-            </div>
-          </div>
-        );
-      })()}
+      {/* Pause Length removed — burst mode is now fully automatic */}
 
       {/* ═══ Typo Frequency (both modes) ═══ */}
       {(() => {

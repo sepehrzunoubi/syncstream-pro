@@ -141,5 +141,6 @@ export function jobToEvent(job: SyncJob): StreamEvent {
     status: `Action ${job.currentAction + 1}/${job.totalActions}`,
     nextTypoAction: job.nextTypoAction,
     error: job.error,
+    lastUpdate: job.lastUpdate,
   };
 }

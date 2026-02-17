@@ -293,6 +293,30 @@ export function DashboardView() {
         // Persist progress on every poll so it survives tab close
         saveProgress();
 
+        // Stall detection: if server hasn't updated in 90s, the process
+        // likely died (failed self-chain). Auto-recover by pausing then resuming.
+        if (data.jobStatus === "running" && event.lastUpdate) {
+          const staleness = Date.now() - event.lastUpdate;
+          if (staleness > 90_000) {
+            console.warn(`Sync job stalled (${Math.round(staleness / 1000)}s stale) — auto-recovering`);
+            try {
+              // Pause then resume to re-kick the process with a fresh generation
+              await fetch("/api/sync/pause", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ jobId: currentJobId }),
+              });
+              await new Promise(r => setTimeout(r, 500));
+              await fetch("/api/sync/resume", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ jobId: currentJobId }),
+              });
+            } catch { /* best effort recovery */ }
+            return; // skip normal processing this cycle
+          }
+        }
+
         if (data.jobStatus === "done") {
           setSyncStatus("done");
           const doneChars = sourceText.length > 0 ? sourceText.length : (event.totalChars ?? 0);

@@ -87,15 +87,21 @@ export async function POST(req: NextRequest) {
 
   await setPayload(payload);
 
-  // Fire-and-forget: kick off background processing
+  // Kick off background processing — await with timeout to ensure request is sent
   const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
-  fetch(`${origin}/api/sync/process`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  }).catch((err) => {
-    console.error("Failed to kick off sync/process:", err);
-  });
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    await fetch(`${origin}/api/sync/process`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    }).catch(() => {});
+    clearTimeout(timer);
+  } catch {
+    // AbortError expected — the process invocation runs for minutes
+  }
 
   return NextResponse.json({
     jobId,
