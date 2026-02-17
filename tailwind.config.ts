@@ -9,6 +9,15 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      keyframes: {
+        "pulse-subtle": {
+          "0%, 100%": { opacity: "0.45" },
+          "50%": { opacity: "1" },
+        },
+      },
+      animation: {
+        "pulse-subtle": "pulse-subtle 2s ease-in-out infinite",
+      },
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
