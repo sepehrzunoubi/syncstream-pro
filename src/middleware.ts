@@ -11,6 +11,7 @@ const KEY_PROTECTED_PREFIXES = [
 const KEY_EXEMPT_PATHS = [
   "/api/auth/",
   "/api/keys/",
+  "/api/sync/process",  // Only called internally (start route + self-chain); no cookies on server-to-server fetch
 ];
 
 export function middleware(req: NextRequest) {
