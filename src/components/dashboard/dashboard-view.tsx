@@ -671,8 +671,8 @@ export function DashboardView() {
 
         {/* ═══ V2 Mandatory Pause Checklist ═══ */}
         {metrics?.mandatoryPauses && metrics.mandatoryPauses.length > 0 && (isBusy || isPaused || syncStatus === "done") && (
-          <div className="card-sovereign px-4 py-3 flex-shrink-0">
-            <div className="flex items-center gap-2 mb-2">
+          <div className="card-sovereign px-3 py-2 flex items-center justify-between gap-3 flex-shrink-0">
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               <span className="text-[0.5rem] font-bold uppercase tracking-[1.5px] text-zinc-600">
                 Pause Checkpoints
               </span>
@@ -680,13 +680,13 @@ export function DashboardView() {
                 {(metrics.completedPauses?.length ?? 0)}/{metrics.mandatoryPauses.length}
               </span>
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1 justify-end">
               {metrics.mandatoryPauses.map((mins, i) => {
                 const done = metrics.completedPauses?.includes(i) ?? false;
                 return (
                   <div
                     key={i}
-                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono transition-all ${
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-all ${
                       done
                         ? "bg-white/[0.02] border border-white/[0.04] text-zinc-700 line-through"
                         : "bg-purple-500/8 border border-purple-500/20 text-purple-400"
