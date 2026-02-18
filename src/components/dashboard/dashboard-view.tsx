@@ -98,7 +98,20 @@ export function DashboardView() {
         }
         // Restore source text for the live preview
         const savedSource = localStorage.getItem("syncstream_source");
-        if (savedSource) setSourceText(savedSource);
+        if (savedSource) {
+          setSourceText(savedSource);
+        } else if (data.jobStatus === "running" || data.jobStatus === "pending" || data.jobStatus === "paused") {
+          // No local copy — reconstruct from the plan stored in Redis
+          fetch(`/api/sync/source?jobId=${savedJobId}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+              if (d?.sourceText) {
+                setSourceText(d.sourceText);
+                localStorage.setItem("syncstream_source", d.sourceText);
+              }
+            })
+            .catch(() => {});
+        }
 
         if (data.jobStatus === "running" || data.jobStatus === "pending") {
           // Resume polling
