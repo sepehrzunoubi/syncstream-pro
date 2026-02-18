@@ -41,6 +41,7 @@ export function DashboardView() {
   const [baselineWordCount, setBaselineWordCount] = useState(0);
   const [pausedCharsSent, setPausedCharsSent] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [isBooting, setIsBooting] = useState(false);
   const lastPauseResumeRef = useRef<number>(0);
   const lastCharsSentRef = useRef<number>(0);
   const startSyncRef = useRef<(resumeFromChar?: number) => Promise<void>>();
@@ -177,7 +178,7 @@ export function DashboardView() {
       const res = await fetch("/api/docs/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Untitled Document" }),
+        body: JSON.stringify({ title: "SyncStream Draft" }),
       });
       if (!res.ok) throw new Error("Failed to create doc");
       const doc = await res.json();
@@ -227,6 +228,8 @@ export function DashboardView() {
     setMetrics(null);
     lastCharsSentRef.current = 0;
     syncStartRef.current = Date.now();
+    // V2 boot-up overlay: show loading until first real metrics arrive
+    if (rhythm === "burst" && burstVersion === 2) setIsBooting(true);
 
     // Persist UI settings so they survive tab close/reopen
     localStorage.setItem("syncstream_settings", JSON.stringify({
@@ -273,6 +276,7 @@ export function DashboardView() {
     } catch (err) {
       console.error("Sync start error:", err);
       setSyncStatus("error");
+      setIsBooting(false);
       setIsTransitioning(false);
     }
   }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, burstVersion, isTransitioning]);
@@ -293,6 +297,11 @@ export function DashboardView() {
         const event: StreamEvent = data.event;
         setMetrics(event);
         lastCharsSentRef.current = event.charsSent ?? 0;
+
+        // Clear V2 boot-up overlay once real progress starts
+        if (isBooting && (event.actionIndex > 0 || (event.charsSent ?? 0) > 0)) {
+          setIsBooting(false);
+        }
 
         // Persist progress on every poll so it survives tab close
         saveProgress();
@@ -366,7 +375,7 @@ export function DashboardView() {
 
     return () => clearInterval(pollInterval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncStatus, activeJobId, sourceText.length, selectedDocId]);
+  }, [syncStatus, activeJobId, sourceText.length, selectedDocId, isBooting]);
 
   const pauseSync = useCallback(async () => {
     if (isTransitioning || syncStatus !== "syncing") return;
@@ -463,6 +472,7 @@ export function DashboardView() {
     setRealWordCount(0);
     lastCharsSentRef.current = 0;
     setIsScheduled(false);
+    setIsBooting(false);
     scheduledTimeRef.current = 0;
     pauseConfirmedRef.current = false;
 
@@ -599,7 +609,23 @@ export function DashboardView() {
 
   return (
     <div className="flex flex-1 items-center justify-center bg-transparent p-4 md:p-8 relative overflow-hidden">
-      <div className="w-full max-w-7xl max-h-[92vh] p-4 md:p-6 pb-1 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-y-auto relative shadow-2xl z-10">
+      <div className="w-full max-w-7xl max-h-[92vh] p-4 md:p-6 pb-1 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-hidden relative shadow-2xl z-10">
+
+        {/* ═══ V2 Boot-up Loading Overlay ═══ */}
+        {isBooting && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#09090b]/90 backdrop-blur-md rounded-2xl">
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-purple-400 animate-bounce [animation-delay:0ms]" />
+                <span className="w-2 h-2 rounded-full bg-purple-400 animate-bounce [animation-delay:150ms]" />
+                <span className="w-2 h-2 rounded-full bg-purple-400 animate-bounce [animation-delay:300ms]" />
+              </div>
+              <span className="text-zinc-500 font-mono text-xs tracking-wider uppercase">
+                Preparing sync
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* ═══ Neon Pulse Bar — 2px at very top ═══ */}
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/[0.02]">
@@ -726,7 +752,7 @@ export function DashboardView() {
           </div>
 
           {/* Right: Command Deck (5 cols) */}
-          <div className="col-span-12 md:col-span-5 card-sovereign p-4 flex flex-col overflow-y-auto">
+          <div className="col-span-12 md:col-span-5 card-sovereign p-4 flex flex-col overflow-hidden">
             {docsLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-zinc-600 font-mono text-[13px] animate-pulse">
@@ -769,7 +795,7 @@ export function DashboardView() {
             <button
               onClick={() => startSync(0)}
               disabled={!sourceText.trim() || !selectedDocId || isTransitioning}
-              className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-30 disabled:cursor-not-allowed text-white text-[13px] font-semibold tracking-wide transition-all shadow-[0_0_12px_rgba(59,130,246,0.2)] hover:shadow-[0_0_20px_rgba(59,130,246,0.4)]"
+              className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-30 disabled:pointer-events-none text-white text-[13px] font-semibold tracking-wide transition-all shadow-[0_0_12px_rgba(59,130,246,0.2)] hover:shadow-[0_0_20px_rgba(59,130,246,0.4)]"
             >
               {isTransitioning ? "Starting..." : "Start Sync"}
             </button>
@@ -778,7 +804,7 @@ export function DashboardView() {
             <button
               onClick={pauseSync}
               disabled={isTransitioning}
-              className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-yellow-500/30 text-zinc-400 hover:text-yellow-400 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-yellow-500/30 text-zinc-400 hover:text-yellow-400 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:pointer-events-none"
             >
               {isTransitioning ? "Pausing..." : "Pause"}
             </button>
@@ -788,14 +814,14 @@ export function DashboardView() {
               <button
                 onClick={resumeSync}
                 disabled={isTransitioning}
-                className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-[13px] font-semibold tracking-wide transition-all shadow-[0_0_12px_rgba(59,130,246,0.2)] hover:shadow-[0_0_20px_rgba(59,130,246,0.4)] disabled:opacity-30 disabled:cursor-not-allowed"
+                className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-[13px] font-semibold tracking-wide transition-all shadow-[0_0_12px_rgba(59,130,246,0.2)] hover:shadow-[0_0_20px_rgba(59,130,246,0.4)] disabled:opacity-30 disabled:pointer-events-none"
               >
                 {isTransitioning ? "Resuming..." : "Resume"}
               </button>
               <button
                 onClick={resetSync}
                 disabled={isTransitioning}
-                className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-zinc-500/30 text-zinc-400 hover:text-zinc-300 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-zinc-500/30 text-zinc-400 hover:text-zinc-300 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:pointer-events-none"
               >
                 New Sync
               </button>
@@ -806,7 +832,7 @@ export function DashboardView() {
               <button
                 onClick={resetSync}
                 disabled={isTransitioning}
-                className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-blue-500/30 text-zinc-400 hover:text-blue-400 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                className="px-6 py-2 rounded-lg bg-zinc-800 border border-white/[0.06] hover:border-blue-500/30 text-zinc-400 hover:text-blue-400 text-[13px] font-semibold tracking-wide transition-all disabled:opacity-30 disabled:pointer-events-none"
               >
                 New Sync
               </button>

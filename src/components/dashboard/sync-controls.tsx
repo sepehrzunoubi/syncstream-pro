@@ -196,7 +196,7 @@ export function SyncControls({
           <button
             onClick={onRefreshDocs}
             disabled={disabled || isRefreshing}
-            className="p-1 rounded hover:bg-white/[0.04] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="p-1 rounded hover:bg-white/[0.04] transition-colors disabled:opacity-40 disabled:pointer-events-none"
             title="Refresh document list"
           >
             <RotateCw className={`h-3.5 w-3.5 text-zinc-500 hover:text-blue-400 transition-colors ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -230,7 +230,7 @@ export function SyncControls({
             <button
               onClick={onCreateDoc}
               disabled={disabled || isCreatingDoc}
-              className="inline-flex items-center gap-1 text-[0.6rem] font-mono text-zinc-600 hover:text-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1 text-[0.6rem] font-mono text-zinc-600 hover:text-blue-400 transition-colors disabled:opacity-40 disabled:pointer-events-none"
             >
               <FilePlus className={`w-3 h-3 ${isCreatingDoc ? 'animate-pulse' : ''}`} />
               {isCreatingDoc ? "Creating…" : "New Doc"}
@@ -447,7 +447,7 @@ export function SyncControls({
             <button
               onClick={() => onScheduleSync?.(SCHEDULE_PRESETS[scheduleDelay])}
               disabled={disabled}
-              className="w-full px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:bg-blue-500/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              className="w-full px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:bg-blue-500/20 transition-all disabled:opacity-30 disabled:pointer-events-none"
             >
               Start in {formatDuration(SCHEDULE_PRESETS[scheduleDelay])}
             </button>
