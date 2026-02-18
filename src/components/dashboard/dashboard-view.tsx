@@ -59,6 +59,7 @@ export function DashboardView() {
       localStorage.removeItem("syncstream_active_job");
       localStorage.removeItem("syncstream_settings");
       localStorage.removeItem("syncstream_progress");
+      localStorage.removeItem("syncstream_source");
     }
   };
 
@@ -95,6 +96,10 @@ export function DashboardView() {
           localStorage.removeItem("syncstream_progress");
           return;
         }
+        // Restore source text for the live preview
+        const savedSource = localStorage.getItem("syncstream_source");
+        if (savedSource) setSourceText(savedSource);
+
         if (data.jobStatus === "running" || data.jobStatus === "pending") {
           // Resume polling
           jobIdRef.current = savedJobId;
@@ -147,10 +152,12 @@ export function DashboardView() {
           localStorage.removeItem("syncstream_active_job");
           localStorage.removeItem("syncstream_settings");
           localStorage.removeItem("syncstream_progress");
+          localStorage.removeItem("syncstream_source");
         } else {
           localStorage.removeItem("syncstream_active_job");
           localStorage.removeItem("syncstream_settings");
           localStorage.removeItem("syncstream_progress");
+          localStorage.removeItem("syncstream_source");
         }
       })
       .catch(() => {
@@ -245,12 +252,13 @@ export function DashboardView() {
     // V2 boot-up overlay: show loading until first real metrics arrive
     if (rhythm === "burst" && burstVersion === 2) setIsBooting(true);
 
-    // Persist UI settings so they survive tab close/reopen
+    // Persist UI settings + source text so they survive tab close/reopen
     const srcWc = textToSync.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
     localStorage.setItem("syncstream_settings", JSON.stringify({
       rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId, burstVersion,
       sourceWordCount: srcWc,
     }));
+    localStorage.setItem("syncstream_source", sourceText);
     localStorage.setItem("syncstream_progress", JSON.stringify({
       pausedCharsSent: 0, baselineWordCount: baseline, realWordCount: baseline,
     }));
@@ -798,7 +806,7 @@ export function DashboardView() {
           </div>
 
           {/* Right: Command Deck (5 cols) */}
-          <div className="col-span-12 md:col-span-5 card-sovereign p-4 flex flex-col max-h-[420px] overflow-y-auto custom-scroll">
+          <div className="col-span-12 md:col-span-5 card-sovereign p-4 flex flex-col overflow-hidden">
             {docsLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-zinc-600 font-mono text-[13px] animate-pulse">
