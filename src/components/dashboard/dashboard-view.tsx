@@ -42,6 +42,8 @@ export function DashboardView() {
   const [pausedCharsSent, setPausedCharsSent] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isBooting, setIsBooting] = useState(false);
+  /** Source word count persisted from the session that started the sync (survives tab close) */
+  const [savedSourceWordCount, setSavedSourceWordCount] = useState(0);
   const lastPauseResumeRef = useRef<number>(0);
   const lastCharsSentRef = useRef<number>(0);
   const startSyncRef = useRef<(resumeFromChar?: number) => Promise<void>>();
@@ -100,6 +102,11 @@ export function DashboardView() {
           setMetrics(data.event);
           setSyncStatus("syncing");
 
+          // Use server-side baseline (authoritative)
+          if (data.event?.baselineWordCount != null) {
+            setBaselineWordCount(data.event.baselineWordCount);
+          }
+
           // Restore UI settings from the session that started this job
           try {
             const saved = JSON.parse(localStorage.getItem("syncstream_settings") || "");
@@ -109,6 +116,7 @@ export function DashboardView() {
             if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
             if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
             if (saved.burstVersion) setBurstVersion(saved.burstVersion);
+            if (saved.sourceWordCount) setSavedSourceWordCount(saved.sourceWordCount);
           } catch { /* no saved settings */ }
         } else if (data.jobStatus === "paused") {
           // Restore paused state
@@ -116,6 +124,11 @@ export function DashboardView() {
           setActiveJobId(savedJobId);
           setMetrics(data.event);
           setSyncStatus("paused");
+
+          // Use server-side baseline (authoritative)
+          if (data.event?.baselineWordCount != null) {
+            setBaselineWordCount(data.event.baselineWordCount);
+          }
 
           try {
             const saved = JSON.parse(localStorage.getItem("syncstream_settings") || "");
@@ -125,6 +138,7 @@ export function DashboardView() {
             if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
             if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
             if (saved.burstVersion) setBurstVersion(saved.burstVersion);
+            if (saved.sourceWordCount) setSavedSourceWordCount(saved.sourceWordCount);
           } catch { /* no saved settings */ }
         } else if (data.jobStatus === "done") {
           setMetrics(data.event);
@@ -232,8 +246,10 @@ export function DashboardView() {
     if (rhythm === "burst" && burstVersion === 2) setIsBooting(true);
 
     // Persist UI settings so they survive tab close/reopen
+    const srcWc = textToSync.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
     localStorage.setItem("syncstream_settings", JSON.stringify({
       rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId, burstVersion,
+      sourceWordCount: srcWc,
     }));
     localStorage.setItem("syncstream_progress", JSON.stringify({
       pausedCharsSent: 0, baselineWordCount: baseline, realWordCount: baseline,
@@ -306,12 +322,25 @@ export function DashboardView() {
         // Persist progress on every poll so it survives tab close
         saveProgress();
 
-        // Stall detection: if server hasn't updated in 90s, the process
+        // Sync server-side baseline so word count is always accurate (survives tab close)
+        if (event.baselineWordCount != null) {
+          setBaselineWordCount(event.baselineWordCount);
+        }
+
+        // Stall detection: if server hasn't updated recently, the process
         // likely died (failed self-chain). Auto-recover by pausing then resuming.
+        // V2 awareness: during mandatory pauses, currentPauseDelayMs tells us the
+        // remaining pause time — use that + buffer as the threshold to avoid false positives.
         if (data.jobStatus === "running" && event.lastUpdate) {
           const staleness = Date.now() - event.lastUpdate;
-          if (staleness > 90_000) {
-            console.warn(`Sync job stalled (${Math.round(staleness / 1000)}s stale) — auto-recovering`);
+          const activePauseMs = event.currentPauseDelayMs ?? 0;
+          // If a mandatory pause is active, allow staleness up to the pause duration + 60s buffer.
+          // Otherwise use the default 90s threshold.
+          const stallThreshold = activePauseMs > 0
+            ? Math.max(90_000, activePauseMs + 60_000)
+            : 90_000;
+          if (staleness > stallThreshold) {
+            console.warn(`Sync job stalled (${Math.round(staleness / 1000)}s stale, threshold ${Math.round(stallThreshold / 1000)}s) — auto-recovering`);
             try {
               // Pause then resume to re-kick the process with a fresh generation
               await fetch("/api/sync/pause", {
@@ -555,10 +584,10 @@ export function DashboardView() {
 
   const nextSyncSec = (nextSyncCountdown / 1000).toFixed(1);
 
-  // Source word count for Word Count stat — fall back to metrics-based estimate on tab reopen
+  // Source word count for Word Count stat — fall back to persisted value, then metrics estimate
   const sourceWordCount = sourceText.trim()
     ? sourceText.trim().split(/\s+/).filter(w => w.length > 0).length
-    : (metrics?.totalChars ? Math.round(metrics.totalChars / 5) : 0);
+    : (savedSourceWordCount > 0 ? savedSourceWordCount : (metrics?.totalChars ? Math.round(metrics.totalChars / 5) : 0));
 
   // Keep startSyncRef pointing at the latest startSync
   useEffect(() => {
@@ -733,15 +762,32 @@ export function DashboardView() {
           {/* Left: Source Editor (7 cols) */}
           <div className="col-span-12 md:col-span-7 card-sovereign p-4 flex flex-col min-h-[300px]">
             {isBusy || syncStatus === "done" || isPaused ? (
-              <div className="flex flex-col items-center justify-center h-full">
-                <div className="font-mono text-[13px] text-zinc-600">
-                  {syncStatus === "done"
-                    ? "Content streamed successfully."
-                    : isPaused
-                    ? `Sync paused at ${Math.round(pct)}%. Press Resume to continue.`
-                    : "Content is being streamed\u2026"}
+              sourceText.length > 0 ? (
+                <div className="flex-1 overflow-y-auto custom-scroll">
+                  <div className="font-mono text-[13px] leading-relaxed whitespace-pre-wrap break-words">
+                    <span className="text-zinc-300">{sourceText.slice(0, totalCharsSent)}</span>
+                    {totalCharsSent < sourceText.length && (
+                      <>
+                        <span className="bg-blue-500/20 text-blue-300 border-l-2 border-blue-500 animate-pulse">{sourceText.slice(totalCharsSent, totalCharsSent + 1)}</span>
+                        <span className="text-zinc-700">{sourceText.slice(totalCharsSent + 1)}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full gap-2">
+                  <div className="font-mono text-[13px] text-zinc-600">
+                    {syncStatus === "done"
+                      ? "Content streamed successfully."
+                      : isPaused
+                      ? `Sync paused at ${Math.round(pct)}%. Press Resume to continue.`
+                      : "Content is being streamed\u2026"}
+                  </div>
+                  <div className="font-mono text-[11px] text-zinc-700">
+                    {metrics ? `${metrics.actionIndex}/${metrics.totalActions} actions \u2022 ${Math.round(pct)}% complete` : ""}
+                  </div>
+                </div>
+              )
             ) : (
               <SourceInput
                 value={sourceText}

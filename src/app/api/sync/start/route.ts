@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildDripPlan, type PaceMode } from "@/lib/drip-engine";
 import { createJobId, setJob, setPayload, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
-import { getUserInfo, refreshAccessToken } from "@/lib/google";
+import { getUserInfo, refreshAccessToken, getDocWordCount } from "@/lib/google";
 import { verifyKeyAccess } from "@/lib/key-store";
 
 export const dynamic = "force-dynamic";
@@ -85,6 +85,15 @@ export async function POST(req: NextRequest) {
   const jobId = createJobId();
   const now = Date.now();
 
+  // Capture baseline word count in target doc BEFORE sync starts (server-side, authoritative)
+  let baselineWordCount = 0;
+  try {
+    const effectiveToken = token || (refreshToken ? (await refreshAccessToken(refreshToken))?.access_token : null);
+    if (effectiveToken) {
+      baselineWordCount = await getDocWordCount(effectiveToken, documentId);
+    }
+  } catch { /* best effort — default to 0 */ }
+
   // Store initial job state for status polling
   const job: SyncJob = {
     id: jobId,
@@ -102,6 +111,7 @@ export async function POST(req: NextRequest) {
     lastUpdate: now,
     mandatoryPauses: plan.mandatoryPauses,
     completedPauses: plan.mandatoryPauses ? [] : undefined,
+    baselineWordCount,
   };
   await setJob(job);
 

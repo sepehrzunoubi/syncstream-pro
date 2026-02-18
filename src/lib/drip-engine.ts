@@ -66,6 +66,10 @@ export interface StreamEvent {
   completedPauses?: number[];
   /** Timestamp of last server-side update — used for client-side stall detection */
   lastUpdate?: number;
+  /** Current mandatory pause delay in ms (>0 means a long pause is active — stall detector should wait) */
+  currentPauseDelayMs?: number;
+  /** Baseline word count in target doc before sync started */
+  baselineWordCount?: number;
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

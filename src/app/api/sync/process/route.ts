@@ -29,19 +29,21 @@ export async function POST(req: NextRequest) {
 
   const totalActions = actions.length;
 
-  // V2 burst: read mandatory pause state from the existing job
+  // Read persistent state from the existing job (V2 pauses, baseline word count)
   let mandatoryPauses: number[] | undefined;
   let completedPauses: number[] = [];
+  let baselineWordCount: number | undefined;
   {
     const existingForV2 = await getJob(jobId);
     if (existingForV2) {
       mandatoryPauses = existingForV2.mandatoryPauses;
       completedPauses = existingForV2.completedPauses ?? [];
+      baselineWordCount = existingForV2.baselineWordCount;
     }
   }
 
-  // Helper: save current position + remaining delay for resume
-  async function savePosition(remainingDelayMs = 0) {
+  // Helper: persist payload to Redis so resume/stall-recovery always has fresh state
+  async function persistProgress(remainingDelayMs = 0) {
     await setPayload({
       jobId, accessToken, refreshToken, documentId,
       actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
@@ -57,7 +59,7 @@ export async function POST(req: NextRequest) {
     // Stale loop: a newer resume has started — exit silently
     if ((job.generation ?? 0) > myGeneration) return true;
     if (job.status === "cancelled" || job.status === "paused") {
-      if (job.status === "paused") await savePosition(remainingDelayMs);
+      if (job.status === "paused") await persistProgress(remainingDelayMs);
       return true;
     }
     return false;
@@ -152,6 +154,7 @@ export async function POST(req: NextRequest) {
       generation: myGeneration,
       mandatoryPauses,
       completedPauses,
+      baselineWordCount,
       ...overrides,
     };
     await setJob(job);
@@ -181,13 +184,16 @@ export async function POST(req: NextRequest) {
       // Check if we need to self-chain before timeout
       const elapsed = Date.now() - invocationStart;
       if (elapsed > (maxDuration * 1000) - SAFETY_MARGIN_MS) {
-        await updateJobStore({ activity: "Chaining…" });
-        await selfChain(req, {
+        const chainPayload: SyncJobPayload = {
           jobId, accessToken, refreshToken, documentId,
           actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
           remainingDelayMs: resumeRemainingDelayMs, generation: myGeneration,
           typoSubStep, typoCharsInDoc,
-        });
+        };
+        // Persist to Redis BEFORE chaining so stall recovery has fresh state if chain fails
+        await persistProgress(resumeRemainingDelayMs);
+        await updateJobStore({ activity: "Chaining…" });
+        await selfChain(req, chainPayload);
         return NextResponse.json({ status: "chained", currentAction });
       }
 
@@ -212,20 +218,26 @@ export async function POST(req: NextRequest) {
           // Check timeout during long waits
           const midElapsed = Date.now() - invocationStart;
           if (midElapsed > (maxDuration * 1000) - SAFETY_MARGIN_MS) {
-            await updateJobStore({ activity: "Chaining…" });
-            await selfChain(req, {
+            const chainPayload: SyncJobPayload = {
               jobId, accessToken, refreshToken, documentId,
               actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
               remainingDelayMs: remaining, generation: myGeneration,
               typoSubStep, typoCharsInDoc,
-            });
+            };
+            // Persist to Redis BEFORE chaining
+            await persistProgress(remaining);
+            await updateJobStore({ activity: "Chaining…" });
+            await selfChain(req, chainPayload);
             return NextResponse.json({ status: "chained", currentAction });
           }
 
+          // Set currentPauseDelayMs so stall detector knows a long pause is active
+          const pauseDelayOverride = action.mandatoryPauseIndex != null ? remaining : 0;
           await updateJobStore({
             activity: action.activity,
             nextActionAt: Date.now() + remaining,
             eta: calcEta(currentAction, remaining),
+            currentPauseDelayMs: pauseDelayOverride,
           });
         }
       } else {
@@ -304,7 +316,9 @@ export async function POST(req: NextRequest) {
       }
 
       currentAction++;
-      await updateJobStore();
+      await updateJobStore({ currentPauseDelayMs: 0 });
+      // Persist progress to Redis after every action so resume is always fresh
+      await persistProgress();
     }
 
     // All actions complete

@@ -31,6 +31,8 @@ export interface SyncJob {
   completedPauses?: number[];
   /** Index of next significant pause action (burst modes) */
   nextPauseAction?: number;
+  /** Current mandatory pause delay in ms (>0 means a long pause is active — stall detector should wait) */
+  currentPauseDelayMs?: number;
 }
 
 export interface SyncJobPayload {
@@ -151,5 +153,7 @@ export function jobToEvent(job: SyncJob): StreamEvent {
     completedPauses: job.completedPauses,
     error: job.error,
     lastUpdate: job.lastUpdate,
+    currentPauseDelayMs: job.currentPauseDelayMs,
+    baselineWordCount: job.baselineWordCount,
   };
 }
