@@ -90,11 +90,11 @@ function estimateBurstDuration(
  */
 function getV2PausePreview(wordCount: number): number[] {
   if (wordCount <= 0) return [];
-  if (wordCount <= 100) return [2, 5, 3];
+  if (wordCount <= 100) return [2, 5, 7];
   if (wordCount <= 300) return [3, 6, 9, 4];
-  if (wordCount <= 700) return [3, 6, 12, 7, 4];
-  if (wordCount <= 1500) return [5, 9, 15, 12, 6];
-  return [8, 12, 18, 15, 8];
+  if (wordCount <= 700) return [3, 6, 12, 8, 4];
+  if (wordCount <= 1500) return [5, 9, 15, 12, 7];
+  return [7, 12, 18, 15, 9];
 }
 
 function estimateV2Duration(
@@ -104,12 +104,13 @@ function estimateV2Duration(
   const pauses = getV2PausePreview(wordCount);
   const pauseTotal = pauses.reduce((s, p) => s + p, 0);
 
-  // Typing time estimate (same as V1)
+  // Micro-chunk typing estimate: ~15 chars/chunk, 2-8s between + thinking pauses
   const charCount = wordCount * 5;
-  const chunkSize = 75;
+  const chunkSize = 15;
   const numChunks = Math.max(1, Math.ceil(charCount / chunkSize));
-  const minTypingMs = Math.max(0, numChunks - 1) * 17_000;
-  const maxTypingMs = Math.max(0, numChunks - 1) * 55_000;
+  const thinkPauses = Math.floor(numChunks / 6); // ~1 per 6 chunks
+  const minTypingMs = Math.max(0, numChunks - 1) * 2_000 + thinkPauses * 15_000;
+  const maxTypingMs = Math.max(0, numChunks - 1) * 8_000 + thinkPauses * 50_000;
 
   return {
     minMinutes: Math.max(1, Math.ceil((minTypingMs / 60_000) + pauseTotal)),

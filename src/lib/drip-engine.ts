@@ -522,55 +522,29 @@ const V2_PAUSE_ACTIVITIES = [
 ];
 
 /**
+ * Pick `count` unique integers from [min..max] (inclusive).
+ */
+function pickUnique(min: number, max: number, count: number): number[] {
+  const pool: number[] = [];
+  for (let v = min; v <= max; v++) pool.push(v);
+  // Fisher-Yates on pool, then take first `count`
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = randInt(0, i);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, count);
+}
+
+/**
  * Determine mandatory pause durations (in minutes) based on word count.
- * Each call generates slightly different durations for natural variation.
+ * All durations are guaranteed to be distinct for natural-looking variation.
  */
 function getMandatoryPauses(wordCount: number): number[] {
-  if (wordCount <= 100) {
-    // Very short: 3 pauses
-    return [
-      randInt(1, 3),
-      randInt(3, 6),
-      randInt(2, 4),
-    ];
-  }
-  if (wordCount <= 300) {
-    // Short essay: 4 pauses
-    return [
-      randInt(2, 4),
-      randInt(4, 8),
-      randInt(6, 12),
-      randInt(2, 5),
-    ];
-  }
-  if (wordCount <= 700) {
-    // Medium paper: 5 pauses
-    return [
-      randInt(2, 5),
-      randInt(4, 8),
-      randInt(8, 15),
-      randInt(5, 10),
-      randInt(3, 6),
-    ];
-  }
-  if (wordCount <= 1500) {
-    // Long paper: 5 pauses
-    return [
-      randInt(3, 7),
-      randInt(5, 12),
-      randInt(10, 20),
-      randInt(8, 15),
-      randInt(4, 8),
-    ];
-  }
-  // Very long (1500+): 5 pauses
-  return [
-    randInt(5, 10),
-    randInt(8, 15),
-    randInt(12, 25),
-    randInt(10, 20),
-    randInt(5, 12),
-  ];
+  if (wordCount <= 100) return pickUnique(1, 8, 3);    // 3 pauses, 1-8 min
+  if (wordCount <= 300) return pickUnique(2, 12, 4);   // 4 pauses, 2-12 min
+  if (wordCount <= 700) return pickUnique(2, 15, 5);   // 5 pauses, 2-15 min
+  if (wordCount <= 1500) return pickUnique(3, 20, 5);  // 5 pauses, 3-20 min
+  return pickUnique(5, 25, 5);                          // 5 pauses, 5-25 min
 }
 
 /** Fisher-Yates shuffle (in place) */
@@ -583,12 +557,15 @@ function shuffle<T>(arr: T[]): T[] {
 }
 
 /**
- * Build a V2 burst plan: mandatory pause checkpoints + natural typing between them.
+ * Build a V2 burst plan: mandatory pause checkpoints + natural micro-typed segments.
  *
- * The plan splits text into segments separated by mandatory pauses. Within each
- * segment, text is dripped in small chunks with short delays (17-55s) just like V1.
- * The mandatory pauses are shuffled so their durations appear in random order,
- * making version history look non-systematic.
+ * Key difference from V1: text is inserted in tiny micro-chunks (1-3 words each)
+ * with short realistic delays (2-8s) to simulate actual keystroke rhythm. Every
+ * few micro-chunks, a "thinking pause" (15-50s) is inserted. This produces many
+ * small edits in Google Docs version history instead of a few large paste-like ones,
+ * achieving a high GPTZero natural typing score.
+ *
+ * Mandatory pauses are shuffled so their durations appear in random order.
  */
 function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
   const typoFreq = options.typoFrequency ?? 0.5;
@@ -600,8 +577,8 @@ function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
   const mandatoryPauses = shuffle(getMandatoryPauses(wordCount));
   const numPauses = mandatoryPauses.length;
 
-  // Split text into small chunks
-  const allChunks = chunkText(text, randInt(50, 100));
+  // Split text into micro-chunks (8-25 chars ≈ 1-3 words) for realistic edit sizes
+  const allChunks = chunkText(text, randInt(8, 25));
 
   // Distribute chunks across numPauses+1 segments
   const numSegments = numPauses + 1;
@@ -619,25 +596,46 @@ function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
   const actions: DripAction[] = [];
   let charsSinceTypo = 0;
   let nextTypoAt = randInt(typoMin, typoMax);
-  let isFirstChunk = true;
+  let isFirstAction = true;
+  let chunksSinceThinkPause = 0;
+  let nextThinkPauseAt = randInt(4, 8); // thinking pause every 4-8 micro-chunks
 
   for (let seg = 0; seg < numSegments; seg++) {
     const segChunks = segments[seg];
 
-    // Typing actions for this segment
     for (const chunk of segChunks) {
-      const delay = isFirstChunk ? 0 : randInt(17_000, 55_000);
-      const activity = "Typing…";
-      isFirstChunk = false;
+      // Delay logic: realistic typing rhythm
+      let delay: number;
+      let activity: string;
 
-      // Typo injection (same logic as V1)
-      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
-        const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
+      if (isFirstAction) {
+        delay = 0;
+        activity = "Typing…";
+        isFirstAction = false;
+      } else if (chunksSinceThinkPause >= nextThinkPauseAt) {
+        // Periodic "thinking" pause — simulates re-reading or pausing to think
+        delay = randInt(15_000, 50_000);
+        activity = "Thinking…";
+        chunksSinceThinkPause = 0;
+        nextThinkPauseAt = randInt(4, 8);
+      } else {
+        // Normal micro-typing delay — 2-8 seconds between small inserts
+        delay = randInt(2_000, 8_000);
+        activity = "Typing…";
+      }
+
+      chunksSinceThinkPause++;
+
+      // Typo injection
+      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 6) {
+        const splitPoint = Math.max(4, nextTypoAt - charsSinceTypo);
         const before = chunk.slice(0, splitPoint);
         const after = chunk.slice(splitPoint);
 
         if (before.length > 0) {
           actions.push({ kind: "insert", text: before, delayMs: delay, activity });
+          delay = randInt(1_000, 3_000);
+          activity = "Typing…";
         }
 
         const { typo, correct } = generateSmartTypo(after);
@@ -649,7 +647,7 @@ function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
         });
 
         if (rest.length > 0) {
-          actions.push({ kind: "insert", text: rest, delayMs: randInt(1000, 4000), activity: "Typing…" });
+          actions.push({ kind: "insert", text: rest, delayMs: randInt(1_500, 4_000), activity: "Typing…" });
         }
 
         charsSinceTypo = rest.length;
@@ -671,6 +669,9 @@ function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
         activity: V2_PAUSE_ACTIVITIES[randInt(0, V2_PAUSE_ACTIVITIES.length - 1)],
         mandatoryPauseIndex: seg,
       });
+      // Reset thinking-pause counter after mandatory pause
+      chunksSinceThinkPause = 0;
+      nextThinkPauseAt = randInt(4, 8);
     }
   }
 

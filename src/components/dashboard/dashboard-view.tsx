@@ -671,28 +671,26 @@ export function DashboardView() {
 
         {/* ═══ V2 Mandatory Pause Checklist ═══ */}
         {metrics?.mandatoryPauses && metrics.mandatoryPauses.length > 0 && (isBusy || isPaused || syncStatus === "done") && (
-          <div className="card-sovereign px-3 py-2 flex items-center justify-between gap-3 flex-shrink-0">
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              <span className="text-[0.5rem] font-bold uppercase tracking-[1.5px] text-zinc-600">
-                Pause Checkpoints
-              </span>
-              <span className="text-[0.5rem] font-mono text-purple-400/70">
-                {(metrics.completedPauses?.length ?? 0)}/{metrics.mandatoryPauses.length}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1 justify-end">
+          <div className="card-sovereign px-3 py-1.5 flex items-center gap-2 flex-shrink-0">
+            <span className="text-[0.5rem] font-bold uppercase tracking-[1.5px] text-zinc-600 whitespace-nowrap">
+              Pause Checkpoints
+            </span>
+            <span className="text-[0.5rem] font-mono text-purple-400/70 whitespace-nowrap">
+              {(metrics.completedPauses?.length ?? 0)}/{metrics.mandatoryPauses.length}
+            </span>
+            <div className="flex gap-1 ml-auto">
               {metrics.mandatoryPauses.map((mins, i) => {
                 const done = metrics.completedPauses?.includes(i) ?? false;
                 return (
                   <div
                     key={i}
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-all ${
+                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono transition-all ${
                       done
                         ? "bg-white/[0.02] border border-white/[0.04] text-zinc-700 line-through"
                         : "bg-purple-500/8 border border-purple-500/20 text-purple-400"
                     }`}
                   >
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                    <span className={`w-1 h-1 rounded-full flex-shrink-0 ${
                       done ? "bg-zinc-700" : "bg-purple-400 shadow-[0_0_4px_rgba(168,85,247,0.4)]"
                     }`} />
                     {mins}m

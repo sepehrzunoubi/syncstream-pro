@@ -157,8 +157,15 @@ export async function POST(req: NextRequest) {
     await setJob(job);
   }
 
-  // Mark as running
-  await updateJobStore();
+  // Mark as running — account for partial delay on resume
+  if (resumeRemainingDelayMs > 0 && currentAction < totalActions) {
+    await updateJobStore({
+      nextActionAt: Date.now() + resumeRemainingDelayMs,
+      eta: calcEta(currentAction, resumeRemainingDelayMs),
+    });
+  } else {
+    await updateJobStore();
+  }
 
   const invocationStart = Date.now();
   const SAFETY_MARGIN_MS = 30_000; // self-chain 30s before timeout
