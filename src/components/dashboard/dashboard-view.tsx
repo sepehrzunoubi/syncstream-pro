@@ -781,7 +781,7 @@ export function DashboardView() {
         <div className="grid grid-cols-12 gap-2.5 flex-1 min-h-0">
 
           {/* Left: Source Editor (7 cols) */}
-          <div className="col-span-12 md:col-span-7 card-sovereign p-4 flex flex-col min-h-[300px] max-h-[420px]">
+          <div className="col-span-12 md:col-span-7 card-sovereign p-4 flex flex-col min-h-[300px]">
             {isBusy || syncStatus === "done" || isPaused ? (
               sourceText.length > 0 ? (
                 <div className="flex-1 overflow-y-auto custom-scroll">
