@@ -57,31 +57,57 @@ function formatCountdown(ms: number): string {
  */
 function getBurstPausePreview(wordCount: number): number[] {
   if (wordCount <= 0) return [];
-  if (wordCount <= 100) return [2, 5, 7];
-  if (wordCount <= 300) return [3, 6, 9, 4];
-  if (wordCount <= 700) return [3, 6, 12, 8, 4];
-  if (wordCount <= 1500) return [5, 9, 15, 12, 7];
-  return [7, 12, 18, 15, 9];
+  if (wordCount <= 100) return [3, 5, 7];          // 3 pauses, engine range 1-8
+  if (wordCount <= 300) return [4, 6, 8, 10];       // 4 pauses, engine range 2-12
+  if (wordCount <= 700) return [4, 6, 9, 11, 14];   // 5 pauses, engine range 2-15
+  if (wordCount <= 1500) return [5, 8, 11, 15, 18]; // 5 pauses, engine range 3-20
+  return [8, 12, 16, 20, 24];                        // 5 pauses, engine range 5-25
+}
+
+/**
+ * Compute min/max sum of N distinct values from [lo..hi] (mirrors engine's pickUnique).
+ */
+function pauseSumRange(lo: number, hi: number, count: number): { min: number; max: number } {
+  let minSum = 0, maxSum = 0;
+  for (let i = 0; i < count; i++) {
+    minSum += lo + i;        // smallest N distinct: lo, lo+1, ...
+    maxSum += hi - i;        // largest N distinct: hi, hi-1, ...
+  }
+  return { min: minSum, max: maxSum };
 }
 
 function estimateBurstDuration(
   wordCount: number
 ): { minMinutes: number; maxMinutes: number } {
   if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
-  const pauses = getBurstPausePreview(wordCount);
-  const pauseTotal = pauses.reduce((s, p) => s + p, 0);
 
-  // Micro-chunk typing estimate: ~15 chars/chunk, 2-8s between + thinking pauses
+  // Pause ranges matching the engine's getMandatoryPauses (pickUnique)
+  let pauseRange: { min: number; max: number };
+  if (wordCount <= 100)       pauseRange = pauseSumRange(1, 8, 3);
+  else if (wordCount <= 300)  pauseRange = pauseSumRange(2, 12, 4);
+  else if (wordCount <= 700)  pauseRange = pauseSumRange(2, 15, 5);
+  else if (wordCount <= 1500) pauseRange = pauseSumRange(3, 20, 5);
+  else                        pauseRange = pauseSumRange(5, 25, 5);
+
+  // Engine picks ONE random chunk size per plan via randInt(8,25).
+  // Use midpoint (16 chars) for chunk count, then vary the per-chunk delays.
   const charCount = wordCount * 5;
-  const chunkSize = 15;
+  const chunkSize = 16;
   const numChunks = Math.max(1, Math.ceil(charCount / chunkSize));
-  const thinkPauses = Math.floor(numChunks / 6); // ~1 per 6 chunks
-  const minTypingMs = Math.max(0, numChunks - 1) * 2_000 + thinkPauses * 15_000;
-  const maxTypingMs = Math.max(0, numChunks - 1) * 8_000 + thinkPauses * 50_000;
+  const delays = Math.max(0, numChunks - 1); // first chunk has no delay
+
+  // Thinking pauses REPLACE normal delays (not additive). Engine: every 4-8 chunks → 15-50s
+  const minThinkCount = Math.floor(delays / 9); // ~1 per 8 chunks (conservative)
+  const maxThinkCount = Math.floor(delays / 5); // ~1 per 4 chunks (aggressive)
+
+  // Min: few thinking pauses (15s each), rest are fast normal delays (2s)
+  const minTypingMs = (delays - minThinkCount) * 2_000 + minThinkCount * 15_000;
+  // Max: many thinking pauses (50s each), rest are slow normal delays (8s)
+  const maxTypingMs = (delays - maxThinkCount) * 8_000 + maxThinkCount * 50_000;
 
   return {
-    minMinutes: Math.max(1, Math.ceil((minTypingMs / 60_000) + pauseTotal)),
-    maxMinutes: Math.max(1, Math.ceil((maxTypingMs / 60_000) + pauseTotal)),
+    minMinutes: Math.max(1, Math.ceil((minTypingMs / 60_000) + pauseRange.min)),
+    maxMinutes: Math.max(1, Math.ceil((maxTypingMs / 60_000) + pauseRange.max)),
   };
 }
 

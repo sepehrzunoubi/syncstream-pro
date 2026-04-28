@@ -68,6 +68,7 @@ export function DashboardView() {
       localStorage.removeItem("syncstream_active_job");
       localStorage.removeItem("syncstream_progress");
       localStorage.removeItem("syncstream_settings");
+      localStorage.removeItem("syncstream_source");
     } catch { /* noop */ }
   };
 
@@ -700,7 +701,7 @@ export function DashboardView() {
         )}
 
         {/* ═══ Main Body — 7/5 split ═══ */}
-        <div className="grid grid-cols-12 gap-2.5 auto-rows-min">
+        <div className="grid grid-cols-12 gap-2.5 flex-1 min-h-0">
 
           {/* Left: Source Editor (7 cols) */}
           <div className="col-span-12 md:col-span-7 card-sovereign p-4 flex flex-col min-h-[300px]">
