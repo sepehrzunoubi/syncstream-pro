@@ -38,8 +38,31 @@ export async function POST(req: NextRequest) {
   // Bump generation so any stale process loops self-terminate
   const nextGen = (job.generation ?? 0) + 1;
 
-  // Mark job as running again with new generation
-  await setJob({ ...job, status: "running", activity: "Resuming…", lastUpdate: Date.now(), generation: nextGen });
+  // Recompute the absolute eta + next-action targets from the FULL remaining
+  // plan (pause cleared remainingDelayMs, so the current action restarts at its
+  // original delayMs). The dashboard's first poll after resume will see the
+  // corrected wall-clock targets immediately, no stale data window.
+  const now = Date.now();
+  const actions = savedPayload.actions;
+  const fromIdx = savedPayload.currentAction;
+  let remainingPlanMs = 0;
+  for (let i = fromIdx; i < actions.length; i++) remainingPlanMs += actions[i].delayMs;
+  const currentDelayMs = fromIdx < actions.length ? actions[fromIdx].delayMs : 0;
+
+  // Mark job as running again with new generation + fresh wall-clock targets
+  await setJob({
+    ...job,
+    status: "running",
+    activity: "Resuming…",
+    lastUpdate: now,
+    pausedAt: undefined,
+    generation: nextGen,
+    eta: remainingPlanMs,
+    etaTargetAt: now + remainingPlanMs,
+    nextActionAt: currentDelayMs > 0 ? now + currentDelayMs : undefined,
+    nextDelayMs: currentDelayMs,
+    currentPauseDelayMs: 0,
+  });
 
   // Pass generation to the process loop so it can verify it's still current
   const payloadWithGen = { ...payload, generation: nextGen };

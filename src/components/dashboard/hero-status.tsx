@@ -32,37 +32,42 @@ export function HeroStatus({
     ? Math.min((metrics.charsSent / metrics.totalChars) * 100, 100)
     : 0);
 
-  // Use server-sent ETA and smooth it client-side between SSE events
+  // ETA is driven by an ABSOLUTE wall-clock target (etaTargetAt) so it stays
+  // accurate after a tab close/reopen — no client-side accumulator, no drift.
+  // Falls back to (now + relative eta) for back-compat with in-flight legacy jobs.
   const [remaining, setRemaining] = useState(0);
-  const lastEtaRef = React.useRef<{ eta: number; receivedAt: number }>({ eta: 0, receivedAt: 0 });
+  const frozenRemainingRef = React.useRef<number>(0);
 
-  // When we get a new eta from the server, snapshot it
-  useEffect(() => {
-    if (status === "syncing" && metrics?.eta != null) {
-      lastEtaRef.current = { eta: metrics.eta, receivedAt: Date.now() };
-    }
-  }, [status, metrics?.eta, metrics?.actionIndex]);
-
-  // Smooth countdown between server updates — freeze on pause
+  // While syncing: tick against the absolute target every 200ms.
+  // While paused:  freeze whatever value we last computed.
+  // While idle/done/error: zero out.
   useEffect(() => {
     if (status === "paused") {
-      // Keep the last known remaining value frozen — don't reset or tick
+      // Capture frozen value once on transition; keep it displayed.
+      setRemaining(frozenRemainingRef.current);
       return;
     }
     if (status !== "syncing") {
       setRemaining(0);
+      frozenRemainingRef.current = 0;
       return;
     }
     const tick = () => {
-      const { eta, receivedAt } = lastEtaRef.current;
-      if (!receivedAt) { setRemaining(0); return; }
-      const elapsed = Date.now() - receivedAt;
-      setRemaining(Math.max(0, eta - elapsed));
+      const target = metrics?.etaTargetAt
+        ?? (metrics?.eta != null ? Date.now() + metrics.eta : 0);
+      if (!target) {
+        setRemaining(0);
+        frozenRemainingRef.current = 0;
+        return;
+      }
+      const r = Math.max(0, target - Date.now());
+      frozenRemainingRef.current = r;
+      setRemaining(r);
     };
     tick();
     const id = setInterval(tick, 200);
     return () => clearInterval(id);
-  }, [status]);
+  }, [status, metrics?.etaTargetAt, metrics?.eta]);
 
   // Scope error state
   if (scopeError) {

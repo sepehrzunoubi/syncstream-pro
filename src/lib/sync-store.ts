@@ -12,7 +12,10 @@ export interface SyncJob {
   totalChars: number;
   totalMinutes: number;
   wpm: number;
+  /** Relative ms to plan completion (kept for back-compat). Prefer etaTargetAt. */
   eta: number;
+  /** Absolute wall-clock ms when whole sync should finish — survives tab close. */
+  etaTargetAt?: number;
   activity: string;
   nextTypoAction?: number;
   nextDelayMs: number;
@@ -25,14 +28,16 @@ export interface SyncJob {
   generation?: number;
   /** Baseline word count in target doc before sync started (for accurate word count display) */
   baselineWordCount?: number;
-  /** V2 burst: mandatory pause durations in minutes (in execution order) */
+  /** Burst mode: mandatory pause durations in minutes (in execution order) */
   mandatoryPauses?: number[];
-  /** V2 burst: indices of completed mandatory pauses */
+  /** Burst mode: indices of completed mandatory pauses */
   completedPauses?: number[];
   /** Index of next significant pause action (burst modes) */
   nextPauseAction?: number;
   /** Current mandatory pause delay in ms (>0 means a long pause is active — stall detector should wait) */
   currentPauseDelayMs?: number;
+  /** Wall-clock ms when the job was last paused (for UI). */
+  pausedAt?: number;
 }
 
 export interface SyncJobPayload {
@@ -144,6 +149,7 @@ export function jobToEvent(job: SyncJob): StreamEvent {
     nextDelayMs: job.nextDelayMs,
     nextActionAt: job.nextActionAt,
     eta: job.eta,
+    etaTargetAt: job.etaTargetAt,
     wpm: job.wpm,
     activity: job.activity,
     status: `Action ${job.currentAction + 1}/${job.totalActions}`,

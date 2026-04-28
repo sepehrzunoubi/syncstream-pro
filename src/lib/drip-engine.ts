@@ -1,11 +1,12 @@
 /**
- * Drip Engine v4 — Two modes: Human Pace + Burst Mode.
+ * Drip Engine v5 — Two modes: Human Pace + Burst Mode.
  *
  * Human Pace: Constant sync over a fixed duration.
- * Burst Mode: Random writing sessions with natural gaps. Auto-calculates
- *             total duration from word count. Sessions last 1-8 min with
- *             2-25 min pauses between them. Typo frequency + pause variance
- *             are user-configurable.
+ * Burst Mode: Mandatory pause checkpoints + natural micro-typed segments.
+ *             Auto-calculates total duration from word count. Inserts text in
+ *             tiny micro-chunks (1-3 words) with realistic 2-8s delays plus
+ *             periodic thinking pauses, and a handful of multi-minute mandatory
+ *             pauses spaced through the doc. Typo frequency is user-configurable.
  */
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ export interface DripAction {
   delayMs: number;
   /** Human-readable activity label for the UI */
   activity: string;
-  /** V2 burst: index into the mandatoryPauses array (only set on mandatory pause actions) */
+  /** Burst mode: index into the mandatoryPauses array (only set on mandatory pause actions) */
   mandatoryPauseIndex?: number;
 }
 
@@ -39,7 +40,7 @@ export interface DripPlan {
   actions: DripAction[];
   totalChars: number;
   totalMinutes: number;
-  /** V2 burst: mandatory pause durations in minutes (in execution order, already shuffled) */
+  /** Burst mode: mandatory pause durations in minutes (in execution order, already shuffled) */
   mandatoryPauses?: number[];
 }
 
@@ -52,7 +53,10 @@ export interface StreamEvent {
   nextDelayMs: number;
   /** Absolute timestamp (ms) when the current delay ends */
   nextActionAt?: number;
+  /** Relative ms to plan completion (kept for back-compat; prefer etaTargetAt) */
   eta: number;
+  /** Absolute wall-clock ms when the whole sync is expected to finish. Survives tab close. */
+  etaTargetAt?: number;
   wpm: number;
   activity: string;
   status: string;
@@ -60,9 +64,9 @@ export interface StreamEvent {
   nextTypoAction?: number;
   /** Index of next significant pause action (burst modes) */
   nextPauseAction?: number;
-  /** V2 burst: mandatory pause durations in minutes */
+  /** Burst mode: mandatory pause durations in minutes */
   mandatoryPauses?: number[];
-  /** V2 burst: indices of completed mandatory pauses */
+  /** Burst mode: indices of completed mandatory pauses */
   completedPauses?: number[];
   /** Timestamp of last server-side update — used for client-side stall detection */
   lastUpdate?: number;
@@ -358,136 +362,6 @@ function buildHumanPlan(
   return { actions: textActions, totalChars, totalMinutes: durationMinutes };
 }
 
-// ── Burst Mode Plan ───────────────────────────────────────────────────────
-
-const BURST_PAUSE_ACTIVITIES = [
-  "Taking a break…",
-  "Thinking…",
-  "Re-reading…",
-  "Researching…",
-  "Paused",
-  "Away…",
-];
-
-/**
- * Build a burst-mode plan: simple sentence-level dripping with random gaps.
- *
- * Pattern: bursts of rapid typing (17-55s between chunks) separated by
- * natural pauses (1-4 minutes). This creates realistic Google Docs version
- * history — visible editing activity, then silence, then more editing.
- *
- * All delays are short enough to fit within Vercel's 5-min function timeout,
- * eliminating the chaining problems that plagued the old session-based design.
- *
- * No user-configurable pause length — burst mode is fully automatic.
- * Only typoFrequency is user-controllable.
- */
-function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
-  const typoFreq = options.typoFrequency ?? 0.5;
-  const [typoMin, typoMax] = typoIntervalRange(typoFreq);
-  const totalChars = text.length;
-
-  // Split text into sentence-sized chunks (50-100 chars on word boundaries)
-  const chunks = chunkText(text, randInt(50, 100));
-
-  const actions: DripAction[] = [];
-  let charsSinceTypo = 0;
-  let nextTypoAt = randInt(typoMin, typoMax);
-
-  // Tracks how many chunks remain in the current "burst" before a gap
-  let chunksUntilBreak = randInt(2, 6);
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-
-    let delay: number;
-    let activity: string;
-
-    if (i === 0) {
-      // First chunk fires immediately
-      delay = 0;
-      activity = "Typing…";
-    } else if (chunksUntilBreak <= 0) {
-      // Start of a new burst — insert an inter-burst gap
-      const roll = Math.random();
-      if (roll < 0.15) {
-        // Quick resume — looks like the writer came right back
-        delay = randInt(15_000, 45_000);
-      } else if (roll < 0.70) {
-        // Normal gap — 1-2.5 minutes
-        delay = randInt(60_000, 150_000);
-      } else {
-        // Longer gap — 2.5-4 minutes
-        delay = randInt(150_000, 240_000);
-      }
-      activity = BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)];
-      // Reset burst counter
-      chunksUntilBreak = randInt(2, 6);
-    } else {
-      // Within a burst — short delay simulating active typing
-      delay = randInt(17_000, 55_000);
-      activity = "Typing…";
-    }
-
-    chunksUntilBreak--;
-
-    // Typo injection
-    if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
-      const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
-      const before = chunk.slice(0, splitPoint);
-      const after = chunk.slice(splitPoint);
-
-      if (before.length > 0) {
-        actions.push({
-          kind: "insert",
-          text: before,
-          delayMs: delay,
-          activity,
-        });
-        delay = randInt(800, 2000);
-        activity = "Typing…";
-      }
-
-      const { typo, correct } = generateSmartTypo(after);
-      const remainder = after.slice(correct.length);
-
-      actions.push({
-        kind: "typo",
-        text: correct,
-        typoChars: typo,
-        delayMs: randInt(800, 2500),
-        activity: "Correcting typo…",
-      });
-
-      if (remainder.length > 0) {
-        actions.push({
-          kind: "insert",
-          text: remainder,
-          delayMs: randInt(1000, 4000),
-          activity: "Typing…",
-        });
-      }
-
-      charsSinceTypo = remainder.length;
-      nextTypoAt = randInt(typoMin, typoMax);
-    } else {
-      actions.push({
-        kind: "insert",
-        text: chunk,
-        delayMs: delay,
-        activity,
-      });
-      charsSinceTypo += chunk.length;
-    }
-  }
-
-  // Calculate total duration from the generated plan
-  const totalMs = actions.reduce((sum, a) => sum + a.delayMs, 0);
-  const totalMinutes = Math.max(1, Math.ceil(totalMs / 60_000));
-
-  return { actions, totalChars, totalMinutes };
-}
-
 // ── Public Entry Point ────────────────────────────────────────────────────
 
 /**
@@ -497,26 +371,22 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
  * @param durationMinutes Total sync duration (ignored in burst mode)
  * @param mode            "human" or "burst"
  * @param options         Typo frequency + pause variance
- * @param burstVersion    1 = random gaps (default), 2 = mandatory pause checkpoints
  */
 export function buildDripPlan(
   text: string,
   durationMinutes: number,
   mode: PaceMode,
-  options: PlanOptions = {},
-  burstVersion: 1 | 2 = 1
+  options: PlanOptions = {}
 ): DripPlan {
   if (mode === "burst") {
-    return burstVersion === 2
-      ? buildBurstV2Plan(text, options)
-      : buildBurstPlan(text, options);
+    return buildBurstPlan(text, options);
   }
   return buildHumanPlan(text, durationMinutes, options);
 }
 
-// ── Burst V2: Mandatory Pause Checkpoints ────────────────────────────────
+// ── Burst Mode: Mandatory Pause Checkpoints + Micro-typing ──────────────
 
-const V2_PAUSE_ACTIVITIES = [
+const BURST_PAUSE_ACTIVITIES = [
   "Break — reviewing notes…",
   "Break — stepped away…",
   "Break — thinking…",
@@ -561,17 +431,17 @@ function shuffle<T>(arr: T[]): T[] {
 }
 
 /**
- * Build a V2 burst plan: mandatory pause checkpoints + natural micro-typed segments.
+ * Build a burst plan: mandatory pause checkpoints + natural micro-typed segments.
  *
- * Key difference from V1: text is inserted in tiny micro-chunks (1-3 words each)
- * with short realistic delays (2-8s) to simulate actual keystroke rhythm. Every
- * few micro-chunks, a "thinking pause" (15-50s) is inserted. This produces many
- * small edits in Google Docs version history instead of a few large paste-like ones,
- * achieving a high GPTZero natural typing score.
+ * Text is inserted in tiny micro-chunks (1-3 words each) with short realistic
+ * delays (2-8s) to simulate actual keystroke rhythm. Every few micro-chunks,
+ * a "thinking pause" (15-50s) is inserted. This produces many small edits in
+ * Google Docs version history instead of a few large paste-like ones, achieving
+ * a high GPTZero natural typing score.
  *
  * Mandatory pauses are shuffled so their durations appear in random order.
  */
-function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
+function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
   const typoFreq = options.typoFrequency ?? 0.5;
   const [typoMin, typoMax] = typoIntervalRange(typoFreq);
   const totalChars = text.length;
@@ -670,7 +540,7 @@ function buildBurstV2Plan(text: string, options: PlanOptions): DripPlan {
         kind: "pause",
         text: "",
         delayMs: pauseMs,
-        activity: V2_PAUSE_ACTIVITIES[randInt(0, V2_PAUSE_ACTIVITIES.length - 1)],
+        activity: BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)],
         mandatoryPauseIndex: seg,
       });
       // Reset thinking-pause counter after mandatory pause

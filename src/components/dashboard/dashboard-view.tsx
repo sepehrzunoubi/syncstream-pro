@@ -24,7 +24,6 @@ export function DashboardView() {
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [typoFrequency, setTypoFrequency] = useState(0.5);
   const [pauseVariance, setPauseVariance] = useState(0.5);
-  const [burstVersion, setBurstVersion] = useState<1 | 2>(1);
 
   // Schedule state
   const [isScheduled, setIsScheduled] = useState(false);
@@ -35,128 +34,109 @@ export function DashboardView() {
   const [metrics, setMetrics] = useState<StreamEvent | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const syncStartRef = useRef<number>(0);
   const [nextSyncCountdown, setNextSyncCountdown] = useState(0);
   const [realWordCount, setRealWordCount] = useState(0);
   const [baselineWordCount, setBaselineWordCount] = useState(0);
-  const [pausedCharsSent, setPausedCharsSent] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [isBooting, setIsBooting] = useState(false);
-  /** Source word count persisted from the session that started the sync (survives tab close) */
-  const [savedSourceWordCount, setSavedSourceWordCount] = useState(0);
   const lastPauseResumeRef = useRef<number>(0);
-  const lastCharsSentRef = useRef<number>(0);
   const startSyncRef = useRef<(resumeFromChar?: number) => Promise<void>>();
-  const pauseConfirmedRef = useRef(false);
 
-  // Persist jobId + sync progress to localStorage so background sync survives tab close
+  // ── Persistent session blob ────────────────────────────────────────────
+  // Single source of truth in localStorage for everything needed to restore the
+  // dashboard after a tab close. Progress (charsSent, ETAs, action index) lives
+  // on the SERVER only; the client just renders what /api/sync/status returns.
+  type SyncSession = {
+    jobId: string;
+    sourceText: string;
+    selectedDocId: string;
+    rhythm: string;
+    durationMinutes: number;
+    typoFrequency: number;
+    pauseVariance: number;
+    baselineWordCount: number;
+  };
+  const SESSION_KEY = "syncstream_session";
+  const SCHEDULE_KEY = "syncstream_schedule";
+
+  const saveSession = (s: SyncSession) => {
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch { /* quota */ }
+  };
+  const clearSession = () => {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem("syncstream_active_job");
+      localStorage.removeItem("syncstream_progress");
+      localStorage.removeItem("syncstream_settings");
+    } catch { /* noop */ }
+  };
+
   const saveJobId = (id: string | null) => {
     jobIdRef.current = id;
     setActiveJobId(id);
-    if (id) {
-      localStorage.setItem("syncstream_active_job", id);
-    } else {
-      localStorage.removeItem("syncstream_active_job");
-      localStorage.removeItem("syncstream_settings");
-      localStorage.removeItem("syncstream_progress");
-    }
+    if (!id) clearSession();
   };
 
-  // Use refs for progress values so saveProgress has a stable identity
-  const progressRef = useRef({ pausedCharsSent: 0, baselineWordCount: 0, realWordCount: 0 });
+  // On mount: restore persisted session and resume polling if a job is still alive
   useEffect(() => {
-    progressRef.current = { pausedCharsSent, baselineWordCount, realWordCount };
-  }, [pausedCharsSent, baselineWordCount, realWordCount]);
-
-  const saveProgress = useCallback((overrides: Record<string, number> = {}) => {
-    const data = { ...progressRef.current, ...overrides };
-    localStorage.setItem("syncstream_progress", JSON.stringify(data));
-  }, []);
-
-  // On mount: check if there's an active background job from a previous session
-  useEffect(() => {
-    const savedJobId = localStorage.getItem("syncstream_active_job");
-    if (!savedJobId) return;
-
-    // Restore persisted progress data
+    let saved: SyncSession | null = null;
     try {
-      const prog = JSON.parse(localStorage.getItem("syncstream_progress") || "{}");
-      if (typeof prog.pausedCharsSent === "number") setPausedCharsSent(prog.pausedCharsSent);
-      if (typeof prog.baselineWordCount === "number") setBaselineWordCount(prog.baselineWordCount);
-      if (typeof prog.realWordCount === "number") setRealWordCount(prog.realWordCount);
-    } catch { /* no saved progress */ }
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (raw) saved = JSON.parse(raw) as SyncSession;
+    } catch { saved = null; }
 
-    // Check if the job is still running
-    fetch(`/api/sync/status?jobId=${savedJobId}`)
+    // Restore a pending schedule even if there's no active job
+    try {
+      const schedRaw = localStorage.getItem(SCHEDULE_KEY);
+      if (schedRaw) {
+        const at = Number(schedRaw);
+        if (Number.isFinite(at) && at > Date.now()) {
+          scheduledTimeRef.current = at;
+          setIsScheduled(true);
+        } else {
+          localStorage.removeItem(SCHEDULE_KEY);
+        }
+      }
+    } catch { /* noop */ }
+
+    if (!saved?.jobId) return;
+
+    // Restore UI settings + source text up-front so the preview renders correctly
+    setSourceText(saved.sourceText || "");
+    if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
+    if (saved.rhythm) setRhythm(saved.rhythm);
+    if (saved.durationMinutes) setDurationMinutes(saved.durationMinutes);
+    if (typeof saved.typoFrequency === "number") setTypoFrequency(saved.typoFrequency);
+    if (typeof saved.pauseVariance === "number") setPauseVariance(saved.pauseVariance);
+    if (typeof saved.baselineWordCount === "number") setBaselineWordCount(saved.baselineWordCount);
+
+    fetch(`/api/sync/status?jobId=${saved.jobId}`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        if (!data) {
-          localStorage.removeItem("syncstream_active_job");
-          localStorage.removeItem("syncstream_progress");
-          return;
+        if (!data) { clearSession(); return; }
+        if (data.event?.baselineWordCount != null) {
+          setBaselineWordCount(data.event.baselineWordCount);
         }
         if (data.jobStatus === "running" || data.jobStatus === "pending") {
-          // Resume polling
-          jobIdRef.current = savedJobId;
-          setActiveJobId(savedJobId);
+          jobIdRef.current = saved!.jobId;
+          setActiveJobId(saved!.jobId);
           setMetrics(data.event);
           setSyncStatus("syncing");
-
-          // Use server-side baseline (authoritative)
-          if (data.event?.baselineWordCount != null) {
-            setBaselineWordCount(data.event.baselineWordCount);
-          }
-
-          // Restore UI settings from the session that started this job
-          try {
-            const saved = JSON.parse(localStorage.getItem("syncstream_settings") || "");
-            if (saved.rhythm) setRhythm(saved.rhythm);
-            if (saved.durationMinutes) setDurationMinutes(saved.durationMinutes);
-            if (saved.typoFrequency !== undefined) setTypoFrequency(saved.typoFrequency);
-            if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
-            if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
-            if (saved.burstVersion) setBurstVersion(saved.burstVersion);
-            if (saved.sourceWordCount) setSavedSourceWordCount(saved.sourceWordCount);
-          } catch { /* no saved settings */ }
         } else if (data.jobStatus === "paused") {
-          // Restore paused state
-          jobIdRef.current = savedJobId;
-          setActiveJobId(savedJobId);
+          jobIdRef.current = saved!.jobId;
+          setActiveJobId(saved!.jobId);
           setMetrics(data.event);
           setSyncStatus("paused");
-
-          // Use server-side baseline (authoritative)
-          if (data.event?.baselineWordCount != null) {
-            setBaselineWordCount(data.event.baselineWordCount);
-          }
-
-          try {
-            const saved = JSON.parse(localStorage.getItem("syncstream_settings") || "");
-            if (saved.rhythm) setRhythm(saved.rhythm);
-            if (saved.durationMinutes) setDurationMinutes(saved.durationMinutes);
-            if (saved.typoFrequency !== undefined) setTypoFrequency(saved.typoFrequency);
-            if (saved.pauseVariance !== undefined) setPauseVariance(saved.pauseVariance);
-            if (saved.selectedDocId) setSelectedDocId(saved.selectedDocId);
-            if (saved.burstVersion) setBurstVersion(saved.burstVersion);
-            if (saved.sourceWordCount) setSavedSourceWordCount(saved.sourceWordCount);
-          } catch { /* no saved settings */ }
         } else if (data.jobStatus === "done") {
           setMetrics(data.event);
-          setPausedCharsSent(data.event.totalChars ?? 0);
           setSyncStatus("done");
-          localStorage.removeItem("syncstream_active_job");
-          localStorage.removeItem("syncstream_settings");
-          localStorage.removeItem("syncstream_progress");
+          clearSession();
         } else {
-          localStorage.removeItem("syncstream_active_job");
-          localStorage.removeItem("syncstream_settings");
-          localStorage.removeItem("syncstream_progress");
+          clearSession();
         }
       })
-      .catch(() => {
-        localStorage.removeItem("syncstream_active_job");
-        localStorage.removeItem("syncstream_progress");
-      });
+      .catch(() => { clearSession(); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch recent docs on mount
@@ -240,20 +220,8 @@ export function DashboardView() {
 
     setSyncStatus("syncing");
     setMetrics(null);
-    lastCharsSentRef.current = 0;
-    syncStartRef.current = Date.now();
-    // V2 boot-up overlay: show loading until first real metrics arrive
-    if (rhythm === "burst" && burstVersion === 2) setIsBooting(true);
-
-    // Persist UI settings so they survive tab close/reopen
-    const srcWc = textToSync.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
-    localStorage.setItem("syncstream_settings", JSON.stringify({
-      rhythm, durationMinutes, typoFrequency, pauseVariance, selectedDocId, burstVersion,
-      sourceWordCount: srcWc,
-    }));
-    localStorage.setItem("syncstream_progress", JSON.stringify({
-      pausedCharsSent: 0, baselineWordCount: baseline, realWordCount: baseline,
-    }));
+    // Burst boot-up overlay: show loading until first real metrics arrive
+    if (rhythm === "burst") setIsBooting(true);
 
     // Small delay to ensure UI updates before fetch starts
     await new Promise(r => setTimeout(r, 50));
@@ -276,7 +244,6 @@ export function DashboardView() {
           durationMinutes: adjustedDuration,
           typoFrequency,
           pauseVariance,
-          burstVersion: rhythm === "burst" ? burstVersion : undefined,
         }),
       });
 
@@ -289,13 +256,25 @@ export function DashboardView() {
 
       const data = await res.json();
       saveJobId(data.jobId);
+      // Persist a single session blob so reload restores everything
+      saveSession({
+        jobId: data.jobId,
+        sourceText: textToSync,
+        selectedDocId,
+        rhythm,
+        durationMinutes: adjustedDuration,
+        typoFrequency,
+        pauseVariance,
+        baselineWordCount: baseline,
+      });
     } catch (err) {
       console.error("Sync start error:", err);
       setSyncStatus("error");
       setIsBooting(false);
       setIsTransitioning(false);
     }
-  }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, burstVersion, isTransitioning]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, isTransitioning]);
 
   // Poll background job status while syncing
   useEffect(() => {
@@ -312,15 +291,11 @@ export function DashboardView() {
         const data = await res.json();
         const event: StreamEvent = data.event;
         setMetrics(event);
-        lastCharsSentRef.current = event.charsSent ?? 0;
 
-        // Clear V2 boot-up overlay once real progress starts
+        // Clear burst boot-up overlay once real progress starts
         if (isBooting && (event.actionIndex > 0 || (event.charsSent ?? 0) > 0)) {
           setIsBooting(false);
         }
-
-        // Persist progress on every poll so it survives tab close
-        saveProgress();
 
         // Sync server-side baseline so word count is always accurate (survives tab close)
         if (event.baselineWordCount != null) {
@@ -361,9 +336,6 @@ export function DashboardView() {
 
         if (data.jobStatus === "done") {
           setSyncStatus("done");
-          const doneChars = sourceText.length > 0 ? sourceText.length : (event.totalChars ?? 0);
-          setPausedCharsSent(doneChars);
-          lastCharsSentRef.current = 0;
           // Final word count fetch so the stat is accurate on completion
           if (selectedDocId) {
             fetch(`/api/wordcount?documentId=${selectedDocId}`)
@@ -377,20 +349,11 @@ export function DashboardView() {
             setScopeError(true);
           }
           setSyncStatus("error");
-          lastCharsSentRef.current = 0;
           saveJobId(null);
         } else if (data.jobStatus === "cancelled") {
-          // External cancellation
           setSyncStatus("idle");
           saveJobId(null);
         } else if (data.jobStatus === "paused") {
-          // Only snapshot charsSent if pause was server-initiated (not from our pauseSync).
-          // pauseSync already snapshots — avoid double-counting.
-          if (!pauseConfirmedRef.current) {
-            const currentChars = progressRef.current.pausedCharsSent + (event.charsSent ?? 0);
-            setPausedCharsSent(currentChars);
-            saveProgress({ pausedCharsSent: currentChars });
-          }
           setSyncStatus("paused");
         }
       } catch {
@@ -413,32 +376,19 @@ export function DashboardView() {
     if (now - lastPauseResumeRef.current < 2000) return;
     lastPauseResumeRef.current = now;
     setIsTransitioning(true);
-    pauseConfirmedRef.current = false;
 
-    // Pause the background job (keeps the plan in Redis for resume)
     if (jobIdRef.current) {
       try {
-        const res = await fetch("/api/sync/pause", {
+        await fetch("/api/sync/pause", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jobId: jobIdRef.current }),
         });
-        if (res.ok) {
-          pauseConfirmedRef.current = true;
-        }
       } catch { /* best effort — polling will pick up server-side pause */ }
-      // Keep jobId — we need it for resume
     }
-
-    // Snapshot current progress so resume picks up from the right place
-    // Read from ref to avoid stale closure (pausedCharsSent not in deps for perf)
-    const snapshotChars = progressRef.current.pausedCharsSent + lastCharsSentRef.current;
-    setPausedCharsSent(snapshotChars);
-    saveProgress({ pausedCharsSent: snapshotChars });
 
     setSyncStatus("paused");
     setIsTransitioning(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTransitioning, syncStatus]);
 
   const resumeSync = useCallback(async () => {
@@ -462,13 +412,6 @@ export function DashboardView() {
         return;
       }
 
-      // Server charsSent is absolute (includes pre-pause chars), so reset
-      // pausedCharsSent to 0 — otherwise totalCharsSent double-counts.
-      setPausedCharsSent(0);
-      progressRef.current.pausedCharsSent = 0;
-      saveProgress({ pausedCharsSent: 0 });
-      lastCharsSentRef.current = 0;
-      pauseConfirmedRef.current = false;
       setSyncStatus("syncing");
       setActiveJobId(jobIdRef.current);
     } catch (err) {
@@ -496,28 +439,26 @@ export function DashboardView() {
     setMetrics(null);
     setSourceText("");
     setScopeError(false);
-    setPausedCharsSent(0);
     setBaselineWordCount(0);
     setRealWordCount(0);
-    lastCharsSentRef.current = 0;
     setIsScheduled(false);
     setIsBooting(false);
     scheduledTimeRef.current = 0;
-    pauseConfirmedRef.current = false;
+    try { localStorage.removeItem(SCHEDULE_KEY); } catch { /* noop */ }
 
     setIsTransitioning(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTransitioning]);
 
   const isBusy = syncStatus === "syncing";
   const isPaused = syncStatus === "paused";
   const controlsDisabled = isBusy || isPaused;
 
-  // Progress: absolute position in source text
-  // When syncing: pausedCharsSent (from previous sessions) + current session chars
-  // When paused/done: pausedCharsSent is already the absolute position
-  const totalCharsSent = syncStatus === "syncing"
-    ? pausedCharsSent + (metrics?.charsSent ?? 0)
-    : pausedCharsSent;
+  // Progress: server's charsSent is absolute across pause/resume cycles —
+  // it's the single source of truth. No client-side accumulator needed.
+  const totalCharsSent = syncStatus === "done"
+    ? (sourceText.length > 0 ? sourceText.length : (metrics?.totalChars ?? 0))
+    : (metrics?.charsSent ?? 0);
   const effectiveTotalChars = sourceText.length > 0 ? sourceText.length : (metrics?.totalChars ?? 0);
   const pct = effectiveTotalChars > 0
     ? Math.min((totalCharsSent / effectiveTotalChars) * 100, 100)
@@ -541,7 +482,6 @@ export function DashboardView() {
           const data = await res.json();
           const wc = data.wordCount || 0;
           setRealWordCount(wc);
-          saveProgress({ realWordCount: wc });
         }
       } catch (err) {
         console.error("Word count fetch error:", err);
@@ -584,10 +524,10 @@ export function DashboardView() {
 
   const nextSyncSec = (nextSyncCountdown / 1000).toFixed(1);
 
-  // Source word count for Word Count stat — fall back to persisted value, then metrics estimate
+  // Source word count for Word Count stat — derived from restored sourceText
   const sourceWordCount = sourceText.trim()
     ? sourceText.trim().split(/\s+/).filter(w => w.length > 0).length
-    : (savedSourceWordCount > 0 ? savedSourceWordCount : (metrics?.totalChars ? Math.round(metrics.totalChars / 5) : 0));
+    : (metrics?.totalChars ? Math.round(metrics.totalChars / 5) : 0);
 
   // Keep startSyncRef pointing at the latest startSync
   useEffect(() => {
@@ -614,13 +554,16 @@ export function DashboardView() {
   }, [isScheduled]);
 
   const handleScheduleSync = useCallback((delayMinutes: number) => {
-    scheduledTimeRef.current = Date.now() + delayMinutes * 60 * 1000;
+    const at = Date.now() + delayMinutes * 60 * 1000;
+    scheduledTimeRef.current = at;
     setIsScheduled(true);
+    try { localStorage.setItem(SCHEDULE_KEY, String(at)); } catch { /* noop */ }
   }, []);
 
   const cancelSchedule = useCallback(() => {
     setIsScheduled(false);
     scheduledTimeRef.current = 0;
+    try { localStorage.removeItem(SCHEDULE_KEY); } catch { /* noop */ }
   }, []);
 
   if (docsLoading) {
@@ -640,7 +583,7 @@ export function DashboardView() {
     <div className="flex flex-1 items-center justify-center bg-transparent p-4 md:p-8 relative overflow-hidden">
       <div className="w-full max-w-7xl max-h-[92vh] p-4 md:p-6 pb-1 rounded-2xl border border-white/[0.06] bg-[#09090b]/80 backdrop-blur-sm flex flex-col gap-2.5 overflow-hidden relative shadow-2xl z-10">
 
-        {/* ═══ V2 Boot-up Loading Overlay ═══ */}
+        {/* ═══ Burst Boot-up Loading Overlay ═══ */}
         {isBooting && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#09090b]/90 backdrop-blur-md rounded-2xl">
             <div className="flex flex-col items-center gap-3">
@@ -828,8 +771,6 @@ export function DashboardView() {
                 scheduleCountdown={scheduleCountdown}
                 onScheduleSync={handleScheduleSync}
                 onCancelSchedule={cancelSchedule}
-                burstVersion={burstVersion}
-                onBurstVersionChange={setBurstVersion}
               />
             )}
           </div>

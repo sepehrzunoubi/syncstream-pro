@@ -142,6 +142,7 @@ export async function POST(req: NextRequest) {
       totalMinutes,
       wpm: calcWpm(),
       eta: currentAction < totalActions ? calcEta(currentAction) : 0,
+      etaTargetAt: currentAction < totalActions ? Date.now() + calcEta(currentAction) : Date.now(),
       activity: currentAction < totalActions ? actions[currentAction].activity : "Done",
       nextDelayMs: currentAction < totalActions ? actions[currentAction].delayMs : 0,
       nextActionAt: currentAction < totalActions && actions[currentAction].delayMs > 0
@@ -162,9 +163,11 @@ export async function POST(req: NextRequest) {
 
   // Mark as running — account for partial delay on resume
   if (resumeRemainingDelayMs > 0 && currentAction < totalActions) {
+    const etaMs = calcEta(currentAction, resumeRemainingDelayMs);
     await updateJobStore({
       nextActionAt: Date.now() + resumeRemainingDelayMs,
-      eta: calcEta(currentAction, resumeRemainingDelayMs),
+      eta: etaMs,
+      etaTargetAt: Date.now() + etaMs,
     });
   } else {
     await updateJobStore();
@@ -233,10 +236,12 @@ export async function POST(req: NextRequest) {
 
           // Set currentPauseDelayMs so stall detector knows a long pause is active
           const pauseDelayOverride = action.mandatoryPauseIndex != null ? remaining : 0;
+          const etaMs = calcEta(currentAction, remaining);
           await updateJobStore({
             activity: action.activity,
             nextActionAt: Date.now() + remaining,
-            eta: calcEta(currentAction, remaining),
+            eta: etaMs,
+            etaTargetAt: Date.now() + etaMs,
             currentPauseDelayMs: pauseDelayOverride,
           });
         }

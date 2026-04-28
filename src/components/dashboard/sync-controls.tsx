@@ -33,8 +33,6 @@ interface SyncControlsProps {
   scheduleCountdown?: number;
   onScheduleSync?: (delayMinutes: number) => void;
   onCancelSchedule?: () => void;
-  burstVersion?: 1 | 2;
-  onBurstVersionChange?: (v: 1 | 2) => void;
 }
 
 function formatDuration(mins: number): string {
@@ -55,40 +53,9 @@ function formatCountdown(ms: number): string {
 }
 
 /**
- * Estimate burst mode total duration client-side for the UI preview.
- * Mirrors the new simple burst algorithm: sentence-sized chunks grouped
- * into bursts with short intra-burst delays and 1-4 minute gaps between.
+ * Preview mandatory pause schedule for burst mode (mirrors drip-engine logic).
  */
-function estimateBurstDuration(
-  wordCount: number
-): { minMinutes: number; maxMinutes: number } {
-  if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
-  const charCount = wordCount * 5;
-  const chunkSize = 75; // midpoint of engine's 50-100 range
-  const numChunks = Math.max(1, Math.ceil(charCount / chunkSize));
-  const avgBurstSize = 4;
-  const numBursts = Math.max(1, Math.ceil(numChunks / avgBurstSize));
-  const numGaps = Math.max(0, numBursts - 1);
-
-  // Intra-burst: 17-55s per chunk (excluding first chunk of each burst)
-  const intraChunks = Math.max(0, numChunks - numBursts);
-  const minIntraMs = intraChunks * 17_000;
-  const maxIntraMs = intraChunks * 55_000;
-
-  // Inter-burst gaps: 60-240s
-  const minGapMs = numGaps * 60_000;
-  const maxGapMs = numGaps * 240_000;
-
-  return {
-    minMinutes: Math.max(1, Math.ceil((minIntraMs + minGapMs) / 60_000)),
-    maxMinutes: Math.max(1, Math.ceil((maxIntraMs + maxGapMs) / 60_000)),
-  };
-}
-
-/**
- * Preview mandatory pause schedule for V2 burst mode (mirrors drip-engine logic).
- */
-function getV2PausePreview(wordCount: number): number[] {
+function getBurstPausePreview(wordCount: number): number[] {
   if (wordCount <= 0) return [];
   if (wordCount <= 100) return [2, 5, 7];
   if (wordCount <= 300) return [3, 6, 9, 4];
@@ -97,11 +64,11 @@ function getV2PausePreview(wordCount: number): number[] {
   return [7, 12, 18, 15, 9];
 }
 
-function estimateV2Duration(
+function estimateBurstDuration(
   wordCount: number
 ): { minMinutes: number; maxMinutes: number } {
   if (wordCount <= 0) return { minMinutes: 0, maxMinutes: 0 };
-  const pauses = getV2PausePreview(wordCount);
+  const pauses = getBurstPausePreview(wordCount);
   const pauseTotal = pauses.reduce((s, p) => s + p, 0);
 
   // Micro-chunk typing estimate: ~15 chars/chunk, 2-8s between + thinking pauses
@@ -163,8 +130,6 @@ export function SyncControls({
   scheduleCountdown,
   onScheduleSync,
   onCancelSchedule,
-  burstVersion = 1,
-  onBurstVersionChange,
 }: SyncControlsProps) {
   const [scheduleDelay, setScheduleDelay] = useState(1); // index into SCHEDULE_PRESETS
 
@@ -174,14 +139,12 @@ export function SyncControls({
   }, [sourceText]);
 
   const burstEstimate = useMemo(
-    () => burstVersion === 2
-      ? estimateV2Duration(sourceWordCount)
-      : estimateBurstDuration(sourceWordCount),
-    [sourceWordCount, burstVersion]
+    () => estimateBurstDuration(sourceWordCount),
+    [sourceWordCount]
   );
 
-  const v2Pauses = useMemo(
-    () => getV2PausePreview(sourceWordCount),
+  const burstPauses = useMemo(
+    () => getBurstPausePreview(sourceWordCount),
     [sourceWordCount]
   );
 
@@ -278,28 +241,8 @@ export function SyncControls({
               </span>
             </div>
             <div className="text-[10px] text-zinc-600 mt-0.5 leading-tight">
-              Random sessions with natural gaps
+              Mandatory pause checkpoints · micro-typing
             </div>
-            {/* V2 toggle — top right corner */}
-            {isBurst && (
-              <div
-                className="absolute top-1.5 right-1.5"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onBurstVersionChange?.(burstVersion === 2 ? 1 : 2);
-                }}
-              >
-                <span
-                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider cursor-pointer transition-all ${
-                    burstVersion === 2
-                      ? "bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-[0_0_6px_rgba(168,85,247,0.2)]"
-                      : "bg-white/[0.04] text-zinc-600 border border-white/[0.06] hover:text-zinc-400 hover:border-white/[0.12]"
-                  }`}
-                >
-                  V2
-                </span>
-              </div>
-            )}
           </button>
         </div>
       </div>
@@ -343,22 +286,20 @@ export function SyncControls({
             </span>
           </div>
           <p className="text-[10px] text-zinc-600 mt-1 leading-tight">
-            {burstVersion === 2
-              ? "V2 mode: mandatory pause checkpoints create realistic version history gaps."
-              : "Auto-calculated from word count. Burst mode drips sentences at random intervals with natural pauses between writing bursts."}
+            Mandatory pause checkpoints create realistic version-history gaps. Auto-calculated from word count.
           </p>
 
-          {/* V2 Mandatory Pause Preview */}
-          {burstVersion === 2 && sourceWordCount > 0 && (
+          {/* Mandatory Pause Preview */}
+          {sourceWordCount > 0 && (
             <div className="mt-2.5 pt-2 border-t border-purple-500/10">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <Timer className="w-3 h-3 text-purple-400/60" />
                 <span className="text-[9px] font-bold uppercase tracking-[1.5px] text-zinc-600">
-                  Required Pauses ({v2Pauses.length})
+                  Required Pauses ({burstPauses.length})
                 </span>
               </div>
               <div className="flex flex-wrap gap-1">
-                {v2Pauses.map((mins, i) => (
+                {burstPauses.map((mins, i) => (
                   <span
                     key={i}
                     className="inline-flex items-center px-1.5 py-0.5 rounded bg-purple-500/8 border border-purple-500/15 text-[10px] font-mono text-purple-400/80"
