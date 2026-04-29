@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { RotateCw, Clock, Zap, Shuffle, Info, FilePlus, Timer } from "lucide-react";
+import { RotateCw, Clock, Zap, Shuffle, Info, FilePlus, Timer, Sliders, Plus, X } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { SliderWithTooltip } from "@/components/ui/slider";
 
@@ -10,6 +10,10 @@ const DURATION_PRESETS = [5, 15, 30, 45, 60, 120, 300, 720, 1440];
 
 // Schedule delay presets in minutes
 const SCHEDULE_PRESETS = [5, 10, 15, 30, 60, 120, 180, 360];
+
+// Custom-mode pause catalog (minutes). Must match server validation list.
+const CUSTOM_PAUSE_CATALOG = [4, 10, 15, 30, 45, 60, 90, 120, 180];
+const MAX_CUSTOM_PAUSES = 4;
 
 interface SyncControlsProps {
   docs: { id: string; name: string; modifiedTime: string }[];
@@ -33,6 +37,8 @@ interface SyncControlsProps {
   scheduleCountdown?: number;
   onScheduleSync?: (delayMinutes: number) => void;
   onCancelSchedule?: () => void;
+  customPauses?: number[];
+  onCustomPausesChange?: (p: number[]) => void;
 }
 
 function formatDuration(mins: number): string {
@@ -156,6 +162,8 @@ export function SyncControls({
   scheduleCountdown,
   onScheduleSync,
   onCancelSchedule,
+  customPauses = [],
+  onCustomPausesChange,
 }: SyncControlsProps) {
   const [scheduleDelay, setScheduleDelay] = useState(1); // index into SCHEDULE_PRESETS
 
@@ -174,7 +182,30 @@ export function SyncControls({
     [sourceWordCount]
   );
 
+  // Custom mode: count sentences from source text (mirrors engine splitter)
+  const sentenceCount = useMemo(() => {
+    const trimmed = sourceText.trim();
+    if (!trimmed) return 0;
+    const matches = trimmed.match(/[^.!?\n]+[.!?]+["')\]]*\s*|[^.!?\n]+\n+|[^.!?\n]+$/g);
+    return matches?.filter((s) => s.trim().length > 0).length || 1;
+  }, [sourceText]);
+
+  const customBaseMinutes = sentenceCount; // 1 sentence per minute
+  const customPauseTotal = customPauses.reduce((s, p) => s + p, 0);
+  const customFinalMinutes = customBaseMinutes + customPauseTotal;
+
+  const addCustomPause = (mins: number) => {
+    if (!onCustomPausesChange) return;
+    if (customPauses.length >= MAX_CUSTOM_PAUSES) return;
+    onCustomPausesChange([...customPauses, mins]);
+  };
+  const removeCustomPause = (idx: number) => {
+    if (!onCustomPausesChange) return;
+    onCustomPausesChange(customPauses.filter((_, i) => i !== idx));
+  };
+
   const isBurst = rhythm === "burst";
+  const isCustom = rhythm === "custom";
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -231,19 +262,19 @@ export function SyncControls({
       {/* ═══ Writing Rhythm ═══ */}
       <div>
         <Label className="mb-2.5 block">Writing Rhythm</Label>
-        <div className="flex gap-1.5">
+        <div className="grid grid-cols-3 gap-1.5">
           <button
             onClick={() => onRhythmChange("human")}
             disabled={disabled}
-            className={`flex-1 px-3 py-2.5 rounded-lg text-left transition-all ${
-              !isBurst
+            className={`px-2.5 py-2.5 rounded-lg text-left transition-all ${
+              rhythm === "human"
                 ? "bg-blue-500/10 border border-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.1)]"
                 : "bg-[#09090b] border border-white/[0.04] hover:border-white/[0.08]"
             } disabled:opacity-40`}
           >
             <div className="flex items-center gap-1.5">
-              <Zap className={`w-3 h-3 ${!isBurst ? "text-blue-400" : "text-zinc-500"}`} />
-              <span className={`text-[12px] font-semibold ${!isBurst ? "text-blue-400" : "text-zinc-300"}`}>
+              <Zap className={`w-3 h-3 ${rhythm === "human" ? "text-blue-400" : "text-zinc-500"}`} />
+              <span className={`text-[12px] font-semibold ${rhythm === "human" ? "text-blue-400" : "text-zinc-300"}`}>
                 Human Pace
               </span>
             </div>
@@ -254,7 +285,7 @@ export function SyncControls({
           <button
             onClick={() => onRhythmChange("burst")}
             disabled={disabled}
-            className={`flex-1 px-3 py-2.5 rounded-lg text-left transition-all relative ${
+            className={`px-2.5 py-2.5 rounded-lg text-left transition-all relative ${
               isBurst
                 ? "bg-purple-500/10 border border-purple-500/30 shadow-[0_0_10px_rgba(168,85,247,0.1)]"
                 : "bg-[#09090b] border border-white/[0.04] hover:border-white/[0.08]"
@@ -270,11 +301,30 @@ export function SyncControls({
               Mandatory pause checkpoints · micro-typing
             </div>
           </button>
+          <button
+            onClick={() => onRhythmChange("custom")}
+            disabled={disabled}
+            className={`px-2.5 py-2.5 rounded-lg text-left transition-all relative ${
+              isCustom
+                ? "bg-emerald-500/10 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)]"
+                : "bg-[#09090b] border border-white/[0.04] hover:border-white/[0.08]"
+            } disabled:opacity-40`}
+          >
+            <div className="flex items-center gap-1.5">
+              <Sliders className={`w-3 h-3 ${isCustom ? "text-emerald-400" : "text-zinc-500"}`} />
+              <span className={`text-[12px] font-semibold ${isCustom ? "text-emerald-400" : "text-zinc-300"}`}>
+                Custom
+              </span>
+            </div>
+            <div className="text-[10px] text-zinc-600 mt-0.5 leading-tight">
+              1 sentence/min · pick your own pauses
+            </div>
+          </button>
         </div>
       </div>
 
       {/* ═══ Duration (Human Pace only) ═══ */}
-      {!isBurst && (
+      {!isBurst && !isCustom && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <Label className="inline-flex items-center">Duration<Tooltip text="Total time to spread typing over" /></Label>
@@ -339,6 +389,96 @@ export function SyncControls({
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ═══ Custom Mode Builder ═══ */}
+      {isCustom && (
+        <div className="rounded-lg border border-emerald-500/15 bg-emerald-500/[0.03] px-3 py-2.5">
+          {/* Base ETA from sentence count */}
+          <div className="flex items-center justify-between">
+            <span className="text-[0.6rem] font-bold uppercase tracking-[1.5px] text-zinc-500">
+              Base ETA
+            </span>
+            <span className="text-[12px] font-mono font-semibold text-emerald-400 tabular-nums">
+              {sentenceCount > 0
+                ? `${sentenceCount} ${sentenceCount === 1 ? "sentence" : "sentences"} · ${formatDuration(customBaseMinutes)}`
+                : "--"}
+            </span>
+          </div>
+          <p className="text-[10px] text-zinc-600 mt-1 leading-tight">
+            One sentence per minute. Add up to {MAX_CUSTOM_PAUSES} pauses below to extend the schedule.
+          </p>
+
+          {/* Pause catalog */}
+          <div className="mt-2.5 pt-2 border-t border-emerald-500/10">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Plus className="w-3 h-3 text-emerald-400/60" />
+              <span className="text-[9px] font-bold uppercase tracking-[1.5px] text-zinc-600">
+                Pause Catalog
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {CUSTOM_PAUSE_CATALOG.map((mins) => {
+                const cartFull = customPauses.length >= MAX_CUSTOM_PAUSES;
+                return (
+                  <button
+                    key={mins}
+                    onClick={() => addCustomPause(mins)}
+                    disabled={disabled || cartFull}
+                    className="inline-flex items-center px-2 py-0.5 rounded bg-[#09090b] border border-white/[0.06] text-[10px] font-mono text-zinc-300 hover:border-emerald-500/40 hover:text-emerald-400 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                  >
+                    {formatDuration(mins)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Cart */}
+          <div className="mt-2.5 pt-2 border-t border-emerald-500/10">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <Timer className="w-3 h-3 text-emerald-400/60" />
+                <span className="text-[9px] font-bold uppercase tracking-[1.5px] text-zinc-600">
+                  Your Pauses ({customPauses.length}/{MAX_CUSTOM_PAUSES})
+                </span>
+              </div>
+            </div>
+            {customPauses.length === 0 ? (
+              <p className="text-[10px] text-zinc-700 leading-tight">
+                No pauses added — sync will run at the base ETA.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1">
+                {customPauses.map((mins, i) => (
+                  <button
+                    key={i}
+                    onClick={() => removeCustomPause(i)}
+                    disabled={disabled}
+                    className="group inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/25 text-[10px] font-mono text-emerald-400 hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    title="Click to remove"
+                  >
+                    {formatDuration(mins)}
+                    <X className="w-2.5 h-2.5 opacity-60 group-hover:opacity-100" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-[9px] text-zinc-700 mt-1.5 leading-tight">
+              Pauses fire in the order added, evenly spaced between sentences.
+            </p>
+          </div>
+
+          {/* Final ETA */}
+          <div className="mt-2.5 pt-2 border-t border-emerald-500/10 flex items-center justify-between">
+            <span className="text-[0.6rem] font-bold uppercase tracking-[1.5px] text-zinc-500">
+              Final ETA
+            </span>
+            <span className="text-[13px] font-mono font-bold text-emerald-300 tabular-nums">
+              {sentenceCount > 0 ? formatDuration(customFinalMinutes) : "--"}
+            </span>
+          </div>
         </div>
       )}
 

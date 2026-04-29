@@ -24,6 +24,7 @@ export function DashboardView() {
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [typoFrequency, setTypoFrequency] = useState(0.5);
   const [pauseVariance, setPauseVariance] = useState(0.5);
+  const [customPauses, setCustomPauses] = useState<number[]>([]);
 
   // Schedule state
   const [isScheduled, setIsScheduled] = useState(false);
@@ -55,6 +56,7 @@ export function DashboardView() {
     typoFrequency: number;
     pauseVariance: number;
     baselineWordCount: number;
+    customPauses?: number[];
   };
   const SESSION_KEY = "syncstream_session";
   const SCHEDULE_KEY = "syncstream_schedule";
@@ -110,6 +112,7 @@ export function DashboardView() {
     if (typeof saved.typoFrequency === "number") setTypoFrequency(saved.typoFrequency);
     if (typeof saved.pauseVariance === "number") setPauseVariance(saved.pauseVariance);
     if (typeof saved.baselineWordCount === "number") setBaselineWordCount(saved.baselineWordCount);
+    if (Array.isArray(saved.customPauses)) setCustomPauses(saved.customPauses);
 
     fetch(`/api/sync/status?jobId=${saved.jobId}`)
       .then((res) => res.ok ? res.json() : null)
@@ -222,15 +225,16 @@ export function DashboardView() {
     setSyncStatus("syncing");
     setMetrics(null);
     // Burst boot-up overlay: show loading until first real metrics arrive
-    if (rhythm === "burst") setIsBooting(true);
+    if (rhythm === "burst" || rhythm === "custom") setIsBooting(true);
 
     // Small delay to ensure UI updates before fetch starts
     await new Promise(r => setTimeout(r, 50));
     setIsTransitioning(false);
 
-    // Scale duration proportionally for remaining text (human mode only)
+    // Scale duration proportionally for remaining text (human mode only;
+    // burst and custom auto-derive their schedule from text length / pauses).
     const remainingRatio = textToSync.length / Math.max(1, sourceText.length);
-    const adjustedDuration = rhythm === "burst"
+    const adjustedDuration = rhythm === "burst" || rhythm === "custom"
       ? durationMinutes
       : Math.max(1, Math.round(durationMinutes * remainingRatio));
 
@@ -245,6 +249,7 @@ export function DashboardView() {
           durationMinutes: adjustedDuration,
           typoFrequency,
           pauseVariance,
+          customPauses: rhythm === "custom" ? customPauses : undefined,
         }),
       });
 
@@ -267,6 +272,7 @@ export function DashboardView() {
         typoFrequency,
         pauseVariance,
         baselineWordCount: baseline,
+        customPauses: rhythm === "custom" ? customPauses : undefined,
       });
     } catch (err) {
       console.error("Sync start error:", err);
@@ -275,7 +281,7 @@ export function DashboardView() {
       setIsTransitioning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, isTransitioning]);
+  }, [sourceText, selectedDocId, rhythm, durationMinutes, typoFrequency, pauseVariance, customPauses, isTransitioning]);
 
   // Poll background job status while syncing
   useEffect(() => {
@@ -772,6 +778,8 @@ export function DashboardView() {
                 scheduleCountdown={scheduleCountdown}
                 onScheduleSync={handleScheduleSync}
                 onCancelSchedule={cancelSchedule}
+                customPauses={customPauses}
+                onCustomPausesChange={setCustomPauses}
               />
             )}
           </div>

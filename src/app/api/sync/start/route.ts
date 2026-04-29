@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
     durationMinutes = 30,
     typoFrequency = 0.5,
     pauseVariance = 0.5,
+    customPauses = [],
   } = body as {
     text: string;
     documentId: string;
@@ -56,6 +57,7 @@ export async function POST(req: NextRequest) {
     durationMinutes: number;
     typoFrequency: number;
     pauseVariance: number;
+    customPauses?: number[];
   };
 
   if (!text || !documentId) {
@@ -73,11 +75,32 @@ export async function POST(req: NextRequest) {
   const clampedTypoFrequency = Math.max(0, Math.min(1, typoFrequency));
   const clampedPauseVariance = Math.max(0, Math.min(1, pauseVariance));
 
-  const mode: PaceMode = rhythmKey === "burst" ? "burst" : "human";
+  const mode: PaceMode =
+    rhythmKey === "burst" ? "burst" : rhythmKey === "custom" ? "custom" : "human";
+
+  // Validate custom pauses against the catalog (engine also sanitizes, but reject
+  // bad client input with a 400 for clarity).
+  const CATALOG = [4, 10, 15, 30, 45, 60, 90, 120, 180];
+  let safeCustomPauses: number[] = [];
+  if (mode === "custom") {
+    if (!Array.isArray(customPauses)) {
+      return NextResponse.json({ error: "customPauses must be an array" }, { status: 400 });
+    }
+    if (customPauses.length > 4) {
+      return NextResponse.json({ error: "customPauses cannot exceed 4 entries" }, { status: 400 });
+    }
+    for (const p of customPauses) {
+      if (typeof p !== "number" || !CATALOG.includes(p)) {
+        return NextResponse.json({ error: `Invalid custom pause value: ${p}` }, { status: 400 });
+      }
+    }
+    safeCustomPauses = customPauses;
+  }
+
   const plan = buildDripPlan(text, durationMinutes, mode, {
     typoFrequency: clampedTypoFrequency,
     pauseVariance: clampedPauseVariance,
-  });
+  }, safeCustomPauses);
 
   const jobId = createJobId();
   const now = Date.now();

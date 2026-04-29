@@ -1,5 +1,5 @@
 /**
- * Drip Engine v5 — Two modes: Human Pace + Burst Mode.
+ * Drip Engine v5 — Three modes: Human Pace, Burst Mode, Custom.
  *
  * Human Pace: Constant sync over a fixed duration.
  * Burst Mode: Mandatory pause checkpoints + natural micro-typed segments.
@@ -7,11 +7,14 @@
  *             tiny micro-chunks (1-3 words) with realistic 2-8s delays plus
  *             periodic thinking pauses, and a handful of multi-minute mandatory
  *             pauses spaced through the doc. Typo frequency is user-configurable.
+ * Custom:     1 sentence per minute baseline; user picks up to 4 pause cubes
+ *             from a fixed catalog (4m–3h). Pauses are inserted in cart order,
+ *             evenly spaced between sentence segments.
  */
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type PaceMode = "human" | "burst";
+export type PaceMode = "human" | "burst" | "custom";
 
 export interface PlanOptions {
   /** 0-1 scale. 0 = rare typos (~every 800 chars), 1 = frequent (~every 120 chars). Default 0.5 */
@@ -376,10 +379,14 @@ export function buildDripPlan(
   text: string,
   durationMinutes: number,
   mode: PaceMode,
-  options: PlanOptions = {}
+  options: PlanOptions = {},
+  customPauses: number[] = []
 ): DripPlan {
   if (mode === "burst") {
     return buildBurstPlan(text, options);
+  }
+  if (mode === "custom") {
+    return buildCustomPlan(text, customPauses, options);
   }
   return buildHumanPlan(text, durationMinutes, options);
 }
@@ -553,4 +560,158 @@ function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
   const totalMinutes = Math.max(1, Math.ceil(totalMs / 60_000));
 
   return { actions, totalChars, totalMinutes, mandatoryPauses };
+}
+
+// ── Custom Mode: 1 sentence/minute baseline + user-selected pauses ──────────
+
+/**
+ * Split text into sentences. Each match keeps trailing punctuation + whitespace
+ * so that re-joining the segments reproduces the original text exactly.
+ * Falls back to a single segment if no terminator is present.
+ */
+function splitSentences(text: string): string[] {
+  const matches = text.match(/[^.!?\n]+[.!?]+["')\]]*\s*|[^.!?\n]+\n+|[^.!?\n]+$/g);
+  if (!matches || matches.length === 0) return text.length > 0 ? [text] : [];
+  // Drop empties that can appear when text starts/ends with whitespace
+  return matches.filter((s) => s.length > 0);
+}
+
+const CUSTOM_PAUSE_CATALOG = new Set([4, 10, 15, 30, 45, 60, 90, 120, 180]);
+const MAX_CUSTOM_PAUSES = 4;
+
+/**
+ * Build a custom plan: types each sentence over ~60s, then injects user-selected
+ * pauses (in cart order) at evenly spaced sentence boundaries.
+ *
+ * Per-sentence delay budget = 60_000 ms, distributed across that sentence's
+ * insert actions (mirrors human-pace distribution but per-sentence). The very
+ * first action of the whole plan has delayMs = 0.
+ */
+function buildCustomPlan(
+  text: string,
+  customPauses: number[],
+  options: PlanOptions
+): DripPlan {
+  const typoFreq = options.typoFrequency ?? 0.5;
+  const [typoMin, typoMax] = typoIntervalRange(typoFreq);
+  const typoPauseMs = randInt(800, 1500);
+  const totalChars = text.length;
+
+  // Sanitize pauses: keep only catalog values, cap at MAX_CUSTOM_PAUSES
+  const validPauses = customPauses
+    .filter((p) => Number.isFinite(p) && CUSTOM_PAUSE_CATALOG.has(p))
+    .slice(0, MAX_CUSTOM_PAUSES);
+
+  const sentences = splitSentences(text);
+  const S = Math.max(1, sentences.length);
+  const P = validPauses.length;
+
+  // Compute insertion points: pause i is inserted after sentence index
+  // floor((i+1) * S / (P+1)) - 1, clamped to [0, S-2] so we never insert
+  // a pause after the very last sentence.
+  const insertAfter = new Set<number>();
+  if (P > 0 && S > 1) {
+    for (let i = 0; i < P; i++) {
+      let idx = Math.floor(((i + 1) * S) / (P + 1)) - 1;
+      if (idx < 0) idx = 0;
+      if (idx > S - 2) idx = S - 2;
+      insertAfter.add(idx);
+    }
+  }
+
+  const actions: DripAction[] = [];
+  let charsSinceTypo = 0;
+  let nextTypoAt = randInt(typoMin, typoMax);
+  let isFirstAction = true;
+  let pauseCursor = 0;
+
+  for (let sIdx = 0; sIdx < sentences.length; sIdx++) {
+    const sentence = sentences[sIdx];
+
+    // Build this sentence's insert/typo actions (delays filled in below).
+    const sentenceActions: DripAction[] = [];
+    const avgBursts = 4;
+    const chunkSize = Math.max(8, Math.ceil(sentence.length / avgBursts));
+    const chunks = chunkText(sentence, chunkSize);
+
+    for (const chunk of chunks) {
+      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
+        const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
+        const before = chunk.slice(0, splitPoint);
+        const after = chunk.slice(splitPoint);
+
+        if (before.length > 0) {
+          sentenceActions.push({ kind: "insert", text: before, delayMs: 0, activity: "Typing…" });
+        }
+
+        const { typo, correct } = generateSmartTypo(after);
+        const remainder = after.slice(correct.length);
+
+        sentenceActions.push({
+          kind: "typo", text: correct, typoChars: typo,
+          delayMs: typoPauseMs, activity: "Correcting typo…",
+        });
+
+        if (remainder.length > 0) {
+          sentenceActions.push({ kind: "insert", text: remainder, delayMs: 0, activity: "Typing…" });
+        }
+
+        charsSinceTypo = remainder.length;
+        nextTypoAt = randInt(typoMin, typoMax);
+      } else {
+        sentenceActions.push({ kind: "insert", text: chunk, delayMs: 0, activity: "Typing…" });
+        charsSinceTypo += chunk.length;
+      }
+    }
+
+    // Distribute 60s budget across this sentence's insert actions.
+    // Typos already consume typoPauseMs; spread remaining across inserts.
+    const typoTime = sentenceActions.filter((a) => a.kind === "typo").length * typoPauseMs;
+    const sentenceBudgetMs = 60_000;
+    const remainingBudget = Math.max(0, sentenceBudgetMs - typoTime);
+    const inserts = sentenceActions.filter((a) => a.kind === "insert");
+    // Number of inserts that get a pre-delay. The first insert of the WHOLE
+    // plan fires immediately (delay 0); for subsequent sentences every insert
+    // can carry a delay.
+    const delayableInserts = isFirstAction ? Math.max(1, inserts.length - 1) : Math.max(1, inserts.length);
+    const baseDelay = Math.floor(remainingBudget / delayableInserts);
+
+    let firstInsertOfSentence = true;
+    for (const a of sentenceActions) {
+      if (a.kind === "typo") continue; // already set to typoPauseMs
+      if (isFirstAction) {
+        a.delayMs = 0;
+        isFirstAction = false;
+        firstInsertOfSentence = false;
+        continue;
+      }
+      if (firstInsertOfSentence) {
+        // Give first insert of subsequent sentences a small lead-in delay too
+        // (otherwise the sentence boundary would feel like a paste).
+        firstInsertOfSentence = false;
+      }
+      const variance = baseDelay * 0.15;
+      a.delayMs = Math.max(500, Math.round(baseDelay + randFloat(-variance, variance)));
+    }
+
+    actions.push(...sentenceActions);
+
+    // Inject user pause if this sentence is an insertion point
+    if (insertAfter.has(sIdx) && pauseCursor < validPauses.length) {
+      const pauseMin = validPauses[pauseCursor];
+      actions.push({
+        kind: "pause",
+        text: "",
+        delayMs: pauseMin * 60_000,
+        activity: `Custom break — ${pauseMin}m pause…`,
+        mandatoryPauseIndex: pauseCursor,
+      });
+      pauseCursor++;
+    }
+  }
+
+  const totalMs = actions.reduce((sum, a) => sum + a.delayMs, 0);
+  const totalMinutes = Math.max(1, Math.ceil(totalMs / 60_000));
+
+  return { actions, totalChars, totalMinutes, mandatoryPauses: validPauses };
 }
