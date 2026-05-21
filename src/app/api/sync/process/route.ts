@@ -5,15 +5,48 @@ import {
   deleteRange,
   refreshAccessToken,
 } from "@/lib/google";
-import { getJob, setJob, setPayload, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
+import { getJob, getPayload, setJob, setPayload, removeActiveJob, type SyncJob } from "@/lib/sync-store";
+import { getQStashReceiver, enqueueProcess } from "@/lib/qstash";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 minutes max on Vercel Pro
 
+// Delays ≥ this threshold are offloaded to a scheduled QStash message
+// instead of sleeping inside the function. Saves compute + reduces chain hops.
+const LONG_PAUSE_THRESHOLD_MS = 120_000; // 2 minutes
+
 export async function POST(req: NextRequest) {
-  const payload: SyncJobPayload = await req.json();
+  // ── Auth: verify request comes from QStash or internal caller ─────────
+  let parsed: { jobId: string };
+  const receiver = getQStashReceiver();
+  if (receiver) {
+    const body = await req.text();
+    const signature = req.headers.get("upstash-signature") || "";
+    try {
+      await receiver.verify({ signature, body });
+    } catch {
+      // Not from QStash — check for internal auth header (stall-recovery / local dev)
+      if (req.headers.get("x-syncstream-internal") !== "1") {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+    }
+    parsed = JSON.parse(body);
+  } else {
+    parsed = await req.json();
+  }
+
+  const { jobId } = parsed;
+  if (!jobId) {
+    return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
+  }
+
+  // ── Load payload from Redis (single source of truth) ──────────────────
+  const payload = await getPayload(jobId);
+  if (!payload) {
+    return NextResponse.json({ status: "not_found" });
+  }
+
   const {
-    jobId,
     refreshToken,
     documentId,
     actions,
@@ -29,16 +62,16 @@ export async function POST(req: NextRequest) {
 
   const totalActions = actions.length;
 
-  // Read persistent state from the existing job (V2 pauses, baseline word count)
+  // Read persistent state from the existing job (pauses, baseline word count)
   let mandatoryPauses: number[] | undefined;
   let completedPauses: number[] = [];
   let baselineWordCount: number | undefined;
   {
-    const existingForV2 = await getJob(jobId);
-    if (existingForV2) {
-      mandatoryPauses = existingForV2.mandatoryPauses;
-      completedPauses = existingForV2.completedPauses ?? [];
-      baselineWordCount = existingForV2.baselineWordCount;
+    const existingJob = await getJob(jobId);
+    if (existingJob) {
+      mandatoryPauses = existingJob.mandatoryPauses;
+      completedPauses = existingJob.completedPauses ?? [];
+      baselineWordCount = existingJob.baselineWordCount;
     }
   }
 
@@ -184,23 +217,52 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: "paused" });
       }
 
-      // Check if we need to self-chain before timeout
+      // Check if we need to chain before timeout
       const elapsed = Date.now() - invocationStart;
       if (elapsed > (maxDuration * 1000) - SAFETY_MARGIN_MS) {
-        const chainPayload: SyncJobPayload = {
-          jobId, accessToken, refreshToken, documentId,
-          actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
-          remainingDelayMs: resumeRemainingDelayMs, generation: myGeneration,
-          typoSubStep, typoCharsInDoc,
-        };
-        // Persist to Redis BEFORE chaining so stall recovery has fresh state if chain fails
+        // Persist to Redis BEFORE chaining so recovery always has fresh state
         await persistProgress(resumeRemainingDelayMs);
         await updateJobStore({ activity: "Chaining…" });
-        await selfChain(req, chainPayload);
+        await enqueueProcess(jobId);
         return NextResponse.json({ status: "chained", currentAction });
       }
 
       const action = actions[currentAction];
+
+      // ── Long-pause optimization: schedule via QStash instead of sleeping ──
+      // For pause-kind actions with delays ≥ threshold, offload the wait to a
+      // scheduled QStash message. This frees the serverless function immediately
+      // and avoids dozens of fragile self-chain hops for multi-hour pauses.
+      if (
+        action.kind === "pause" &&
+        action.delayMs >= LONG_PAUSE_THRESHOLD_MS &&
+        resumeRemainingDelayMs === 0 // don't re-schedule if we're resuming mid-delay
+      ) {
+        // Mark mandatory pause completed
+        if (action.mandatoryPauseIndex != null && !completedPauses.includes(action.mandatoryPauseIndex)) {
+          completedPauses = [...completedPauses, action.mandatoryPauseIndex];
+        }
+        // Advance past the pause action
+        currentAction++;
+        await persistProgress();
+
+        // Update job store with ETA that includes the scheduled delay
+        const remainingAfterPause = calcEta(currentAction);
+        const totalRemainingMs = action.delayMs + remainingAfterPause;
+        await updateJobStore({
+          activity: action.activity,
+          eta: totalRemainingMs,
+          etaTargetAt: Date.now() + totalRemainingMs,
+          nextActionAt: Date.now() + action.delayMs,
+          currentPauseDelayMs: action.delayMs,
+          completedPauses,
+        });
+
+        // Schedule delayed wakeup — QStash guarantees delivery
+        const delaySec = Math.ceil(action.delayMs / 1000);
+        await enqueueProcess(jobId, delaySec);
+        return NextResponse.json({ status: "scheduled", currentAction });
+      }
 
       // Wait for delay (skip pre-delay for typo actions — they handle delays internally)
       if (action.kind !== "typo") {
@@ -221,16 +283,10 @@ export async function POST(req: NextRequest) {
           // Check timeout during long waits
           const midElapsed = Date.now() - invocationStart;
           if (midElapsed > (maxDuration * 1000) - SAFETY_MARGIN_MS) {
-            const chainPayload: SyncJobPayload = {
-              jobId, accessToken, refreshToken, documentId,
-              actions, currentAction, charsSent, totalChars, totalMinutes, startTime,
-              remainingDelayMs: remaining, generation: myGeneration,
-              typoSubStep, typoCharsInDoc,
-            };
             // Persist to Redis BEFORE chaining
             await persistProgress(remaining);
             await updateJobStore({ activity: "Chaining…" });
-            await selfChain(req, chainPayload);
+            await enqueueProcess(jobId);
             return NextResponse.json({ status: "chained", currentAction });
           }
 
@@ -328,12 +384,14 @@ export async function POST(req: NextRequest) {
 
     // All actions complete
     await updateJobStore({ status: "done", activity: "Done" });
+    await removeActiveJob(jobId);
     return NextResponse.json({ status: "done", charsSent });
 
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`Sync job ${jobId} error at action ${currentAction}:`, message);
     await updateJobStore({ status: "error", error: message, activity: "Error" });
+    await removeActiveJob(jobId);
     return NextResponse.json({ status: "error", error: message }, { status: 500 });
   }
 }
@@ -342,24 +400,4 @@ export async function POST(req: NextRequest) {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function selfChain(req: NextRequest, payload: SyncJobPayload) {
-  const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
-  try {
-    // Await with timeout — we need the request to actually reach the server
-    // before this function terminates, otherwise the chain silently dies.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    await fetch(`${origin}/api/sync/process`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    }).catch(() => {});
-    clearTimeout(timer);
-  } catch {
-    // AbortError (timeout) is expected — the new invocation runs for minutes.
-    // What matters is the request was sent before we aborted.
-  }
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, getPayload, setJob, type SyncJobPayload } from "@/lib/sync-store";
+import { getJob, getPayload, setJob, setPayload, type SyncJobPayload } from "@/lib/sync-store";
+import { enqueueProcess } from "@/lib/qstash";
 
 export const dynamic = "force-dynamic";
 
@@ -64,24 +65,13 @@ export async function POST(req: NextRequest) {
     currentPauseDelayMs: 0,
   });
 
-  // Pass generation to the process loop so it can verify it's still current
-  const payloadWithGen = { ...payload, generation: nextGen };
+  // Persist updated payload with new generation + refreshed tokens so
+  // the process route reads the latest state from Redis
+  const payloadWithGen: SyncJobPayload = { ...payload, generation: nextGen };
+  await setPayload(payloadWithGen);
 
-  // Kick off background processing — await with timeout to ensure request is sent
-  const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    await fetch(`${origin}/api/sync/process`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payloadWithGen),
-      signal: controller.signal,
-    }).catch(() => {});
-    clearTimeout(timer);
-  } catch {
-    // AbortError expected — the process invocation runs for minutes
-  }
+  // Kick off background processing via QStash (guaranteed delivery)
+  await enqueueProcess(jobId);
 
   return NextResponse.json({ jobId, resumed: true });
 }

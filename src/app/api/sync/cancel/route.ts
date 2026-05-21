@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, setJob } from "@/lib/sync-store";
+import { getJob, setJob, removeActiveJob } from "@/lib/sync-store";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
   }
 
   await setJob({ ...job, status: "cancelled", activity: "Cancelled", lastUpdate: Date.now() });
+  await removeActiveJob(jobId);
 
   return NextResponse.json({ status: "cancelled" });
 }

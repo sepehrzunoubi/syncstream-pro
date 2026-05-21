@@ -71,6 +71,7 @@ export interface SyncJobPayload {
 
 const JOB_TTL_SECONDS = 86400; // 24 hours
 const KEY_PREFIX = "syncjob:";
+const ACTIVE_JOBS_KEY = "syncjobs:active";
 
 function getRedis(): Redis | null {
   if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
@@ -137,6 +138,39 @@ export async function setPayload(payload: SyncJobPayload): Promise<void> {
 
 export function createJobId(): string {
   return `sync_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ── Active-jobs set (for cron watchdog) ──────────────────────────────────────
+// Tracks which job IDs are currently in-flight so the watchdog can scan them
+// without listing all Redis keys.
+
+const localActiveJobs = new Set<string>();
+
+export async function addActiveJob(id: string): Promise<void> {
+  const redis = getRedis();
+  if (redis) {
+    await redis.sadd(ACTIVE_JOBS_KEY, id);
+  } else {
+    localActiveJobs.add(id);
+  }
+}
+
+export async function removeActiveJob(id: string): Promise<void> {
+  const redis = getRedis();
+  if (redis) {
+    await redis.srem(ACTIVE_JOBS_KEY, id);
+  } else {
+    localActiveJobs.delete(id);
+  }
+}
+
+export async function getActiveJobIds(): Promise<string[]> {
+  const redis = getRedis();
+  if (redis) {
+    const ids = await redis.smembers(ACTIVE_JOBS_KEY);
+    return ids as string[];
+  }
+  return Array.from(localActiveJobs);
 }
 
 export function jobToEvent(job: SyncJob): StreamEvent {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildDripPlan, type PaceMode } from "@/lib/drip-engine";
-import { createJobId, setJob, setPayload, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
+import { createJobId, setJob, setPayload, addActiveJob, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
+import { enqueueProcess } from "@/lib/qstash";
 import { getUserInfo, refreshAccessToken, getDocWordCount } from "@/lib/google";
 import { verifyKeyAccess } from "@/lib/key-store";
 
@@ -152,21 +153,11 @@ export async function POST(req: NextRequest) {
 
   await setPayload(payload);
 
-  // Kick off background processing — await with timeout to ensure request is sent
-  const origin = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    await fetch(`${origin}/api/sync/process`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    }).catch(() => {});
-    clearTimeout(timer);
-  } catch {
-    // AbortError expected — the process invocation runs for minutes
-  }
+  // Track job in active set (for cron watchdog recovery)
+  await addActiveJob(jobId);
+
+  // Kick off background processing via QStash (guaranteed delivery)
+  await enqueueProcess(jobId);
 
   return NextResponse.json({
     jobId,

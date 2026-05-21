@@ -11,7 +11,8 @@ const KEY_PROTECTED_PREFIXES = [
 const KEY_EXEMPT_PATHS = [
   "/api/auth/",
   "/api/keys/",
-  "/api/sync/process",  // Only called internally (start route + self-chain); no cookies on server-to-server fetch
+  "/api/sync/process",  // Called by QStash / internal chain; no cookies on server-to-server calls
+  "/api/cron/",          // Called by Vercel Cron; protected by CRON_SECRET header
 ];
 
 export function middleware(req: NextRequest) {
