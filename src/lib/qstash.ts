@@ -8,9 +8,10 @@ import { getBaseUrl } from "./base-url";
 let _client: Client | null = null;
 
 export function getQStashClient(): Client | null {
-  if (!process.env.QSTASH_TOKEN) return null;
+  const token = process.env.QSTASH_TOKEN?.trim();
+  if (!token) return null;
   if (!_client) {
-    _client = new Client({ token: process.env.QSTASH_TOKEN });
+    _client = new Client({ token });
   }
   return _client;
 }
@@ -18,17 +19,13 @@ export function getQStashClient(): Client | null {
 let _receiver: Receiver | null = null;
 
 export function getQStashReceiver(): Receiver | null {
-  if (
-    !process.env.QSTASH_CURRENT_SIGNING_KEY ||
-    !process.env.QSTASH_NEXT_SIGNING_KEY
-  ) {
+  const currentSigningKey = process.env.QSTASH_CURRENT_SIGNING_KEY?.trim();
+  const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY?.trim();
+  if (!currentSigningKey || !nextSigningKey) {
     return null;
   }
   if (!_receiver) {
-    _receiver = new Receiver({
-      currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY,
-      nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY,
-    });
+    _receiver = new Receiver({ currentSigningKey, nextSigningKey });
   }
   return _receiver;
 }
