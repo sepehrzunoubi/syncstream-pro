@@ -61,12 +61,20 @@ export async function enqueueProcess(
 
   if (client) {
     // Production path: guaranteed delivery via QStash
-    await client.publishJSON({
-      url,
-      body: { jobId },
-      retries: 3,
-      ...(delaySec > 0 ? { delay: delaySec } : {}),
-    });
+    try {
+      await client.publishJSON({
+        url,
+        body: { jobId },
+        retries: 3,
+        ...(delaySec > 0 ? { delay: delaySec } : {}),
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const hint = /authenticate|invalid token|401/i.test(detail)
+        ? "QStash rejected QSTASH_TOKEN. In Upstash → QStash, copy the value labelled QSTASH_TOKEN (starts with \"eyJ\"), not a signing key (starts with \"sig_\"), set it in Vercel and redeploy."
+        : "QStash publish failed.";
+      throw new Error(`${hint} (${detail})`);
+    }
     return;
   }
 
