@@ -46,6 +46,14 @@ export interface DripPlan {
   totalChars: number;
   /** Exact planned wall time */
   totalMs: number;
+  /** The requested total, when one was given */
+  targetMs?: number;
+  /**
+   * False when the requested total could not be met with the chosen breaks:
+   * only "auto" breaks may add idle time, so with None/Custom the plan is as
+   * long as typing plus the chosen breaks allow.
+   */
+  fitsTarget: boolean;
   /** Rounded-up minutes, for display */
   totalMinutes: number;
   /** Break lengths in minutes, in execution order */
@@ -294,13 +302,17 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
   const baseMs = typing.reduce((s, t) => s + t.delayMs + (t.holdMs ?? 0), 0);
 
   // ── Fit to target ──
+  // Typing can be compressed to 0.4× or stretched to 1.6× of the natural
+  // pace. Beyond that, extra time can only be filled with idle gaps, which
+  // we add only when breaks are "auto"; None and Custom mean exactly that.
   let scale = 1;
   let extraGapMs = 0;
+  let targetMs: number | undefined;
   const target = options.targetMinutes;
   if (target != null && Number.isFinite(target) && target > 0) {
-    const targetMs = clamp(target, MIN_TARGET_MINUTES, MAX_TARGET_MINUTES) * 60_000;
+    targetMs = clamp(target, MIN_TARGET_MINUTES, MAX_TARGET_MINUTES) * 60_000;
     let breaksMs = breakMinutes.reduce((s, m) => s + m, 0) * 60_000;
-    // Too tight: shed automatic breaks first, then type faster (down to ~2.5× natural).
+    // Too tight: shed automatic breaks first, then type faster (down to the floor).
     if (breakOption === "auto") {
       while (breakMinutes.length > 0 && targetMs - breaksMs < baseMs * 0.4) {
         breakMinutes = breakMinutes.slice(0, -1);
@@ -309,10 +321,10 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
     }
     const available = Math.max(0, targetMs - breaksMs);
     scale = clamp(available / Math.max(1, baseMs), 0.4, 1.6);
-    extraGapMs = Math.max(0, available - baseMs * scale);
+    if (breakOption === "auto") extraGapMs = Math.max(0, available - baseMs * scale);
   }
 
-  // Extra idle time becomes "away" gaps at natural boundaries.
+  // Extra idle time becomes "away" gaps at natural boundaries (auto breaks only).
   const gapMinutes: number[] = [];
   if (extraGapMs >= 90_000) {
     const count = clamp(Math.round(extraGapMs / (15 * 60_000)), 1, 40);
@@ -362,10 +374,13 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
   }
 
   const totalMs = actions.reduce((s, a) => s + a.delayMs + (a.holdMs ?? 0), 0);
+  const fitsTarget = targetMs == null || Math.abs(totalMs - targetMs) <= Math.max(60_000, targetMs * 0.05);
   return {
     actions,
     totalChars,
     totalMs,
+    targetMs,
+    fitsTarget,
     totalMinutes: Math.max(1, Math.ceil(totalMs / 60_000)),
     breaks,
     seed,

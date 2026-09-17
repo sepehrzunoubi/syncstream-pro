@@ -330,7 +330,19 @@ export function SyncControls(props: SyncControlsProps) {
                 ))}
               </div>
             )}
-            <p className="text-[9px] text-zinc-600 mt-1.5">This exact schedule will run.</p>
+            {preview.targetMs != null && !preview.fitsTarget ? (
+              <p className="text-[10px] text-amber-400/90 mt-1.5 leading-relaxed">
+                {formatDuration(preview.targetMs / 60_000)} requested, but {breaksMode === "none" ? "without breaks" : "with these breaks"} this text takes{" "}
+                {preview.totalMs < preview.targetMs ? "at most" : "at least"} {formatDuration(preview.totalMs / 60_000)}.{" "}
+                {preview.totalMs < preview.targetMs
+                  ? breaksMode === "none"
+                    ? "Set breaks to Auto to fill the time, or lower the total time."
+                    : "Add longer breaks, set breaks to Auto, or lower the total time."
+                  : "Remove some breaks or raise the total time."}
+              </p>
+            ) : (
+              <p className="text-[9px] text-zinc-600 mt-1.5">This exact schedule will run.</p>
+            )}
           </>
         ) : (
           <p className="mt-1.5 text-[11px] text-zinc-600">Paste some text to see the schedule.</p>

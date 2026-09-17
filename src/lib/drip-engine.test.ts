@@ -65,6 +65,7 @@ test("target duration is honoured within 3% when it is reachable", () => {
     const plan = buildDripPlan(SAMPLE, { seed: 9, targetMinutes: target, breaks: "auto" });
     const ratio = plan.totalMs / (target * 60_000);
     assert.ok(Math.abs(ratio - 1) < 0.03, `target ${target}m produced ${(plan.totalMs / 60_000).toFixed(1)}m`);
+    assert.equal(plan.fitsTarget, true);
     assert.equal(reconstruct(plan), SAMPLE);
     assert.equal(remainingMs(plan.actions, 0), plan.totalMs);
   }
@@ -100,4 +101,24 @@ test("huge inputs keep a bounded action count", () => {
   const plan = buildDripPlan(big, { seed: 1 });
   assert.ok(plan.actions.length < 3000, `too many actions: ${plan.actions.length}`);
   assert.equal(reconstruct(plan), big);
+});
+
+test("with breaks set to None, a long target never invents breaks and reports the shortfall", () => {
+  const plan = buildDripPlan(SAMPLE, { seed: 9, targetMinutes: 90, breaks: [] });
+  assert.equal(plan.breaks.length, 0);
+  assert.equal(plan.actions.filter((a) => a.kind === "pause").length, 0);
+  assert.equal(plan.fitsTarget, false);
+  assert.equal(plan.targetMs, 90 * 60_000);
+  const natural = buildDripPlan(SAMPLE, { seed: 9, breaks: [] });
+  assert.ok(plan.totalMs <= natural.totalMs * 1.6 + 1000, "stretches typing at most 1.6×");
+  assert.ok(plan.totalMs < 60 * 60_000);
+});
+
+test("custom breaks are never extended with extra gaps", () => {
+  const plan = buildDripPlan(SAMPLE, { seed: 9, targetMinutes: 240, breaks: [10, 20] });
+  assert.deepEqual(plan.breaks, [10, 20]);
+  assert.equal(plan.fitsTarget, false);
+  const short = buildDripPlan(SAMPLE, { seed: 9, targetMinutes: 45, breaks: [10, 20] });
+  assert.deepEqual(short.breaks, [10, 20]);
+  assert.equal(short.fitsTarget, true);
 });
