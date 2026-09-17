@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTokensFromCode } from "@/lib/google";
+import { getBaseUrl } from "@/lib/base-url";
 
 export async function GET(req: NextRequest) {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
+  const baseUrl = getBaseUrl(req);
   const code = req.nextUrl.searchParams.get("code");
   const error = req.nextUrl.searchParams.get("error");
 

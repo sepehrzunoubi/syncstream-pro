@@ -1,4 +1,5 @@
 import { Client, Receiver } from "@upstash/qstash";
+import { getBaseUrl } from "./base-url";
 
 // ── QStash client (guaranteed-delivery message queue) ───────────────────────
 // Used to reliably chain process invocations and schedule delayed wakeups
@@ -34,12 +35,12 @@ export function getQStashReceiver(): Receiver | null {
 
 /**
  * Resolve the app's public URL for QStash callbacks.
- * Production: NEXT_PUBLIC_BASE_URL (e.g. https://syncstream-pro.vercel.app)
- * Local dev:  falls back to localhost (QStash can't reach localhost — use
- *             the direct HTTP fallback in that case).
+ * Production: NEXT_PUBLIC_BASE_URL (or Vercel's deployment URL as a fallback).
+ * Local dev:  localhost (QStash can't reach localhost — the direct HTTP
+ *             fallback below is used in that case).
  */
 function getOrigin(): string {
-  return process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+  return getBaseUrl();
 }
 
 /**
