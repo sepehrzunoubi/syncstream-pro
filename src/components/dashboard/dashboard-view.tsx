@@ -421,23 +421,26 @@ export function DashboardView() {
               <SecondaryButton onClick={() => jobAction("cancel", focusedJob.id)} disabled={busy} tone="red">Cancel</SecondaryButton>
             </>
           )}
+          {focusedJob && (focusedJob.status === "error" || focusedJob.status === "cancelled") && focusedSource && (
+            <SecondaryButton onClick={() => reuseAsNew(focusedJob)} tone="blue">Edit as new sync</SecondaryButton>
+          )}
+          {focusedJob && (
+            <a
+              href={`https://docs.google.com/document/d/${focusedJob.documentId}/edit`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "px-6 py-2 rounded-lg text-[13px] font-semibold tracking-wide transition-all no-underline",
+                focusedJob.status === "done"
+                  ? "bg-blue-500 hover:bg-blue-400 text-white shadow-[0_0_12px_rgba(59,130,246,0.2)]"
+                  : "bg-zinc-800 border border-white/[0.06] text-zinc-400 hover:border-blue-500/30 hover:text-blue-400"
+              )}
+            >
+              Open document &rarr;
+            </a>
+          )}
           {focusedJob && (focusedJob.status === "done" || focusedJob.status === "error" || focusedJob.status === "cancelled") && (
-            <>
-              {focusedJob.status === "done" && (
-                <a
-                  href={`https://docs.google.com/document/d/${focusedJob.documentId}/edit`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-[13px] font-semibold tracking-wide transition-all no-underline"
-                >
-                  Open document &rarr;
-                </a>
-              )}
-              {focusedJob.status !== "done" && focusedSource && (
-                <SecondaryButton onClick={() => reuseAsNew(focusedJob)} tone="blue">Edit as new sync</SecondaryButton>
-              )}
-              <SecondaryButton onClick={() => dismissJob(focusedJob.id)}>Dismiss</SecondaryButton>
-            </>
+            <SecondaryButton onClick={() => dismissJob(focusedJob.id)}>Dismiss</SecondaryButton>
           )}
         </div>
 

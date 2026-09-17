@@ -4,6 +4,7 @@ import React from "react";
 import { RotateCw, FilePlus, Shuffle, Timer, X, Info } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { SliderWithTooltip } from "@/components/ui/slider";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { cn } from "@/lib/utils";
 import { formatClock, formatDuration } from "@/lib/format";
 import { MAX_CUSTOM_BREAKS, type DripPlan } from "@/lib/drip-engine";
@@ -51,13 +52,30 @@ function closestIndex(values: number[], v: number): number {
 }
 
 function Hint({ text }: { text: string }) {
+  // Rendered in a portal with collision handling, so it never gets clipped by
+  // the scrolling panel or pushed off the screen.
   return (
-    <span className="relative group inline-flex ml-1.5 cursor-help align-middle">
-      <Info className="w-3 h-3 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
-      <span className="absolute bottom-full right-0 mb-1.5 px-3 py-2 rounded-md bg-zinc-900 border border-white/[0.08] text-[10px] text-zinc-400 leading-relaxed w-[200px] text-left normal-case tracking-normal font-normal opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-        {text}
-      </span>
-    </span>
+    <TooltipPrimitive.Provider delayDuration={150}>
+      <TooltipPrimitive.Root>
+        <TooltipPrimitive.Trigger asChild>
+          <button type="button" className="inline-flex ml-1.5 align-middle cursor-help" aria-label="More information">
+            <Info className="w-3 h-3 text-zinc-600 hover:text-zinc-400 transition-colors" />
+          </button>
+        </TooltipPrimitive.Trigger>
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content
+            side="top"
+            align="start"
+            sideOffset={6}
+            collisionPadding={12}
+            className="z-[100] max-w-[240px] rounded-md bg-zinc-900 border border-white/[0.08] px-3 py-2 text-[11px] text-zinc-400 leading-relaxed normal-case tracking-normal font-normal shadow-lg animate-in fade-in-0 zoom-in-95"
+          >
+            {text}
+            <TooltipPrimitive.Arrow className="fill-zinc-900" />
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
 }
 
