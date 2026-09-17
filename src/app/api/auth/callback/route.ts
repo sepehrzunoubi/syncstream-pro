@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTokensFromCode, getUserInfo } from "@/lib/google";
-import { setGoogleIdCookie } from "@/lib/key-cookie";
+import { getTokensFromCode } from "@/lib/google";
 
 export async function GET(req: NextRequest) {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || req.nextUrl.origin;
@@ -45,17 +44,6 @@ export async function GET(req: NextRequest) {
         maxAge: 60 * 60 * 24 * 30, // 30 days
         path: "/",
       });
-    }
-
-    // Store the Google user ID in an httpOnly cookie so the middleware can
-    // cross-check that the syncstream_licensed cookie belongs to this user.
-    try {
-      const user = await getUserInfo(tokens.access_token);
-      if (user?.id) {
-        setGoogleIdCookie(response, user.id);
-      }
-    } catch {
-      // Best effort — /api/auth/me will also set this cookie on next load
     }
 
     return response;

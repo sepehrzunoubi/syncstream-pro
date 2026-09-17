@@ -68,44 +68,23 @@ export default function TermsOfServicePage() {
             <p>
               SyncStream is a document synchronization tool that enables human-cadence text input
               into Google Docs via the Google Docs API. The Service requires a valid Google account
-              and an active license key to operate.
+              to operate.
             </p>
           </Section>
 
-          <Section title="3. License Keys">
-            <p className="mb-3">Your use of SyncStream is governed by the following license terms:</p>
-            <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
-              <li>Each license key grants access to <strong className="text-zinc-300">one (1) Google account</strong>. Upon redemption, the key is permanently bound to that account.</li>
-              <li>License keys are <strong className="text-zinc-300">non-transferable</strong> except through the one-time reset feature, which unbinds the key and allows re-binding to a different Google account.</li>
-              <li>The one-time reset is <strong className="text-zinc-300">permanent and irreversible</strong>. Once used, the key cannot be reset again regardless of ownership.</li>
-              <li>Sharing, reselling, or distributing license keys is strictly prohibited.</li>
-              <li>We reserve the right to revoke license keys that are obtained fraudulently or used in violation of these terms.</li>
-            </ul>
-          </Section>
-
-          <Section title="4. Account Binding">
-            <p>
-              When you redeem a license key, it is permanently associated with your Google account
-              identifier. You may access SyncStream from any device, provided you authenticate with
-              the bound Google account. Attempting to circumvent, bypass, or manipulate the account
-              binding mechanism is a violation of these terms and may result in permanent revocation
-              of your license.
-            </p>
-          </Section>
-
-          <Section title="5. Acceptable Use">
+          <Section title="3. Acceptable Use">
             <p className="mb-3">You agree not to:</p>
             <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
               <li>Attempt to reverse-engineer, decompile, or tamper with the Service.</li>
-              <li>Circumvent or bypass license key verification, account binding, or any security measures.</li>
+              <li>Circumvent or bypass authentication or any security measures.</li>
               <li>Use the Service for any illegal or unauthorized purpose.</li>
               <li>Interfere with or disrupt the integrity or performance of the Service.</li>
-              <li>Share your account credentials or license key with unauthorized third parties.</li>
+              <li>Share your account credentials with unauthorized third parties.</li>
               <li>Automate access to the Service beyond its intended functionality.</li>
             </ul>
           </Section>
 
-          <Section title="6. Google Account & API Usage">
+          <Section title="4. Google Account & API Usage">
             <p>
               SyncStream accesses your Google account through OAuth 2.0 with the minimum required
               scopes. By using the Service, you authorize SyncStream to read and write to Google Docs
@@ -123,7 +102,7 @@ export default function TermsOfServicePage() {
             </p>
           </Section>
 
-          <Section title="7. Intellectual Property">
+          <Section title="5. Intellectual Property">
             <p>
               The Service, including its design, code, and branding, is the intellectual property of
               SyncStream. You are granted a limited, non-exclusive, non-transferable license to use
@@ -132,7 +111,7 @@ export default function TermsOfServicePage() {
             </p>
           </Section>
 
-          <Section title="8. Disclaimer of Warranties">
+          <Section title="6. Disclaimer of Warranties">
             <p>
               The Service is provided <strong className="text-zinc-300">&quot;as is&quot;</strong> and{" "}
               <strong className="text-zinc-300">&quot;as available&quot;</strong> without warranties of any kind,
@@ -142,26 +121,26 @@ export default function TermsOfServicePage() {
             </p>
           </Section>
 
-          <Section title="9. Limitation of Liability">
+          <Section title="7. Limitation of Liability">
             <p>
               To the maximum extent permitted by law, SyncStream and its operators shall not be liable
               for any indirect, incidental, special, consequential, or punitive damages, or any loss
               of profits or revenues, whether incurred directly or indirectly, arising from your use
-              of the Service. Our total liability shall not exceed the amount paid by you for the
-              license key.
+              of the Service. Our total liability shall not exceed the amount, if any, paid by you
+              for the Service.
             </p>
           </Section>
 
-          <Section title="10. Termination">
+          <Section title="8. Termination">
             <p>
               We reserve the right to suspend or terminate your access to the Service at any time,
               with or without notice, for conduct that we believe violates these terms or is harmful
-              to the Service, other users, or third parties. Upon termination, your license key may
-              be revoked and your binding data deleted.
+              to the Service, other users, or third parties. Upon termination, any data associated
+              with your account may be deleted.
             </p>
           </Section>
 
-          <Section title="11. Modifications">
+          <Section title="9. Modifications">
             <p>
               We may revise these Terms of Service at any time. Changes will be posted on this page
               with an updated date. Your continued use of the Service after any changes constitutes
@@ -169,7 +148,7 @@ export default function TermsOfServicePage() {
             </p>
           </Section>
 
-          <Section title="12. Governing Law">
+          <Section title="10. Governing Law">
             <p>
               These terms shall be governed by and construed in accordance with applicable laws,
               without regard to conflict of law principles. Any disputes arising from these terms
@@ -177,7 +156,7 @@ export default function TermsOfServicePage() {
             </p>
           </Section>
 
-          <Section title="13. Contact">
+          <Section title="11. Contact">
             <p>
               If you have questions about these Terms of Service, please reach out to us through
               our official communication channels.

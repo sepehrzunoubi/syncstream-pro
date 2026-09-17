@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { buildDripPlan, type PaceMode } from "@/lib/drip-engine";
 import { createJobId, setJob, setPayload, addActiveJob, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
-import { getUserInfo, refreshAccessToken, getDocWordCount } from "@/lib/google";
-import { verifyKeyAccess } from "@/lib/key-store";
+import { refreshAccessToken, getDocWordCount } from "@/lib/google";
 
 export const dynamic = "force-dynamic";
 
@@ -13,33 +12,6 @@ export async function POST(req: NextRequest) {
 
   if (!token && !refreshToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  // Resolve user identity for server-side key verification
-  let userId: string | null = null;
-  if (token) {
-    try {
-      const user = await getUserInfo(token);
-      userId = user?.id ?? null;
-    } catch { /* try refresh below */ }
-  }
-  if (!userId && refreshToken) {
-    const refreshed = await refreshAccessToken(refreshToken);
-    if (refreshed) {
-      try {
-        const user = await getUserInfo(refreshed.access_token);
-        userId = user?.id ?? null;
-      } catch { /* failed */ }
-    }
-  }
-  if (!userId) {
-    return NextResponse.json({ error: "Could not verify user identity" }, { status: 401 });
-  }
-
-  // Server-side key verification — confirms this user has an active binding in Redis
-  const keyCheck = await verifyKeyAccess(userId);
-  if (!keyCheck.valid) {
-    return NextResponse.json({ error: keyCheck.error || "License key required." }, { status: 403 });
   }
 
   const body = await req.json();

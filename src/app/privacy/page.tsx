@@ -68,7 +68,6 @@ export default function PrivacyPolicyPage() {
             <p className="mb-3">When you use SyncStream, we may collect the following information:</p>
             <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
               <li><strong className="text-zinc-300">Google Account Information</strong> — your name, email address, profile picture, and unique Google account identifier, obtained through Google OAuth 2.0.</li>
-              <li><strong className="text-zinc-300">License Key Data</strong> — the license key you redeem and its binding status to your Google account.</li>
               <li><strong className="text-zinc-300">Usage Data</strong> — basic interaction data such as sync session metadata (document IDs, timestamps). We do not store the content of your documents.</li>
             </ul>
           </Section>
@@ -76,7 +75,6 @@ export default function PrivacyPolicyPage() {
           <Section title="3. How We Use Your Information">
             <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
               <li>To authenticate you via Google OAuth 2.0 and maintain your session.</li>
-              <li>To bind and validate your license key to your Google account.</li>
               <li>To provide the core SyncStream functionality (document synchronization).</li>
               <li>To enforce rate limits and prevent abuse of our service.</li>
             </ul>
@@ -84,8 +82,8 @@ export default function PrivacyPolicyPage() {
 
           <Section title="4. Data Storage & Security">
             <p>
-              Your license key binding and session data are stored securely using industry-standard
-              encrypted storage (Upstash Redis with TLS encryption). We do not store your Google
+              Sync job state is stored securely using industry-standard encrypted storage (Upstash
+              Redis with TLS encryption). We do not store your Google
               password — authentication is handled entirely by Google&apos;s OAuth 2.0 protocol. Access
               tokens are stored as httpOnly, secure cookies and are never exposed to client-side JavaScript.
             </p>
@@ -95,15 +93,15 @@ export default function PrivacyPolicyPage() {
             <p className="mb-3">SyncStream integrates with the following third-party services:</p>
             <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
               <li><strong className="text-zinc-300">Google APIs</strong> — for authentication, Google Docs access, and Google Drive file listing. Subject to <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline underline-offset-2">Google&apos;s Privacy Policy</a>.</li>
-              <li><strong className="text-zinc-300">Upstash Redis</strong> — for secure, encrypted key-value storage of session and license data.</li>
+              <li><strong className="text-zinc-300">Upstash Redis</strong> — for secure, encrypted storage of in-progress sync job state.</li>
             </ul>
           </Section>
 
           <Section title="6. Data Retention">
             <p>
-              We retain your license key binding data for as long as your license is active. Session
-              cookies expire automatically. If you reset your license key, the previous binding data
-              is deleted from our systems. You may request full data deletion by contacting us.
+              Sync job state is retained only while a sync is in progress and expires automatically
+              within 24 hours of completion. Session cookies expire automatically. You may request
+              full data deletion by contacting us.
             </p>
           </Section>
 
@@ -119,7 +117,7 @@ export default function PrivacyPolicyPage() {
           <Section title="8. Cookies">
             <p>
               SyncStream uses essential httpOnly cookies for authentication (<code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_access_token</code>,{" "}
-              <code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_refresh_token</code>) and license verification (<code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">syncstream_licensed</code>).
+              <code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_refresh_token</code>).
               We do not use tracking cookies, analytics cookies, or any third-party advertising cookies.
             </p>
           </Section>
