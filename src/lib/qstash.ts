@@ -7,11 +7,21 @@ import { getBaseUrl } from "./base-url";
 
 let _client: Client | null = null;
 
+/**
+ * QStash is multi-region. Accounts outside eu-central-1 must talk to their
+ * region's endpoint (e.g. https://qstash-us-east-1.upstash.io), which the
+ * Upstash console shows as QSTASH_URL next to the token.
+ */
+export function getQStashBaseUrl(): string | undefined {
+  const url = process.env.QSTASH_URL?.trim().replace(/\/+$/, "");
+  return url || undefined;
+}
+
 export function getQStashClient(): Client | null {
   const token = process.env.QSTASH_TOKEN?.trim();
   if (!token) return null;
   if (!_client) {
-    _client = new Client({ token });
+    _client = new Client({ token, ...(getQStashBaseUrl() ? { baseUrl: getQStashBaseUrl() } : {}) });
   }
   return _client;
 }
@@ -69,7 +79,9 @@ export async function enqueueProcess(
       const detail = err instanceof Error ? err.message : String(err);
       const hint = /authenticate|invalid token|401/i.test(detail)
         ? "QStash rejected QSTASH_TOKEN. In Upstash → QStash, copy the value labelled QSTASH_TOKEN (starts with \"eyJ\"), not a signing key (starts with \"sig_\"), set it in Vercel and redeploy."
-        : "QStash publish failed.";
+        : /not found in this region|correct endpoint/i.test(detail)
+          ? "QStash region mismatch. In Upstash → QStash, copy the value labelled QSTASH_URL (e.g. https://qstash-us-east-1.upstash.io) into a QSTASH_URL environment variable in Vercel and redeploy."
+          : "QStash publish failed.";
       throw new Error(`${hint} (${detail})`);
     }
     return;

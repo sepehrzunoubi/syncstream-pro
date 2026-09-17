@@ -49,7 +49,7 @@ cp .env.example .env.local
 | `GOOGLE_REDIRECT_URI` | yes | `<base-url>/api/auth/callback` |
 | `NEXT_PUBLIC_BASE_URL` | yes | Public origin of the app (used for OAuth and QStash callbacks) |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | production | Persistent job state across serverless instances |
-| `QSTASH_TOKEN` / `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY` | production | Guaranteed background delivery of sync steps |
+| `QSTASH_URL` / `QSTASH_TOKEN` / `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY` | production | Guaranteed background delivery of sync steps. Copy all four from the QStash console; `QSTASH_URL` selects your account's region |
 | `CRON_SECRET` | production | Protects `/api/cron/sync-watchdog` |
 
 Locally, the Upstash and QStash variables are optional: the app falls back to an in-memory store and a direct HTTP self-call.
@@ -63,6 +63,8 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000).
 
 ## Deploying to Vercel
+
+Once deployed, sign in and open `/api/health` to verify every service is reachable with the deployment's environment variables.
 
 1. Import the repository into Vercel.
 2. Set every variable from the table above in **Project Settings → Environment Variables**, using your production domain:

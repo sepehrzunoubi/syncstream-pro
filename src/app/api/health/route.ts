@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 import { Client } from "@upstash/qstash";
 import { getBaseUrl } from "@/lib/base-url";
+import { getQStashBaseUrl } from "@/lib/qstash";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,7 @@ export async function GET(req: NextRequest) {
     UPSTASH_REDIS_REST_URL: describe("UPSTASH_REDIS_REST_URL"),
     UPSTASH_REDIS_REST_TOKEN: describe("UPSTASH_REDIS_REST_TOKEN"),
     QSTASH_TOKEN: describe("QSTASH_TOKEN"),
+    QSTASH_URL: describe("QSTASH_URL"),
     QSTASH_CURRENT_SIGNING_KEY: describe("QSTASH_CURRENT_SIGNING_KEY"),
     QSTASH_NEXT_SIGNING_KEY: describe("QSTASH_NEXT_SIGNING_KEY"),
     CRON_SECRET: describe("CRON_SECRET"),
@@ -68,11 +70,16 @@ export async function GET(req: NextRequest) {
     checks.qstash = { ok: false, detail: "QSTASH_TOKEN contains a signing key (sig_…). Use the value labelled QSTASH_TOKEN instead." };
   } else {
     try {
-      const client = new Client({ token: qtoken.trim() });
+      const baseUrl = getQStashBaseUrl();
+      const client = new Client({ token: qtoken.trim(), ...(baseUrl ? { baseUrl } : {}) });
       const schedules = await client.schedules.list();
-      checks.qstash = { ok: true, detail: `token accepted (${schedules.length} schedules)` };
+      checks.qstash = { ok: true, detail: `token accepted via ${baseUrl ?? "https://qstash.upstash.io"} (${schedules.length} schedules)` };
     } catch (err) {
-      checks.qstash = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+      const detail = err instanceof Error ? err.message : String(err);
+      const regionHint = /not found in this region|correct endpoint/i.test(detail)
+        ? " → Add QSTASH_URL in Vercel with the value shown next to QSTASH_TOKEN in the Upstash QStash console (e.g. https://qstash-us-east-1.upstash.io), then redeploy."
+        : "";
+      checks.qstash = { ok: false, detail: detail + regionHint };
     }
   }
 
