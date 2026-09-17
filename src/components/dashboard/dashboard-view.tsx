@@ -17,6 +17,7 @@ export function DashboardView() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCreatingDoc, setIsCreatingDoc] = useState(false);
   const [scopeError, setScopeError] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   const [sourceText, setSourceText] = useState("");
   const [selectedDocId, setSelectedDocId] = useState("");
@@ -224,6 +225,7 @@ export function DashboardView() {
 
     setSyncStatus("syncing");
     setMetrics(null);
+    setStartError(null);
     // Burst boot-up overlay: show loading until first real metrics arrive
     if (rhythm === "burst" || rhythm === "custom") setIsBooting(true);
 
@@ -258,7 +260,14 @@ export function DashboardView() {
         setSyncStatus("error");
         return;
       }
-      if (!res.ok) throw new Error(`Sync start failed: ${res.status}`);
+      if (!res.ok) {
+        let message = `Sync start failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) message = body.error;
+        } catch { /* non-JSON body */ }
+        throw new Error(message);
+      }
 
       const data = await res.json();
       saveJobId(data.jobId);
@@ -276,6 +285,7 @@ export function DashboardView() {
       });
     } catch (err) {
       console.error("Sync start error:", err);
+      setStartError(err instanceof Error ? err.message : "Failed to start sync");
       setSyncStatus("error");
       setIsBooting(false);
       setIsTransitioning(false);
@@ -446,6 +456,7 @@ export function DashboardView() {
     setMetrics(null);
     setSourceText("");
     setScopeError(false);
+    setStartError(null);
     setBaselineWordCount(0);
     setRealWordCount(0);
     setIsScheduled(false);
@@ -848,12 +859,12 @@ export function DashboardView() {
 
 
         {/* ═══ Error card ═══ */}
-        {syncStatus === "error" && metrics?.error && !scopeError && (
-          <div className="card-sovereign p-4 flex items-center gap-3 animate-in">
+        {syncStatus === "error" && (metrics?.error || startError) && !scopeError && (
+          <div className="card-sovereign p-4 flex items-start gap-3 animate-in">
             <span className="inline-block px-2 py-0.5 rounded text-[0.55rem] font-bold tracking-widest uppercase font-mono bg-red-500/10 text-red-400 border border-red-500/20 flex-shrink-0">
               ERROR
             </span>
-            <span className="text-zinc-500 text-[13px] truncate">{metrics.error}</span>
+            <span className="text-zinc-400 text-[13px] break-words">{metrics?.error || startError}</span>
           </div>
         )}
       </div>

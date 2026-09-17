@@ -37,6 +37,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing text or documentId" }, { status: 400 });
   }
 
+  // On Vercel every request may hit a different instance, so the in-memory
+  // fallback store cannot work. Fail early with an actionable message.
+  if (process.env.VERCEL && (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN)) {
+    return NextResponse.json(
+      {
+        error:
+          "Upstash Redis is not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the Vercel project's environment variables and redeploy.",
+      },
+      { status: 500 }
+    );
+  }
+  if (process.env.UPSTASH_REDIS_REST_URL && !/^https:\/\//.test(process.env.UPSTASH_REDIS_REST_URL)) {
+    return NextResponse.json(
+      {
+        error:
+          "UPSTASH_REDIS_REST_URL must be the REST URL (starts with https://), not the redis:// or rediss:// connection string.",
+      },
+      { status: 500 }
+    );
+  }
+
   if (text.length > 1_000_000) {
     return NextResponse.json({ error: "Text exceeds maximum length" }, { status: 400 });
   }
@@ -87,49 +108,59 @@ export async function POST(req: NextRequest) {
     }
   } catch { /* best effort — default to 0 */ }
 
-  // Store initial job state for status polling
-  const job: SyncJob = {
-    id: jobId,
-    status: "pending",
-    currentAction: 0,
-    totalActions: plan.actions.length,
-    charsSent: 0,
-    totalChars: plan.totalChars,
-    totalMinutes: plan.totalMinutes,
-    wpm: 0,
-    eta: plan.actions.reduce((sum, a) => sum + a.delayMs, 0),
-    etaTargetAt: now + plan.actions.reduce((sum, a) => sum + a.delayMs, 0),
-    activity: "Starting…",
-    nextDelayMs: 0,
-    startTime: now,
-    lastUpdate: now,
-    mandatoryPauses: plan.mandatoryPauses,
-    completedPauses: plan.mandatoryPauses ? [] : undefined,
-    baselineWordCount,
-  };
-  await setJob(job);
+  try {
+    // Store initial job state for status polling
+    const job: SyncJob = {
+      id: jobId,
+      status: "pending",
+      currentAction: 0,
+      totalActions: plan.actions.length,
+      charsSent: 0,
+      totalChars: plan.totalChars,
+      totalMinutes: plan.totalMinutes,
+      wpm: 0,
+      eta: plan.actions.reduce((sum, a) => sum + a.delayMs, 0),
+      etaTargetAt: now + plan.actions.reduce((sum, a) => sum + a.delayMs, 0),
+      activity: "Starting…",
+      nextDelayMs: 0,
+      startTime: now,
+      lastUpdate: now,
+      mandatoryPauses: plan.mandatoryPauses,
+      completedPauses: plan.mandatoryPauses ? [] : undefined,
+      baselineWordCount,
+    };
+    await setJob(job);
 
-  // Build payload for the process endpoint — also persist to Redis for pause/resume
-  const payload: SyncJobPayload = {
-    jobId,
-    accessToken: token || "",
-    refreshToken: refreshToken || "",
-    documentId,
-    actions: plan.actions,
-    currentAction: 0,
-    charsSent: 0,
-    totalChars: plan.totalChars,
-    totalMinutes: plan.totalMinutes,
-    startTime: now,
-  };
+    // Build payload for the process endpoint — also persist to Redis for pause/resume
+    const payload: SyncJobPayload = {
+      jobId,
+      accessToken: token || "",
+      refreshToken: refreshToken || "",
+      documentId,
+      actions: plan.actions,
+      currentAction: 0,
+      charsSent: 0,
+      totalChars: plan.totalChars,
+      totalMinutes: plan.totalMinutes,
+      startTime: now,
+    };
 
-  await setPayload(payload);
+    await setPayload(payload);
 
-  // Track job in active set (for cron watchdog recovery)
-  await addActiveJob(jobId);
+    // Track job in active set (for cron watchdog recovery)
+    await addActiveJob(jobId);
 
-  // Kick off background processing via QStash (guaranteed delivery)
-  await enqueueProcess(jobId);
+    // Kick off background processing via QStash (guaranteed delivery)
+    await enqueueProcess(jobId);
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Sync start failed:", err);
+    return NextResponse.json(
+      { error: `Failed to start sync: ${message}` },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json({
     jobId,
