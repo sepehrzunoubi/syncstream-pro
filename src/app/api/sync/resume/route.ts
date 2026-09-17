@@ -1,77 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, getPayload, setJob, setPayload, type SyncJobPayload } from "@/lib/sync-store";
+import { loadOwnedJob, readJobId, jobResponse, mutateJob } from "@/lib/sync-api";
+import { getStore } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
+import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  const { jobId } = await req.json();
+  const loaded = await loadOwnedJob(req, await readJobId(req));
+  if (loaded instanceof NextResponse) return loaded;
+  const { user, job } = loaded;
 
-  if (!jobId) {
-    return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
-  }
-
-  const job = await getJob(jobId);
-  if (!job) {
-    return NextResponse.json({ error: "Job not found" }, { status: 404 });
-  }
-
-  if (job.status !== "paused") {
-    return NextResponse.json({ error: "Job is not paused" }, { status: 400 });
-  }
-
-  // Get the saved payload with the original plan + current position
-  const savedPayload = await getPayload(jobId);
-  if (!savedPayload) {
-    return NextResponse.json({ error: "Job payload not found — cannot resume" }, { status: 404 });
-  }
-
-  // Refresh tokens from cookies (they may have been refreshed since pause)
-  const token = req.cookies.get("google_access_token")?.value;
-  const refreshToken = req.cookies.get("google_refresh_token")?.value;
-
-  const payload: SyncJobPayload = {
-    ...savedPayload,
-    accessToken: token || savedPayload.accessToken,
-    refreshToken: refreshToken || savedPayload.refreshToken,
-  };
-
-  // Bump generation so any stale process loops self-terminate
-  const nextGen = (job.generation ?? 0) + 1;
-
-  // Recompute the absolute eta + next-action targets from the FULL remaining
-  // plan (pause cleared remainingDelayMs, so the current action restarts at its
-  // original delayMs). The dashboard's first poll after resume will see the
-  // corrected wall-clock targets immediately, no stale data window.
-  const now = Date.now();
-  const actions = savedPayload.actions;
-  const fromIdx = savedPayload.currentAction;
-  let remainingPlanMs = 0;
-  for (let i = fromIdx; i < actions.length; i++) remainingPlanMs += actions[i].delayMs;
-  const currentDelayMs = fromIdx < actions.length ? actions[fromIdx].delayMs : 0;
-
-  // Mark job as running again with new generation + fresh wall-clock targets
-  await setJob({
-    ...job,
-    status: "running",
-    activity: "Resuming…",
-    lastUpdate: now,
-    pausedAt: undefined,
-    generation: nextGen,
-    eta: remainingPlanMs,
-    etaTargetAt: now + remainingPlanMs,
-    nextActionAt: currentDelayMs > 0 ? now + currentDelayMs : undefined,
-    nextDelayMs: currentDelayMs,
-    currentPauseDelayMs: 0,
+  const result = await mutateJob(job.id, (fresh) => {
+    if (fresh.status !== "paused") {
+      return NextResponse.json({ error: "Job is not paused" }, { status: 400 });
+    }
+    return {
+      ...fresh,
+      status: "running",
+      activity: "Resuming…",
+      pausedAt: undefined,
+      nextActionAt: undefined,
+      generation: fresh.generation + 1,
+      failures: 0,
+      // Fresh tokens from this browser, in case they were refreshed since the job started
+      accessToken: req.cookies.get(ACCESS_COOKIE)?.value || user.accessToken || fresh.accessToken,
+      refreshToken: req.cookies.get(REFRESH_COOKIE)?.value || fresh.refreshToken,
+    };
   });
+  if (result instanceof NextResponse) return result;
 
-  // Persist updated payload with new generation + refreshed tokens so
-  // the process route reads the latest state from Redis
-  const payloadWithGen: SyncJobPayload = { ...payload, generation: nextGen };
-  await setPayload(payloadWithGen);
-
-  // Kick off background processing via QStash (guaranteed delivery)
-  await enqueueProcess(jobId);
-
-  return NextResponse.json({ jobId, resumed: true });
+  await getStore().addActiveJob(job.id);
+  try {
+    await enqueueProcess(job.id, result.generation, 0);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `Failed to resume: ${message}` }, { status: 500 });
+  }
+  return jobResponse(user, result);
 }

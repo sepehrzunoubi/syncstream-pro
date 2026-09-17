@@ -117,7 +117,7 @@ export default function PrivacyPolicyPage() {
           <Section title="8. Cookies">
             <p>
               SyncStream uses essential httpOnly cookies for authentication (<code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_access_token</code>,{" "}
-              <code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_refresh_token</code>).
+              <code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_refresh_token</code>) and to remember which Google account owns your syncs (<code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">ss_uid</code>).
               We do not use tracking cookies, analytics cookies, or any third-party advertising cookies.
             </p>
           </Section>

@@ -1,69 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getActiveJobIds, getJob, removeActiveJob } from "@/lib/sync-store";
+import { getStore, isTerminal } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
 
 export const dynamic = "force-dynamic";
 
-// Stall threshold: if a running job hasn't updated in this long, re-kick it.
-// Must be longer than the process route's maxDuration (300s) + safety margin
-// so we don't re-kick a healthy chain that's simply mid-invocation.
-const STALL_THRESHOLD_MS = 5 * 60 * 1000 + 60_000; // 6 minutes
+// A job is considered stuck when nothing has touched it for this long AND
+// it is not simply waiting for a queued delivery that is still in the future.
+const STALL_MS = 10 * 60 * 1000;
+const LATE_MS = 2 * 60 * 1000;
 
 /**
- * Cron watchdog — runs every 2 minutes via Vercel Cron.
- * Scans the active-jobs set for stalled or terminal jobs and takes action:
- * - Stalled "running" jobs → re-kick via QStash
- * - Terminal jobs (done/error/cancelled) → remove from active set
+ * Safety net for jobs whose queue message was lost. The runner already
+ * recovers from crashes on its own (lock expiry + re-kick), so this only
+ * needs to run occasionally.
  */
 export async function GET(req: NextRequest) {
-  // Verify this is a legitimate cron invocation (Vercel sets this header)
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (req.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const jobIds = await getActiveJobIds();
-
+  const store = getStore();
+  const ids = await store.getActiveJobIds();
+  const now = Date.now();
   let restarted = 0;
   let cleaned = 0;
 
-  for (const jobId of jobIds) {
-    const job = await getJob(jobId);
-
-    if (!job) {
-      // Job expired from Redis — clean up the active set entry
-      await removeActiveJob(jobId);
+  for (const id of ids) {
+    const job = await store.getJob(id);
+    if (!job || isTerminal(job.status)) {
+      await store.removeActiveJob(id);
       cleaned++;
       continue;
     }
+    if (job.status === "paused") continue;
 
-    const isTerminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
-
-    if (isTerminal) {
-      await removeActiveJob(jobId);
-      cleaned++;
-      continue;
-    }
-
-    // Only re-kick running jobs (not paused — paused jobs wait for user to resume)
-    if (job.status !== "running" && job.status !== "pending") {
-      continue;
-    }
-
-    const staleness = Date.now() - (job.lastUpdate ?? 0);
-
-    if (staleness > STALL_THRESHOLD_MS) {
-      console.warn(
-        `[sync-watchdog] Job ${jobId} stalled (${Math.round(staleness / 1000)}s since last update) — re-kicking`
-      );
-      await enqueueProcess(jobId);
-      restarted++;
+    const idle = now - (job.lastUpdate ?? 0);
+    const dueAt = job.status === "scheduled" ? job.startAt : job.nextActionAt ?? job.lastUpdate;
+    const overdue = now - dueAt;
+    if (idle > STALL_MS && overdue > LATE_MS) {
+      if (await store.tryScheduleKick(id, 120)) {
+        console.warn(`[sync-watchdog] job ${id} looks stuck (${Math.round(idle / 1000)}s idle) — re-kicking`);
+        await enqueueProcess(id, job.generation, 0).catch((err) => console.error("[sync-watchdog] enqueue failed", err));
+        restarted++;
+      }
     }
   }
 
-  return NextResponse.json({
-    scanned: jobIds.length,
-    restarted,
-    cleaned,
-  });
+  return NextResponse.json({ scanned: ids.length, restarted, cleaned });
 }

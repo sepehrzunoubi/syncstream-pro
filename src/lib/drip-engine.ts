@@ -1,95 +1,87 @@
 /**
- * Drip Engine v5 — Three modes: Human Pace, Burst Mode, Custom.
+ * Drip Engine v6 — one planner for natural typing.
  *
- * Human Pace: Constant sync over a fixed duration.
- * Burst Mode: Mandatory pause checkpoints + natural micro-typed segments.
- *             Auto-calculates total duration from word count. Inserts text in
- *             tiny micro-chunks (1-3 words) with realistic 2-8s delays plus
- *             periodic thinking pauses, and a handful of multi-minute mandatory
- *             pauses spaced through the doc. Typo frequency is user-configurable.
- * Custom:     1 sentence per minute baseline; user picks up to 4 pause cubes
- *             from a fixed catalog (4m–3h). Pauses are inserted in cart order,
- *             evenly spaced between sentence segments.
+ * The text is split into 1–3 word chunks that are typed at a realistic pace,
+ * with short pauses at sentence ends, longer ones at paragraph ends, periodic
+ * "thinking" pauses, occasional typos that get corrected, and a few longer
+ * breaks. A target duration stretches or compresses the idle time (never the
+ * keystrokes themselves into absurd values), and a seed makes the whole plan
+ * reproducible so the client preview matches what the server will run.
  */
+
+import { createRng, randomSeed, type Rng } from "./prng";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type PaceMode = "human" | "burst" | "custom";
-
-export interface PlanOptions {
-  /** 0-1 scale. 0 = rare typos (~every 800 chars), 1 = frequent (~every 120 chars). Default 0.5 */
-  typoFrequency?: number;
-  /** 0-1 scale. Currently unused — burst mode auto-manages pauses. Kept for future use. Default 0.5 */
-  pauseVariance?: number;
-}
-
-/** An individual action the stream executor performs */
 export interface DripAction {
-  /** "insert" = append text, "typo" = inject wrong chars then correct, "pause" = wait only, "heartbeat" = SSE keepalive */
-  kind: "insert" | "typo" | "pause" | "heartbeat";
-  /** Text to insert (for "insert" and "typo" correct text) */
+  /** insert = type text; typo = type wrong chars, hold, delete, type text; pause = wait only */
+  kind: "insert" | "typo" | "pause";
+  /** Text to insert (for typo: the correct text) */
   text: string;
-  /** For "typo": the wrong characters to type first */
+  /** typo only: the wrong characters typed first */
   typoChars?: string;
-  /** Delay in ms BEFORE this action executes */
+  /** Wait before this action executes, in ms */
   delayMs: number;
+  /** typo only: how long the wrong characters stay before being corrected, in ms */
+  holdMs?: number;
   /** Human-readable activity label for the UI */
   activity: string;
-  /** Burst mode: index into the mandatoryPauses array (only set on mandatory pause actions) */
-  mandatoryPauseIndex?: number;
+  /** pause only: index into DripPlan.breaks for breaks that appear in the checklist */
+  breakIndex?: number;
+}
+
+export interface PlanOptions {
+  /** Total target duration in minutes. Omit (or null) for a natural pace. */
+  targetMinutes?: number | null;
+  /** "auto" picks breaks from the text length; [] disables them; a list gives explicit minutes. */
+  breaks?: "auto" | number[];
+  /** 0–1. 0 ≈ one typo per 300 chars, 1 ≈ one per 40 chars. Default 0.5 */
+  typoFrequency?: number;
+  /** Seed for reproducible plans. Random when omitted. */
+  seed?: number;
 }
 
 export interface DripPlan {
   actions: DripAction[];
   totalChars: number;
+  /** Exact planned wall time */
+  totalMs: number;
+  /** Rounded-up minutes, for display */
   totalMinutes: number;
-  /** Burst mode: mandatory pause durations in minutes (in execution order, already shuffled) */
-  mandatoryPauses?: number[];
+  /** Break lengths in minutes, in execution order */
+  breaks: number[];
+  seed: number;
 }
 
+/** Snapshot of a job sent to the dashboard */
 export interface StreamEvent {
-  type: "progress" | "done" | "error" | "heartbeat";
+  type: "progress" | "done" | "error";
   actionIndex: number;
   totalActions: number;
   charsSent: number;
   totalChars: number;
-  nextDelayMs: number;
-  /** Absolute timestamp (ms) when the current delay ends */
   nextActionAt?: number;
-  /** Relative ms to plan completion (kept for back-compat; prefer etaTargetAt) */
-  eta: number;
-  /** Absolute wall-clock ms when the whole sync is expected to finish. Survives tab close. */
   etaTargetAt?: number;
   wpm: number;
   activity: string;
   status: string;
   error?: string;
-  nextTypoAction?: number;
-  /** Index of next significant pause action (burst modes) */
-  nextPauseAction?: number;
-  /** Burst mode: mandatory pause durations in minutes */
-  mandatoryPauses?: number[];
-  /** Burst mode: indices of completed mandatory pauses */
-  completedPauses?: number[];
-  /** Timestamp of last server-side update — used for client-side stall detection */
+  nextBreakAction?: number;
+  nextBreakAt?: number;
+  breaks?: number[];
+  completedBreaks?: number[];
   lastUpdate?: number;
-  /** Current mandatory pause delay in ms (>0 means a long pause is active — stall detector should wait) */
-  currentPauseDelayMs?: number;
-  /** Baseline word count in target doc before sync started */
   baselineWordCount?: number;
+  liveWordCount?: number;
 }
 
-// ── Utilities ──────────────────────────────────────────────────────────────
+export const MAX_CUSTOM_BREAKS = 8;
+export const MAX_BREAK_MINUTES = 180;
+export const MIN_TARGET_MINUTES = 1;
+export const MAX_TARGET_MINUTES = 7 * 24 * 60;
 
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
+// ── Keyboard neighbours for realistic typos ───────────────────────────────
 
-function randFloat(min: number, max: number): number {
-  return min + Math.random() * (max - min);
-}
-
-/** Keyboard neighbor map for realistic fat-finger typos */
 const NEIGHBORS: Record<string, string[]> = {
   a: ["s", "q", "z"], b: ["v", "n", "g"], c: ["x", "v", "d"],
   d: ["s", "f", "e", "c"], e: ["w", "r", "d"], f: ["d", "g", "r", "v"],
@@ -102,616 +94,291 @@ const NEIGHBORS: Record<string, string[]> = {
   y: ["t", "u", "h"], z: ["a", "x", "s"],
 };
 
-/**
- * Generate a smart typo from the upcoming text.
- * Returns the distorted text AND the original correct segment it covers.
- * Strategies: adjacent-key swap, letter transposition, double letter, dropped letter, phonetic swap.
- */
-function generateSmartTypo(upcomingText: string): { typo: string; correct: string } {
-  // Find the first 1-3 words to distort
-  const trimmed = upcomingText.trimStart();
-  const leadingSpace = upcomingText.length - trimmed.length;
-  const words = trimmed.split(/\s+/);
-  const wordCount = Math.min(words.length, randInt(1, 3));
-  const segment = words.slice(0, wordCount).join(" ");
-  // The correct text includes any leading whitespace
-  const correct = upcomingText.slice(0, leadingSpace + segment.length);
-
-  if (segment.length < 2) {
-    return { typo: segment + segment, correct };
-  }
-
-  const strategy = randInt(0, 4);
+/** Distort a word-ish string so it looks like a real slip. Never returns the input unchanged. */
+export function distortText(rng: Rng, segment: string): string {
+  if (segment.length < 2) return segment + segment;
   const chars = segment.split("");
-
-  let distorted: string;
-  switch (strategy) {
-    case 0: {
-      // Adjacent-key replacement: replace 1-2 chars with keyboard neighbors
-      const numReplacements = randInt(1, Math.min(2, chars.length));
-      for (let r = 0; r < numReplacements; r++) {
-        const idx = randInt(0, chars.length - 1);
-        const lower = chars[idx].toLowerCase();
-        const neighbors = NEIGHBORS[lower];
-        if (neighbors) {
-          const replacement = neighbors[randInt(0, neighbors.length - 1)];
-          chars[idx] = chars[idx] === chars[idx].toUpperCase()
-            ? replacement.toUpperCase()
-            : replacement;
-        }
-      }
-      distorted = chars.join("");
-      break;
-    }
-    case 1: {
-      // Letter transposition: swap two adjacent letters
-      if (chars.length >= 2) {
-        const idx = randInt(0, chars.length - 2);
-        [chars[idx], chars[idx + 1]] = [chars[idx + 1], chars[idx]];
-      }
-      distorted = chars.join("");
-      break;
-    }
-    case 2: {
-      // Double letter: repeat a random character
-      const idx = randInt(0, chars.length - 1);
-      chars.splice(idx, 0, chars[idx]);
-      distorted = chars.join("");
-      break;
-    }
-    case 3: {
-      // Dropped letter: remove a random character
-      if (chars.length > 2) {
-        const idx = randInt(0, chars.length - 1);
-        chars.splice(idx, 1);
-      }
-      distorted = chars.join("");
-      break;
-    }
-    case 4: {
-      // Phonetic swap: common misspelling patterns
-      let result = segment;
-      const swaps: [string, string][] = [
-        ["th", "ht"], ["ie", "ei"], ["ea", "ae"], ["ou", "uo"],
-        ["er", "re"], ["an", "na"], ["in", "ni"], ["on", "no"],
-        ["ti", "it"], ["es", "se"], ["al", "la"], ["en", "ne"],
-      ];
-      const applicable = swaps.filter(([from]) => result.toLowerCase().includes(from));
-      if (applicable.length > 0) {
-        const [from, to] = applicable[randInt(0, applicable.length - 1)];
-        const idx = result.toLowerCase().indexOf(from);
-        result = result.slice(0, idx) + to + result.slice(idx + from.length);
-      } else {
-        const idx2 = randInt(0, chars.length - 1);
-        const lower = chars[idx2].toLowerCase();
-        const neighbors = NEIGHBORS[lower];
-        if (neighbors) {
-          chars[idx2] = neighbors[randInt(0, neighbors.length - 1)];
-        }
-        result = chars.join("");
-      }
-      distorted = result;
-      break;
-    }
-    default:
-      distorted = segment;
-  }
-
-  // Ensure the typo is actually different from the correct text
-  if (distorted === segment) {
-    // Force at least one adjacent-key swap
-    const forceChars = segment.split("");
-    const idx = randInt(0, forceChars.length - 1);
-    const lower = forceChars[idx].toLowerCase();
-    const neighbors = NEIGHBORS[lower];
+  const strategy = rng.int(0, 3);
+  if (strategy === 0) {
+    // adjacent key
+    const idx = rng.int(0, chars.length - 1);
+    const neighbors = NEIGHBORS[chars[idx].toLowerCase()];
     if (neighbors) {
-      forceChars[idx] = neighbors[randInt(0, neighbors.length - 1)];
-    } else {
-      forceChars[idx] = forceChars[idx] + forceChars[idx];
+      const r = rng.pick(neighbors);
+      chars[idx] = chars[idx] === chars[idx].toUpperCase() ? r.toUpperCase() : r;
     }
-    distorted = forceChars.join("");
+  } else if (strategy === 1) {
+    // transpose two neighbours
+    const idx = rng.int(0, chars.length - 2);
+    [chars[idx], chars[idx + 1]] = [chars[idx + 1], chars[idx]];
+  } else if (strategy === 2) {
+    // doubled letter
+    const idx = rng.int(0, chars.length - 1);
+    chars.splice(idx, 0, chars[idx]);
+  } else if (chars.length > 2) {
+    // dropped letter
+    chars.splice(rng.int(0, chars.length - 1), 1);
   }
-
-  return { typo: distorted, correct };
+  let out = chars.join("");
+  if (out === segment) {
+    const idx = rng.int(0, segment.length - 1);
+    out = segment.slice(0, idx) + segment[idx] + segment.slice(idx);
+  }
+  return out;
 }
 
-// ── Shared Helpers ────────────────────────────────────────────────────────
+// ── Tokenising ────────────────────────────────────────────────────────────
 
-/**
- * Compute dynamic typo interval from typoFrequency (0-1).
- * 0 → ~300 char interval (rare), 1 → ~40 char interval (frequent).
- */
-function typoIntervalRange(typoFrequency: number): [number, number] {
-  const center = Math.round(300 - typoFrequency * 260); // 300 → 40
-  const spread = Math.round(center * 0.25);
-  return [Math.max(20, center - spread), center + spread];
+interface Chunk {
+  text: string;
+  words: number;
+  endsSentence: boolean;
+  endsParagraph: boolean;
 }
 
-/**
- * Split text on word boundaries into chunks of approximately `targetSize`.
- */
-function chunkText(text: string, targetSize: number): string[] {
-  const chunks: string[] = [];
-  let offset = 0;
-  while (offset < text.length) {
-    let end = Math.min(offset + targetSize, text.length);
-    if (end < text.length) {
-      const sp = text.lastIndexOf(" ", end);
-      if (sp > offset) end = sp + 1;
+/** Split text into 1–3 word chunks whose concatenation is exactly the input. */
+function chunkText(text: string, rng: Rng): Chunk[] {
+  const tokens = text.match(/\s*\S+\s*/g) ?? [];
+  if (tokens.length === 0) return text.length > 0 ? [{ text, words: 0, endsSentence: false, endsParagraph: false }] : [];
+  // Very long inputs get bigger chunks so the action count stays bounded.
+  const scale = Math.max(1, Math.ceil(tokens.length / 900));
+  const chunks: Chunk[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const n = rng.int(1 * scale, 3 * scale);
+    const slice = tokens.slice(i, i + n);
+    // Do not run past a paragraph break inside a chunk
+    let take = slice.length;
+    for (let k = 0; k < slice.length - 1; k++) {
+      if (/\n/.test(slice[k])) { take = k + 1; break; }
     }
-    chunks.push(text.slice(offset, end));
-    offset = end;
+    const piece = slice.slice(0, take);
+    const joined = piece.join("");
+    const trimmedEnd = joined.trimEnd();
+    chunks.push({
+      text: joined,
+      words: piece.length,
+      endsSentence: /[.!?]["')\]]*$/.test(trimmedEnd),
+      endsParagraph: /\n/.test(joined.slice(trimmedEnd.length)),
+    });
+    i += take;
   }
   return chunks;
 }
 
-// ── Human Pace Plan ───────────────────────────────────────────────────────
+// ── Break selection ───────────────────────────────────────────────────────
 
-/**
- * Build a constant-sync plan over a fixed duration.
- * CharsPerMinute = TotalChars / DurationMinutes, split into micro-bursts.
- */
-function buildHumanPlan(
-  text: string,
-  durationMinutes: number,
-  options: PlanOptions
-): DripPlan {
-  const typoFreq = options.typoFrequency ?? 0.5;
-  const [typoMin, typoMax] = typoIntervalRange(typoFreq);
-  const typoPauseMs = randInt(800, 1500);
-
-  const totalChars = text.length;
-  const totalBudgetMs = durationMinutes * 60 * 1000;
-  const charsPerMinute = Math.ceil(totalChars / durationMinutes);
-
-  const textActions: DripAction[] = [];
-  let charsSinceLastTypo = 0;
-  let nextTypoAt = randInt(typoMin, typoMax);
-
-  const avgBursts = 4;
-  const chunkSize = Math.ceil(charsPerMinute / avgBursts);
-  const chunks = chunkText(text, chunkSize);
-
-  for (const chunk of chunks) {
-    if (charsSinceLastTypo + chunk.length >= nextTypoAt && chunk.length > 15) {
-      const splitPoint = Math.max(10, nextTypoAt - charsSinceLastTypo);
-      const beforeTypo = chunk.slice(0, splitPoint);
-      const afterTypo = chunk.slice(splitPoint);
-
-      if (beforeTypo.length > 0) {
-        textActions.push({
-          kind: "insert",
-          text: beforeTypo,
-          delayMs: 0,
-          activity: "Typing…",
-        });
-      }
-
-      const { typo, correct } = generateSmartTypo(afterTypo);
-      const remainder = afterTypo.slice(correct.length);
-
-      textActions.push({
-        kind: "typo",
-        text: correct,
-        typoChars: typo,
-        delayMs: 0,
-        activity: "Correcting typo…",
-      });
-
-      // Insert the rest of the chunk after the typo correction
-      if (remainder.length > 0) {
-        textActions.push({
-          kind: "insert",
-          text: remainder,
-          delayMs: 0,
-          activity: "Typing…",
-        });
-      }
-
-      charsSinceLastTypo = remainder.length;
-      nextTypoAt = randInt(typoMin, typoMax);
-    } else {
-      textActions.push({
-        kind: "insert",
-        text: chunk,
-        delayMs: 0,
-        activity: "Typing…",
-      });
-      charsSinceLastTypo += chunk.length;
-    }
-  }
-
-  // Distribute time budget across actions
-  // Typo actions only consume their correction pause (typoPauseMs), NOT a pre-delay.
-  // So the remaining delay budget must be spread only among insert actions.
-  const typoCount = textActions.filter((a) => a.kind === "typo").length;
-  const typoTimeBudget = typoCount * typoPauseMs;
-  const delayBudget = Math.max(0, totalBudgetMs - typoTimeBudget);
-  const insertActions = textActions.filter((a) => a.kind === "insert");
-  // Subtract 1 for the first insert which fires immediately (delay=0)
-  const numDelaySlots = Math.max(1, insertActions.length - 1);
-  const baseDelay = Math.floor(delayBudget / numDelaySlots);
-
-  let isFirstInsert = true;
-  for (let i = 0; i < textActions.length; i++) {
-    if (textActions[i].kind === "typo") {
-      textActions[i].delayMs = typoPauseMs;
-    } else {
-      if (isFirstInsert) {
-        textActions[i].delayMs = 0;
-        isFirstInsert = false;
-      } else {
-        const variance = baseDelay * 0.15;
-        textActions[i].delayMs = Math.max(1000, Math.round(baseDelay + randFloat(-variance, variance)));
-      }
-    }
-  }
-
-  // Spread any rounding error evenly across insert actions (skip first which is 0)
-  if (textActions.length > 1) {
-    const actualTotal = textActions.reduce((sum, a) => sum + a.delayMs, 0);
-    const diff = totalBudgetMs - actualTotal;
-    if (Math.abs(diff) > 500) {
-      const adjustableInserts = textActions.filter((a) => a.kind === "insert" && a.delayMs > 0);
-      if (adjustableInserts.length > 0) {
-        const perAction = Math.round(diff / adjustableInserts.length);
-        for (const a of adjustableInserts) {
-          a.delayMs = Math.max(1000, a.delayMs + perAction);
-        }
-      }
-    }
-  }
-
-  return { actions: textActions, totalChars, totalMinutes: durationMinutes };
+function pickDistinct(rng: Rng, min: number, max: number, count: number): number[] {
+  const pool: number[] = [];
+  for (let v = min; v <= max; v++) pool.push(v);
+  rng.shuffle(pool);
+  return pool.slice(0, Math.min(count, pool.length));
 }
 
-// ── Public Entry Point ────────────────────────────────────────────────────
-
-/**
- * Build a drip plan for the given text.
- *
- * @param text            Full source text
- * @param durationMinutes Total sync duration (ignored in burst mode)
- * @param mode            "human" or "burst"
- * @param options         Typo frequency + pause variance
- */
-export function buildDripPlan(
-  text: string,
-  durationMinutes: number,
-  mode: PaceMode,
-  options: PlanOptions = {},
-  customPauses: number[] = []
-): DripPlan {
-  if (mode === "burst") {
-    return buildBurstPlan(text, options);
-  }
-  if (mode === "custom") {
-    return buildCustomPlan(text, customPauses, options);
-  }
-  return buildHumanPlan(text, durationMinutes, options);
+/** Automatic break lengths (minutes) from the word count. */
+export function autoBreaks(wordCount: number, rng: Rng): number[] {
+  if (wordCount < 40) return [];
+  if (wordCount < 120) return pickDistinct(rng, 2, 6, 1);
+  if (wordCount <= 300) return pickDistinct(rng, 2, 12, rng.int(2, 3));
+  if (wordCount <= 700) return pickDistinct(rng, 3, 15, rng.int(3, 4));
+  if (wordCount <= 1500) return pickDistinct(rng, 3, 20, rng.int(4, 5));
+  return pickDistinct(rng, 5, 25, 5);
 }
 
-// ── Burst Mode: Mandatory Pause Checkpoints + Micro-typing ──────────────
-
-const BURST_PAUSE_ACTIVITIES = [
-  "Break — reviewing notes…",
+const BREAK_ACTIVITIES = [
   "Break — stepped away…",
+  "Break — re-reading the draft…",
   "Break — thinking…",
-  "Break — re-reading draft…",
-  "Break — researching…",
   "Break — getting coffee…",
+  "Break — checking notes…",
 ];
 
 /**
- * Pick `count` unique integers from [min..max] (inclusive).
+ * Choose chunk boundaries for `count` breaks, spaced evenly through the text,
+ * preferring paragraph ends, then sentence ends, then any chunk boundary.
+ * Returns indices i meaning "after chunk i".
  */
-function pickUnique(min: number, max: number, count: number): number[] {
-  const pool: number[] = [];
-  for (let v = min; v <= max; v++) pool.push(v);
-  // Fisher-Yates on pool, then take first `count`
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = randInt(0, i);
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+function placeBreaks(chunks: Chunk[], count: number, taken: Set<number>): number[] {
+  const n = chunks.length;
+  if (count === 0 || n < 2) return [];
+  const result: number[] = [];
+  for (let j = 0; j < count; j++) {
+    const ideal = Math.round(((j + 1) * n) / (count + 1)) - 1;
+    const candidate = nearestBoundary(chunks, ideal, taken);
+    if (candidate == null) continue;
+    taken.add(candidate);
+    result.push(candidate);
   }
-  return pool.slice(0, count);
+  return result.sort((a, b) => a - b);
 }
 
-/**
- * Determine mandatory pause durations (in minutes) based on word count.
- * All durations are guaranteed to be distinct for natural-looking variation.
- */
-function getMandatoryPauses(wordCount: number): number[] {
-  if (wordCount <= 100) return pickUnique(1, 8, 3);    // 3 pauses, 1-8 min
-  if (wordCount <= 300) return pickUnique(2, 12, 4);   // 4 pauses, 2-12 min
-  if (wordCount <= 700) return pickUnique(2, 15, 5);   // 5 pauses, 2-15 min
-  if (wordCount <= 1500) return pickUnique(3, 20, 5);  // 5 pauses, 3-20 min
-  return pickUnique(5, 25, 5);                          // 5 pauses, 5-25 min
-}
-
-/** Fisher-Yates shuffle (in place) */
-function shuffle<T>(arr: T[]): T[] {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = randInt(0, i);
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+function nearestBoundary(chunks: Chunk[], ideal: number, taken: Set<number>): number | null {
+  const n = chunks.length;
+  const lastAllowed = n - 2; // never after the final chunk
+  const ok = (i: number) => i >= 0 && i <= lastAllowed && !taken.has(i);
+  const tiers: ((c: Chunk) => boolean)[] = [
+    (c) => c.endsParagraph,
+    (c) => c.endsSentence,
+    () => true,
+  ];
+  for (const tier of tiers) {
+    const radius = tier === tiers[0] ? Math.max(3, Math.floor(n / 6)) : tier === tiers[1] ? Math.max(2, Math.floor(n / 10)) : n;
+    for (let d = 0; d <= radius; d++) {
+      for (const i of [ideal - d, ideal + d]) {
+        if (ok(i) && tier(chunks[i])) return i;
+      }
+    }
   }
-  return arr;
+  return null;
 }
 
-/**
- * Build a burst plan: mandatory pause checkpoints + natural micro-typed segments.
- *
- * Text is inserted in tiny micro-chunks (1-3 words each) with short realistic
- * delays (2-8s) to simulate actual keystroke rhythm. Every few micro-chunks,
- * a "thinking pause" (15-50s) is inserted. This produces many small edits in
- * Google Docs version history instead of a few large paste-like ones, achieving
- * a high GPTZero natural typing score.
- *
- * Mandatory pauses are shuffled so their durations appear in random order.
- */
-function buildBurstPlan(text: string, options: PlanOptions): DripPlan {
-  const typoFreq = options.typoFrequency ?? 0.5;
-  const [typoMin, typoMax] = typoIntervalRange(typoFreq);
+// ── Planner ───────────────────────────────────────────────────────────────
+
+export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan {
+  const seed = options.seed ?? randomSeed();
+  const rng = createRng(seed);
+  const typoFrequency = clamp(options.typoFrequency ?? 0.5, 0, 1);
   const totalChars = text.length;
-  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const chunks = chunkText(text, rng);
+  const wordCount = chunks.reduce((s, c) => s + c.words, 0);
 
-  // Determine and shuffle mandatory pauses
-  const mandatoryPauses = shuffle(getMandatoryPauses(wordCount));
-  const numPauses = mandatoryPauses.length;
+  // Typo cadence in characters
+  const typoCenter = Math.round(300 - typoFrequency * 260);
+  const typoRange: [number, number] = [Math.max(20, Math.round(typoCenter * 0.75)), Math.round(typoCenter * 1.25)];
 
-  // Split text into micro-chunks (8-25 chars ≈ 1-3 words) for realistic edit sizes
-  const allChunks = chunkText(text, randInt(8, 25));
+  // ── Base rhythm ──
+  const typing: { chunk: Chunk; typoChars?: string; holdMs?: number; delayMs: number }[] = [];
+  let charsSinceTypo = 0;
+  let nextTypoAt = rng.int(typoRange[0], typoRange[1]);
+  let chunksSinceThink = 0;
+  let nextThinkAt = rng.int(5, 9);
+  let carryPause = 0; // pause owed from the previous chunk's boundary
 
-  // Distribute chunks across numPauses+1 segments
-  const numSegments = numPauses + 1;
-  const basePerSeg = Math.floor(allChunks.length / numSegments);
-  const remainder = allChunks.length % numSegments;
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    const keystrokes = c.text.length * rng.float(220, 420);
+    let delay = i === 0 ? 0 : Math.round(keystrokes + carryPause);
+    chunksSinceThink++;
+    if (i > 0 && chunksSinceThink >= nextThinkAt) {
+      delay += rng.int(8_000, 35_000);
+      chunksSinceThink = 0;
+      nextThinkAt = rng.int(5, 9);
+    }
+    carryPause = c.endsParagraph ? rng.int(6_000, 20_000) : c.endsSentence ? rng.int(1_200, 5_000) : 0;
 
-  const segments: string[][] = [];
-  let offset = 0;
-  for (let s = 0; s < numSegments; s++) {
-    const count = basePerSeg + (s < remainder ? 1 : 0);
-    segments.push(allChunks.slice(offset, offset + count));
-    offset += count;
+    const wordPart = c.text.trimEnd();
+    let typoChars: string | undefined;
+    let holdMs: number | undefined;
+    if (wordPart.length >= 3 && charsSinceTypo + c.text.length >= nextTypoAt) {
+      typoChars = distortText(rng, wordPart);
+      holdMs = rng.int(600, 2_000);
+      charsSinceTypo = 0;
+      nextTypoAt = rng.int(typoRange[0], typoRange[1]);
+    } else {
+      charsSinceTypo += c.text.length;
+    }
+    typing.push({ chunk: c, typoChars, holdMs, delayMs: delay });
   }
+
+  // ── Breaks ──
+  const breakOption = options.breaks ?? "auto";
+  let breakMinutes =
+    breakOption === "auto"
+      ? autoBreaks(wordCount, rng)
+      : breakOption
+          .filter((m) => Number.isFinite(m) && m >= 1 && m <= MAX_BREAK_MINUTES)
+          .slice(0, MAX_CUSTOM_BREAKS)
+          .map((m) => Math.round(m));
+  if (breakOption === "auto") rng.shuffle(breakMinutes);
+
+  const baseMs = typing.reduce((s, t) => s + t.delayMs + (t.holdMs ?? 0), 0);
+
+  // ── Fit to target ──
+  let scale = 1;
+  let extraGapMs = 0;
+  const target = options.targetMinutes;
+  if (target != null && Number.isFinite(target) && target > 0) {
+    const targetMs = clamp(target, MIN_TARGET_MINUTES, MAX_TARGET_MINUTES) * 60_000;
+    let breaksMs = breakMinutes.reduce((s, m) => s + m, 0) * 60_000;
+    // Too tight: shed automatic breaks first, then type faster (down to ~2.5× natural).
+    if (breakOption === "auto") {
+      while (breakMinutes.length > 0 && targetMs - breaksMs < baseMs * 0.4) {
+        breakMinutes = breakMinutes.slice(0, -1);
+        breaksMs = breakMinutes.reduce((s, m) => s + m, 0) * 60_000;
+      }
+    }
+    const available = Math.max(0, targetMs - breaksMs);
+    scale = clamp(available / Math.max(1, baseMs), 0.4, 1.6);
+    extraGapMs = Math.max(0, available - baseMs * scale);
+  }
+
+  // Extra idle time becomes "away" gaps at natural boundaries.
+  const gapMinutes: number[] = [];
+  if (extraGapMs >= 90_000) {
+    const count = clamp(Math.round(extraGapMs / (15 * 60_000)), 1, 40);
+    const weights = Array.from({ length: count }, () => rng.float(0.5, 1.5));
+    const wsum = weights.reduce((s, w) => s + w, 0);
+    for (const w of weights) gapMinutes.push(Math.max(1, Math.round((extraGapMs * w) / wsum / 60_000)));
+  }
+
+  // ── Assemble ──
+  const taken = new Set<number>();
+  const breakPositions = placeBreaks(chunks, breakMinutes.length, taken);
+  const gapPositions = placeBreaks(chunks, gapMinutes.length, taken);
+  const pauseAt = new Map<number, { minutes: number; isBreak: boolean }[]>();
+  breakPositions.forEach((pos, i) => pauseAt.set(pos, [...(pauseAt.get(pos) ?? []), { minutes: breakMinutes[i], isBreak: true }]));
+  gapPositions.forEach((pos, i) => pauseAt.set(pos, [...(pauseAt.get(pos) ?? []), { minutes: gapMinutes[i], isBreak: false }]));
 
   const actions: DripAction[] = [];
-  let charsSinceTypo = 0;
-  let nextTypoAt = randInt(typoMin, typoMax);
-  let isFirstAction = true;
-  let chunksSinceThinkPause = 0;
-  let nextThinkPauseAt = randInt(4, 8); // thinking pause every 4-8 micro-chunks
-
-  for (let seg = 0; seg < numSegments; seg++) {
-    const segChunks = segments[seg];
-
-    for (const chunk of segChunks) {
-      // Delay logic: realistic typing rhythm
-      let delay: number;
-      let activity: string;
-
-      if (isFirstAction) {
-        delay = 0;
-        activity = "Typing…";
-        isFirstAction = false;
-      } else if (chunksSinceThinkPause >= nextThinkPauseAt) {
-        // Periodic "thinking" pause — simulates re-reading or pausing to think
-        delay = randInt(15_000, 50_000);
-        activity = "Thinking…";
-        chunksSinceThinkPause = 0;
-        nextThinkPauseAt = randInt(4, 8);
-      } else {
-        // Normal micro-typing delay — 2-8 seconds between small inserts
-        delay = randInt(2_000, 8_000);
-        activity = "Typing…";
-      }
-
-      chunksSinceThinkPause++;
-
-      // Typo injection
-      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 6) {
-        const splitPoint = Math.max(4, nextTypoAt - charsSinceTypo);
-        const before = chunk.slice(0, splitPoint);
-        const after = chunk.slice(splitPoint);
-
-        if (before.length > 0) {
-          actions.push({ kind: "insert", text: before, delayMs: delay, activity });
-          delay = randInt(1_000, 3_000);
-          activity = "Typing…";
-        }
-
-        const { typo, correct } = generateSmartTypo(after);
-        const rest = after.slice(correct.length);
-
+  const breaks: number[] = [];
+  for (let i = 0; i < typing.length; i++) {
+    const t = typing[i];
+    const delayMs = i === 0 ? 0 : Math.max(400, Math.round(t.delayMs * scale));
+    if (t.typoChars) {
+      actions.push({
+        kind: "typo",
+        text: t.chunk.text,
+        typoChars: t.typoChars,
+        delayMs,
+        holdMs: Math.max(400, Math.round((t.holdMs ?? 1_000) * scale)),
+        activity: "Correcting a typo…",
+      });
+    } else {
+      actions.push({ kind: "insert", text: t.chunk.text, delayMs, activity: "Typing…" });
+    }
+    const pauses = pauseAt.get(i);
+    if (pauses) {
+      for (const p of pauses) {
+        breaks.push(p.minutes);
         actions.push({
-          kind: "typo", text: correct, typoChars: typo,
-          delayMs: randInt(800, 2500), activity: "Correcting typo…",
+          kind: "pause",
+          text: "",
+          delayMs: p.minutes * 60_000,
+          activity: p.isBreak ? rng.pick(BREAK_ACTIVITIES) : "Away from the keyboard…",
+          breakIndex: breaks.length - 1,
         });
-
-        if (rest.length > 0) {
-          actions.push({ kind: "insert", text: rest, delayMs: randInt(1_500, 4_000), activity: "Typing…" });
-        }
-
-        charsSinceTypo = rest.length;
-        nextTypoAt = randInt(typoMin, typoMax);
-      } else {
-        actions.push({ kind: "insert", text: chunk, delayMs: delay, activity });
-        charsSinceTypo += chunk.length;
       }
-    }
-
-    // Insert mandatory pause after this segment (except after the last segment)
-    if (seg < numPauses) {
-      const pauseMin = mandatoryPauses[seg];
-      const pauseMs = pauseMin * 60_000;
-      actions.push({
-        kind: "pause",
-        text: "",
-        delayMs: pauseMs,
-        activity: BURST_PAUSE_ACTIVITIES[randInt(0, BURST_PAUSE_ACTIVITIES.length - 1)],
-        mandatoryPauseIndex: seg,
-      });
-      // Reset thinking-pause counter after mandatory pause
-      chunksSinceThinkPause = 0;
-      nextThinkPauseAt = randInt(4, 8);
     }
   }
 
-  const totalMs = actions.reduce((sum, a) => sum + a.delayMs, 0);
-  const totalMinutes = Math.max(1, Math.ceil(totalMs / 60_000));
-
-  return { actions, totalChars, totalMinutes, mandatoryPauses };
+  const totalMs = actions.reduce((s, a) => s + a.delayMs + (a.holdMs ?? 0), 0);
+  return {
+    actions,
+    totalChars,
+    totalMs,
+    totalMinutes: Math.max(1, Math.ceil(totalMs / 60_000)),
+    breaks,
+    seed,
+  };
 }
 
-// ── Custom Mode: 1 sentence/minute baseline + user-selected pauses ──────────
-
-/**
- * Split text into sentences. Each match keeps trailing punctuation + whitespace
- * so that re-joining the segments reproduces the original text exactly.
- * Falls back to a single segment if no terminator is present.
- */
-function splitSentences(text: string): string[] {
-  const matches = text.match(/[^.!?\n]+[.!?]+["')\]]*\s*|[^.!?\n]+\n+|[^.!?\n]+$/g);
-  if (!matches || matches.length === 0) return text.length > 0 ? [text] : [];
-  // Drop empties that can appear when text starts/ends with whitespace
-  return matches.filter((s) => s.length > 0);
+/** Sum of the remaining wait from action `from` onward (inclusive of its own delay). */
+export function remainingMs(actions: DripAction[], from: number): number {
+  let sum = 0;
+  for (let i = from; i < actions.length; i++) sum += actions[i].delayMs + (actions[i].holdMs ?? 0);
+  return sum;
 }
 
-const CUSTOM_PAUSE_CATALOG = new Set([4, 10, 15, 30, 45, 60, 90, 120, 180]);
-const MAX_CUSTOM_PAUSES = 4;
-
-/**
- * Build a custom plan: types each sentence over ~60s, then injects user-selected
- * pauses (in cart order) at evenly spaced sentence boundaries.
- *
- * Per-sentence delay budget = 60_000 ms, distributed across that sentence's
- * insert actions (mirrors human-pace distribution but per-sentence). The very
- * first action of the whole plan has delayMs = 0.
- */
-function buildCustomPlan(
-  text: string,
-  customPauses: number[],
-  options: PlanOptions
-): DripPlan {
-  const typoFreq = options.typoFrequency ?? 0.5;
-  const [typoMin, typoMax] = typoIntervalRange(typoFreq);
-  const typoPauseMs = randInt(800, 1500);
-  const totalChars = text.length;
-
-  // Sanitize pauses: keep only catalog values, cap at MAX_CUSTOM_PAUSES
-  const validPauses = customPauses
-    .filter((p) => Number.isFinite(p) && CUSTOM_PAUSE_CATALOG.has(p))
-    .slice(0, MAX_CUSTOM_PAUSES);
-
-  const sentences = splitSentences(text);
-  const S = Math.max(1, sentences.length);
-  const P = validPauses.length;
-
-  // Compute insertion points: pause i is inserted after sentence index
-  // floor((i+1) * S / (P+1)) - 1, clamped to [0, S-2] so we never insert
-  // a pause after the very last sentence.
-  const insertAfter = new Set<number>();
-  if (P > 0 && S > 1) {
-    for (let i = 0; i < P; i++) {
-      let idx = Math.floor(((i + 1) * S) / (P + 1)) - 1;
-      if (idx < 0) idx = 0;
-      if (idx > S - 2) idx = S - 2;
-      insertAfter.add(idx);
-    }
-  }
-
-  const actions: DripAction[] = [];
-  let charsSinceTypo = 0;
-  let nextTypoAt = randInt(typoMin, typoMax);
-  let isFirstAction = true;
-  let pauseCursor = 0;
-
-  for (let sIdx = 0; sIdx < sentences.length; sIdx++) {
-    const sentence = sentences[sIdx];
-
-    // Build this sentence's insert/typo actions (delays filled in below).
-    const sentenceActions: DripAction[] = [];
-    const avgBursts = 4;
-    const chunkSize = Math.max(8, Math.ceil(sentence.length / avgBursts));
-    const chunks = chunkText(sentence, chunkSize);
-
-    for (const chunk of chunks) {
-      if (charsSinceTypo + chunk.length >= nextTypoAt && chunk.length > 12) {
-        const splitPoint = Math.max(8, nextTypoAt - charsSinceTypo);
-        const before = chunk.slice(0, splitPoint);
-        const after = chunk.slice(splitPoint);
-
-        if (before.length > 0) {
-          sentenceActions.push({ kind: "insert", text: before, delayMs: 0, activity: "Typing…" });
-        }
-
-        const { typo, correct } = generateSmartTypo(after);
-        const remainder = after.slice(correct.length);
-
-        sentenceActions.push({
-          kind: "typo", text: correct, typoChars: typo,
-          delayMs: typoPauseMs, activity: "Correcting typo…",
-        });
-
-        if (remainder.length > 0) {
-          sentenceActions.push({ kind: "insert", text: remainder, delayMs: 0, activity: "Typing…" });
-        }
-
-        charsSinceTypo = remainder.length;
-        nextTypoAt = randInt(typoMin, typoMax);
-      } else {
-        sentenceActions.push({ kind: "insert", text: chunk, delayMs: 0, activity: "Typing…" });
-        charsSinceTypo += chunk.length;
-      }
-    }
-
-    // Distribute 60s budget across this sentence's insert actions.
-    // Typos already consume typoPauseMs; spread remaining across inserts.
-    const typoTime = sentenceActions.filter((a) => a.kind === "typo").length * typoPauseMs;
-    const sentenceBudgetMs = 60_000;
-    const remainingBudget = Math.max(0, sentenceBudgetMs - typoTime);
-    const inserts = sentenceActions.filter((a) => a.kind === "insert");
-    // Number of inserts that get a pre-delay. The first insert of the WHOLE
-    // plan fires immediately (delay 0); for subsequent sentences every insert
-    // can carry a delay.
-    const delayableInserts = isFirstAction ? Math.max(1, inserts.length - 1) : Math.max(1, inserts.length);
-    const baseDelay = Math.floor(remainingBudget / delayableInserts);
-
-    let firstInsertOfSentence = true;
-    for (const a of sentenceActions) {
-      if (a.kind === "typo") continue; // already set to typoPauseMs
-      if (isFirstAction) {
-        a.delayMs = 0;
-        isFirstAction = false;
-        firstInsertOfSentence = false;
-        continue;
-      }
-      if (firstInsertOfSentence) {
-        // Give first insert of subsequent sentences a small lead-in delay too
-        // (otherwise the sentence boundary would feel like a paste).
-        firstInsertOfSentence = false;
-      }
-      const variance = baseDelay * 0.15;
-      a.delayMs = Math.max(500, Math.round(baseDelay + randFloat(-variance, variance)));
-    }
-
-    actions.push(...sentenceActions);
-
-    // Inject user pause if this sentence is an insertion point
-    if (insertAfter.has(sIdx) && pauseCursor < validPauses.length) {
-      const pauseMin = validPauses[pauseCursor];
-      actions.push({
-        kind: "pause",
-        text: "",
-        delayMs: pauseMin * 60_000,
-        activity: `Custom break — ${pauseMin}m pause…`,
-        mandatoryPauseIndex: pauseCursor,
-      });
-      pauseCursor++;
-    }
-  }
-
-  const totalMs = actions.reduce((sum, a) => sum + a.delayMs, 0);
-  const totalMinutes = Math.max(1, Math.ceil(totalMs / 60_000));
-
-  return { actions, totalChars, totalMinutes, mandatoryPauses: validPauses };
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
 }

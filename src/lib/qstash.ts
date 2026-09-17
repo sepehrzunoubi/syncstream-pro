@@ -51,29 +51,24 @@ function getOrigin(): string {
 }
 
 /**
- * Enqueue a process invocation via QStash with guaranteed delivery.
+ * Enqueue a process invocation with guaranteed delivery.
  *
- * @param jobId      The sync job to process
- * @param delaySec   Optional delay in seconds (for mandatory pauses)
- * @param fallbackReq  Optional NextRequest for direct HTTP fallback when QStash is unavailable (local dev)
+ * @param jobId       The sync job to process
+ * @param generation  The job generation this message belongs to (stale ones are ignored)
+ * @param delaySec    Seconds to wait before delivery
  */
-export async function enqueueProcess(
-  jobId: string,
-  delaySec = 0,
-  fallbackReq?: { nextUrl?: { origin?: string } }
-): Promise<void> {
+export async function enqueueProcess(jobId: string, generation: number, delaySec = 0): Promise<void> {
   const client = getQStashClient();
-  const origin = getOrigin();
-  const url = `${origin}/api/sync/process`;
+  const url = `${getOrigin()}/api/sync/process`;
+  const body = { jobId, generation };
 
   if (client) {
-    // Production path: guaranteed delivery via QStash
     try {
       await client.publishJSON({
         url,
-        body: { jobId },
+        body,
         retries: 3,
-        ...(delaySec > 0 ? { delay: delaySec } : {}),
+        ...(delaySec > 0 ? { delay: Math.ceil(delaySec) } : {}),
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -87,23 +82,20 @@ export async function enqueueProcess(
     return;
   }
 
-  // Fallback for local dev (no QStash token): direct HTTP fetch (old behavior)
-  const fallbackOrigin =
-    fallbackReq?.nextUrl?.origin || origin;
-  try {
+  // Local development without QStash: call ourselves after the delay.
+  // This does not survive a server restart; production must use QStash.
+  const fire = () => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    await fetch(`${fallbackOrigin}/api/sync/process`, {
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-syncstream-internal": "1",
-      },
-      body: JSON.stringify({ jobId }),
+      headers: { "Content-Type": "application/json", "x-syncstream-internal": "1" },
+      body: JSON.stringify(body),
       signal: controller.signal,
-    }).catch(() => {});
-    clearTimeout(timer);
-  } catch {
-    // AbortError expected — the process invocation runs for minutes
-  }
+    })
+      .catch(() => {})
+      .finally(() => clearTimeout(timer));
+  };
+  if (delaySec > 0) setTimeout(fire, delaySec * 1000);
+  else fire();
 }

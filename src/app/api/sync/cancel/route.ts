@@ -1,27 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, setJob, removeActiveJob } from "@/lib/sync-store";
+import { loadOwnedJob, readJobId, jobResponse, mutateJob } from "@/lib/sync-api";
+import { getStore, isTerminal } from "@/lib/sync-store";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  const { jobId } = await req.json();
+  const loaded = await loadOwnedJob(req, await readJobId(req));
+  if (loaded instanceof NextResponse) return loaded;
+  const { user, job } = loaded;
 
-  if (!jobId) {
-    return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
-  }
+  if (isTerminal(job.status)) return jobResponse(user, job);
 
-  const job = await getJob(jobId);
-
-  if (!job) {
-    return NextResponse.json({ error: "Job not found" }, { status: 404 });
-  }
-
-  if (job.status === "done" || job.status === "error") {
-    return NextResponse.json({ status: job.status, message: "Job already finished" });
-  }
-
-  await setJob({ ...job, status: "cancelled", activity: "Cancelled", lastUpdate: Date.now() });
-  await removeActiveJob(jobId);
-
-  return NextResponse.json({ status: "cancelled" });
+  const result = await mutateJob(
+    job.id,
+    (fresh) => {
+      if (isTerminal(fresh.status)) return fresh;
+      return { ...fresh, status: "cancelled", activity: "Cancelled", finishedAt: Date.now(), nextActionAt: undefined };
+    },
+    "cancel"
+  );
+  if (result instanceof NextResponse) return result;
+  if (result.status === "cancelled") await getStore().removeActiveJob(job.id);
+  return jobResponse(user, result);
 }

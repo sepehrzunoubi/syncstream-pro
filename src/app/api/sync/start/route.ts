@@ -1,171 +1,172 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildDripPlan, type PaceMode } from "@/lib/drip-engine";
-import { createJobId, setJob, setPayload, addActiveJob, type SyncJob, type SyncJobPayload } from "@/lib/sync-store";
+import {
+  buildDripPlan,
+  MAX_BREAK_MINUTES,
+  MAX_CUSTOM_BREAKS,
+  MAX_TARGET_MINUTES,
+  MIN_TARGET_MINUTES,
+} from "@/lib/drip-engine";
+import { createJobId, getStore, hasRedis, toPublicJob, type SyncJob, type SyncPlan } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
-import { refreshAccessToken, getDocWordCount } from "@/lib/google";
+import { getDocSnapshot } from "@/lib/google";
+import { applyAuthCookies, resolveUser, unauthorized } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  const token = req.cookies.get("google_access_token")?.value;
-  const refreshToken = req.cookies.get("google_refresh_token")?.value;
+const MAX_TEXT_CHARS = 1_000_000;
+const MAX_SCHEDULE_MINUTES = 7 * 24 * 60;
 
-  if (!token && !refreshToken) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+interface StartBody {
+  text?: unknown;
+  documentId?: unknown;
+  documentName?: unknown;
+  targetMinutes?: unknown;
+  breaks?: unknown;
+  typoFrequency?: unknown;
+  seed?: unknown;
+  startInMinutes?: unknown;
+}
+
+export async function POST(req: NextRequest) {
+  const user = await resolveUser(req);
+  if (!user) return unauthorized();
+
+  if (process.env.VERCEL && !hasRedis()) {
+    return NextResponse.json(
+      { error: "Upstash Redis is not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the Vercel project's environment variables and redeploy." },
+      { status: 500 }
+    );
   }
 
-  const body = await req.json();
-  const {
-    text,
-    documentId,
-    rhythm: rhythmKey = "human",
-    durationMinutes = 30,
-    typoFrequency = 0.5,
-    pauseVariance = 0.5,
-    customPauses = [],
-  } = body as {
-    text: string;
-    documentId: string;
-    rhythm: string;
-    durationMinutes: number;
-    typoFrequency: number;
-    pauseVariance: number;
-    customPauses?: number[];
-  };
+  let body: StartBody;
+  try {
+    body = (await req.json()) as StartBody;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
-  if (!text || !documentId) {
+  const text = typeof body.text === "string" ? body.text : "";
+  const documentId = typeof body.documentId === "string" ? body.documentId : "";
+  const documentName = typeof body.documentName === "string" && body.documentName.trim() ? body.documentName.trim().slice(0, 200) : "Untitled document";
+  if (!text.trim() || !documentId) {
     return NextResponse.json({ error: "Missing text or documentId" }, { status: 400 });
   }
-
-  // On Vercel every request may hit a different instance, so the in-memory
-  // fallback store cannot work. Fail early with an actionable message.
-  if (process.env.VERCEL && (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN)) {
-    return NextResponse.json(
-      {
-        error:
-          "Upstash Redis is not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the Vercel project's environment variables and redeploy.",
-      },
-      { status: 500 }
-    );
-  }
-  if (process.env.UPSTASH_REDIS_REST_URL && !/^https:\/\//.test(process.env.UPSTASH_REDIS_REST_URL)) {
-    return NextResponse.json(
-      {
-        error:
-          "UPSTASH_REDIS_REST_URL must be the REST URL (starts with https://), not the redis:// or rediss:// connection string.",
-      },
-      { status: 500 }
-    );
+  if (text.length > MAX_TEXT_CHARS) {
+    return NextResponse.json({ error: `Text exceeds ${MAX_TEXT_CHARS.toLocaleString()} characters` }, { status: 400 });
   }
 
-  if (text.length > 1_000_000) {
-    return NextResponse.json({ error: "Text exceeds maximum length" }, { status: 400 });
-  }
-
-  if (typeof durationMinutes !== "number" || durationMinutes < 1 || durationMinutes > 10080) {
-    return NextResponse.json({ error: "Duration must be between 1 minute and 7 days" }, { status: 400 });
-  }
-
-  const clampedTypoFrequency = Math.max(0, Math.min(1, typoFrequency));
-  const clampedPauseVariance = Math.max(0, Math.min(1, pauseVariance));
-
-  const mode: PaceMode =
-    rhythmKey === "burst" ? "burst" : rhythmKey === "custom" ? "custom" : "human";
-
-  // Validate custom pauses against the catalog (engine also sanitizes, but reject
-  // bad client input with a 400 for clarity).
-  const CATALOG = [4, 10, 15, 30, 45, 60, 90, 120, 180];
-  let safeCustomPauses: number[] = [];
-  if (mode === "custom") {
-    if (!Array.isArray(customPauses)) {
-      return NextResponse.json({ error: "customPauses must be an array" }, { status: 400 });
+  let targetMinutes: number | null = null;
+  if (body.targetMinutes != null) {
+    if (typeof body.targetMinutes !== "number" || !Number.isFinite(body.targetMinutes) || body.targetMinutes < MIN_TARGET_MINUTES || body.targetMinutes > MAX_TARGET_MINUTES) {
+      return NextResponse.json({ error: `Duration must be between ${MIN_TARGET_MINUTES} minute and 7 days` }, { status: 400 });
     }
-    if (customPauses.length > 4) {
-      return NextResponse.json({ error: "customPauses cannot exceed 4 entries" }, { status: 400 });
+    targetMinutes = body.targetMinutes;
+  }
+
+  let breaks: "auto" | number[] = "auto";
+  if (Array.isArray(body.breaks)) {
+    if (body.breaks.length > MAX_CUSTOM_BREAKS) {
+      return NextResponse.json({ error: `At most ${MAX_CUSTOM_BREAKS} breaks` }, { status: 400 });
     }
-    for (const p of customPauses) {
-      if (typeof p !== "number" || !CATALOG.includes(p)) {
-        return NextResponse.json({ error: `Invalid custom pause value: ${p}` }, { status: 400 });
+    for (const b of body.breaks) {
+      if (typeof b !== "number" || !Number.isFinite(b) || b < 1 || b > MAX_BREAK_MINUTES) {
+        return NextResponse.json({ error: `Each break must be 1–${MAX_BREAK_MINUTES} minutes` }, { status: 400 });
       }
     }
-    safeCustomPauses = customPauses;
+    breaks = body.breaks as number[];
+  } else if (body.breaks !== undefined && body.breaks !== "auto") {
+    return NextResponse.json({ error: "breaks must be \"auto\" or a list of minutes" }, { status: 400 });
   }
 
-  const plan = buildDripPlan(text, durationMinutes, mode, {
-    typoFrequency: clampedTypoFrequency,
-    pauseVariance: clampedPauseVariance,
-  }, safeCustomPauses);
+  const typoFrequency = typeof body.typoFrequency === "number" ? Math.max(0, Math.min(1, body.typoFrequency)) : 0.5;
+  const seed = typeof body.seed === "number" && Number.isInteger(body.seed) && body.seed >= 0 ? body.seed >>> 0 : undefined;
 
-  const jobId = createJobId();
-  const now = Date.now();
+  let startInMinutes = 0;
+  if (body.startInMinutes != null) {
+    if (typeof body.startInMinutes !== "number" || !Number.isFinite(body.startInMinutes) || body.startInMinutes < 0 || body.startInMinutes > MAX_SCHEDULE_MINUTES) {
+      return NextResponse.json({ error: "startInMinutes must be between 0 and 7 days" }, { status: 400 });
+    }
+    startInMinutes = body.startInMinutes;
+  }
 
-  // Capture baseline word count in target doc BEFORE sync starts (server-side, authoritative)
+  const plan = buildDripPlan(text, { targetMinutes, breaks, typoFrequency, seed });
+  if (plan.actions.length === 0) {
+    return NextResponse.json({ error: "Nothing to type" }, { status: 400 });
+  }
+
+  // Baseline word count of the target doc (best effort; also proves we can read it)
   let baselineWordCount = 0;
   try {
-    const effectiveToken = token || (refreshToken ? (await refreshAccessToken(refreshToken))?.access_token : null);
-    if (effectiveToken) {
-      baselineWordCount = await getDocWordCount(effectiveToken, documentId);
+    baselineWordCount = (await getDocSnapshot(user.accessToken, documentId)).wordCount;
+  } catch (err) {
+    const code = (err as { code?: number })?.code;
+    if (code === 403 || code === 404) {
+      return NextResponse.json(
+        { error: code === 404 ? "That document could not be found." : "SyncStream is not allowed to edit that document. Re-authenticate to grant access." },
+        { status: 400 }
+      );
     }
-  } catch { /* best effort — default to 0 */ }
+  }
 
+  const now = Date.now();
+  const id = createJobId();
+  const startAt = now + Math.round(startInMinutes * 60_000);
+  const syncPlan: SyncPlan = {
+    id,
+    userId: user.userId,
+    documentId,
+    actions: plan.actions,
+    totalChars: plan.totalChars,
+    totalMs: plan.totalMs,
+    breaks: plan.breaks,
+    seed: plan.seed,
+    createdAt: now,
+  };
+  const job: SyncJob = {
+    id,
+    userId: user.userId,
+    documentId,
+    documentName,
+    status: startInMinutes > 0 ? "scheduled" : "pending",
+    createdAt: now,
+    startAt,
+    currentAction: 0,
+    totalActions: plan.actions.length,
+    charsSent: 0,
+    totalChars: plan.totalChars,
+    typoSubStep: 0,
+    typoCharsInDoc: 0,
+    generation: 0,
+    failures: 0,
+    accessToken: user.accessToken,
+    refreshToken: user.refreshToken,
+    activity: startInMinutes > 0 ? "Scheduled" : "Queued",
+    etaTargetAt: startAt + plan.totalMs,
+    wpm: 0,
+    baselineWordCount,
+    breaks: plan.breaks,
+    completedBreaks: [],
+    lastUpdate: now,
+  };
+
+  const store = getStore();
   try {
-    // Store initial job state for status polling
-    const job: SyncJob = {
-      id: jobId,
-      status: "pending",
-      currentAction: 0,
-      totalActions: plan.actions.length,
-      charsSent: 0,
-      totalChars: plan.totalChars,
-      totalMinutes: plan.totalMinutes,
-      wpm: 0,
-      eta: plan.actions.reduce((sum, a) => sum + a.delayMs, 0),
-      etaTargetAt: now + plan.actions.reduce((sum, a) => sum + a.delayMs, 0),
-      activity: "Starting…",
-      nextDelayMs: 0,
-      startTime: now,
-      lastUpdate: now,
-      mandatoryPauses: plan.mandatoryPauses,
-      completedPauses: plan.mandatoryPauses ? [] : undefined,
-      baselineWordCount,
-    };
-    await setJob(job);
-
-    // Build payload for the process endpoint — also persist to Redis for pause/resume
-    const payload: SyncJobPayload = {
-      jobId,
-      accessToken: token || "",
-      refreshToken: refreshToken || "",
-      documentId,
-      actions: plan.actions,
-      currentAction: 0,
-      charsSent: 0,
-      totalChars: plan.totalChars,
-      totalMinutes: plan.totalMinutes,
-      startTime: now,
-    };
-
-    await setPayload(payload);
-
-    // Track job in active set (for cron watchdog recovery)
-    await addActiveJob(jobId);
-
-    // Kick off background processing via QStash (guaranteed delivery)
-    await enqueueProcess(jobId);
-
+    await store.setPlan(syncPlan);
+    await store.setJob(job);
+    await store.addUserJob(user.userId, id);
+    await store.addActiveJob(id);
+    await enqueueProcess(id, 0, Math.ceil(startInMinutes * 60));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("Sync start failed:", err);
-    return NextResponse.json(
-      { error: `Failed to start sync: ${message}` },
-      { status: 500 }
-    );
+    await store.deleteJob(id).catch(() => {});
+    await store.removeUserJob(user.userId, id).catch(() => {});
+    await store.removeActiveJob(id).catch(() => {});
+    return NextResponse.json({ error: `Failed to start sync: ${message}` }, { status: 500 });
   }
 
-  return NextResponse.json({
-    jobId,
-    totalActions: plan.actions.length,
-    totalChars: plan.totalChars,
-    totalMinutes: plan.totalMinutes,
-  });
+  return applyAuthCookies(
+    NextResponse.json({ job: toPublicJob(job), totalMs: plan.totalMs, breaks: plan.breaks, seed: plan.seed }),
+    user
+  );
 }

@@ -1,31 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPayload } from "@/lib/sync-store";
+import { loadOwnedJob, readJobId } from "@/lib/sync-api";
+import { applyAuthCookies } from "@/lib/auth";
+import { getStore } from "@/lib/sync-store";
 
 export const dynamic = "force-dynamic";
 
-/**
- * Reconstruct the original source text from the sync plan's actions stored in Redis.
- * This allows the client to restore the text preview even if localStorage was lost.
- */
+/** The original source text of a job, rebuilt from its plan. */
 export async function GET(req: NextRequest) {
-  const jobId = req.nextUrl.searchParams.get("jobId");
+  const loaded = await loadOwnedJob(req, await readJobId(req));
+  if (loaded instanceof NextResponse) return loaded;
+  const { user, job } = loaded;
 
-  if (!jobId) {
-    return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
-  }
+  const plan = await getStore().getPlan(job.id);
+  if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404 });
 
-  const payload = await getPayload(jobId);
-  if (!payload) {
-    return NextResponse.json({ error: "Payload not found" }, { status: 404 });
-  }
-
-  // Reconstruct source text by concatenating all insert/typo action texts in order
   let sourceText = "";
-  for (const action of payload.actions) {
-    if (action.kind === "insert" || action.kind === "typo") {
-      sourceText += action.text;
-    }
+  for (const action of plan.actions) {
+    if (action.kind !== "pause") sourceText += action.text;
   }
-
-  return NextResponse.json({ sourceText });
+  return applyAuthCookies(NextResponse.json({ sourceText, breaks: plan.breaks, totalMs: plan.totalMs }), user);
 }

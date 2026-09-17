@@ -87,50 +87,65 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── auth/        # OAuth login, callback, logout, me
-│   │   ├── cron/        # sync-watchdog (re-kicks stalled jobs)
+│   │   ├── cron/        # sync-watchdog (daily safety net for lost queue messages)
 │   │   ├── docs/        # List recent Google Docs, create a doc
-│   │   ├── stream/      # Legacy SSE streaming endpoint
-│   │   ├── sync/        # start / status / pause / resume / cancel / process / source
-│   │   └── wordcount/   # Word count of a target doc
+│   │   ├── health/      # Live check of every configured service (signed-in users)
+│   │   └── sync/        # start / list / status / pause / resume / cancel / dismiss / source / process
 │   ├── dashboard/       # Authenticated dashboard (sidebar + settings)
 │   ├── privacy/, tos/   # Legal pages
-│   ├── globals.css      # Obsidian dark theme
-│   ├── layout.tsx       # Root layout (Inter + JetBrains Mono)
 │   └── page.tsx         # Landing page with Google sign-in
 ├── components/
 │   ├── dashboard/
-│   │   ├── dashboard-view.tsx   # Main dashboard wiring
-│   │   ├── hero-status.tsx      # Live status card with progress
-│   │   ├── login-screen.tsx     # Landing / Google OAuth login
-│   │   ├── source-input.tsx     # Text input area
-│   │   └── sync-controls.tsx    # Doc picker, rhythm, duration
+│   │   ├── dashboard-view.tsx   # Composer + job monitor
+│   │   ├── sync-controls.tsx    # Doc, total time, breaks, typos, start time, plan preview
+│   │   ├── job-list.tsx         # Strip of all your syncs
+│   │   ├── hero-status.tsx      # Status, countdown, progress bar
+│   │   └── login-screen.tsx     # Landing / Google OAuth login
 │   └── ui/                      # Sidebar, button, slider, tooltip, particles
 ├── lib/
-│   ├── drip-engine.ts   # Packet splitting, pacing, typos, pauses
+│   ├── drip-engine.ts   # Seeded planner: chunks, pauses, typos, breaks, target duration
+│   ├── sync-runner.ts   # Queue-driven worker: bounded windows, lock, idempotent writes, retries
+│   ├── sync-store.ts    # Redis-backed plans, jobs, per-user index, locks, control intents
+│   ├── sync-api.ts      # Ownership checks and lock-aware job mutations for the routes
+│   ├── auth.ts          # Cookie helpers and user resolution
 │   ├── google.ts        # OAuth2, Drive, Docs helpers
 │   ├── qstash.ts        # QStash client / receiver / enqueue helper
-│   ├── sync-store.ts    # Redis-backed job + payload store
-│   └── utils.ts         # cn() utility
+│   └── base-url.ts      # Public origin resolution
 └── middleware.ts        # Redirects between / and /dashboard based on auth cookies
 ```
 
 ## How a sync runs
 
-1. `POST /api/sync/start` builds a drip plan from the source text and stores the job and its payload in Redis.
-2. The plan is handed to `POST /api/sync/process` through QStash. The process route types actions into the doc, persists progress after every action, and re-enqueues itself before the function timeout or for long pauses.
-3. The dashboard polls `GET /api/sync/status` and can pause, resume, or cancel the job.
-4. The daily cron watchdog re-kicks any job that stopped updating and cleans up finished jobs.
+1. The dashboard builds a preview plan from your text with a random seed and shows exactly what will happen: total time, finish time, number of edits and typos, and the list of breaks. "Shuffle" picks a new seed.
+2. `POST /api/sync/start` rebuilds the same plan from the same seed, stores it once, stores a small job record, and publishes one QStash message.
+3. QStash calls `POST /api/sync/process`. Each call takes a Redis lock, works for at most 20 seconds (typing a few chunks), persists the cursor after every edit, then re-publishes itself with the exact delay until the next edit. Long waits and breaks therefore live in the queue, not in a running function.
+4. The dashboard polls `GET /api/sync/list` every few seconds while anything is active. Pause, resume and cancel go through the lock; if the worker is mid-edit they leave an intent that it applies within three seconds.
+5. A daily cron re-kicks any job whose queue message was lost. This is only a safety net.
 
-## Drip Engine
+### Reliability
 
-The engine splits input text into variable-size packets and calculates delays using a **Gaussian distribution** (Box-Muller transform) to simulate natural human writing patterns, with optional simulated typos and corrections, and mandatory long pauses in burst modes.
+- **No browser needed.** Once started (or scheduled), a sync finishes even if the tab is closed or the computer is off. Close the tab and reopen the dashboard later; your syncs are listed from the server.
+- **Never types twice.** Queues deliver at least once. The lock rejects concurrent deliveries, and before every write the worker records what it is about to insert and checks the document's tail, so a retry after a lost response skips the edit that already landed.
+- **Survives hiccups.** A failed Google call is retried three times with backoff before the job is marked as an error. Expired access tokens are refreshed with the stored refresh token.
+- **Ownership.** Every job route checks that the job belongs to the signed-in Google account.
 
-## Features
+### QStash usage
 
-- Animated collapsible sidebar (hover to expand)
-- Google OAuth2 authentication, open to any Google account
-- Recent document picker and one-click doc creation
-- Real-time progress with countdown timer, ETA, and word counter
-- Start / Pause / Resume / Cancel / Schedule controls
-- Session restore after closing the tab
-- Obsidian-dark aesthetic with neon-glow accents
+Each hand-off is one QStash message. A typical 300-word sync uses roughly 60 to 80 messages; a very long, slow sync uses about one message per edit. Upstash's free tier allows a limited number of messages per day, so check the QStash dashboard if you plan to run many syncs.
+
+## Controls
+
+- **Total time.** Auto types at a natural pace (roughly 35 words per minute plus pauses). A target duration is met exactly: a longer target inserts away-time between paragraphs, a shorter one drops automatic breaks and types faster, down to a realistic floor.
+- **Breaks.** Auto picks a few based on text length, None disables them, Custom lets you choose up to eight from 5 minutes to 3 hours. They run in order, spread through the text at paragraph or sentence ends.
+- **Typos.** From rare to frequent. Each typo types a plausible slip, waits briefly, deletes it and types the correct words.
+- **Start.** Now, or in 5 minutes to 12 hours. Scheduled syncs run on the server.
+- **Several at once.** Start as many syncs as you like, each to its own document. The strip above the editor lets you switch between them.
+
+## Development
+
+```bash
+npm run dev        # local server (in-memory store, direct self-calls instead of QStash)
+npm test           # planner and runner unit tests
+npm run typecheck
+npm run lint
+```

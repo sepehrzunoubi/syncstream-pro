@@ -94,48 +94,37 @@ export async function createGoogleDoc(
   };
 }
 
-export async function appendToDoc(
-  accessToken: string,
-  documentId: string,
-  text: string
-) {
-  const client = getOAuth2Client();
-  client.setCredentials({ access_token: accessToken });
-
-  const docs = google.docs({ version: "v1", auth: client });
-
-  // Get current document length
-  const doc = await withRetry(() => docs.documents.get({ documentId }));
-  const endIndex = doc.data.body?.content?.slice(-1)?.[0]?.endIndex ?? 1;
-
-  await withRetry(() =>
-    docs.documents.batchUpdate({
-      documentId,
-      requestBody: {
-        requests: [
-          {
-            insertText: {
-              location: { index: endIndex - 1 },
-              text,
-            },
-          },
-        ],
-      },
-    })
-  );
-
-  return { insertedAt: endIndex - 1, length: text.length };
+export interface DocSnapshot {
+  /** Index just past the last character (insert at endIndex - 1 to append) */
+  endIndex: number;
+  /** Last characters of the document body, for idempotency checks */
+  tail: string;
+  wordCount: number;
 }
 
-export async function getDocEndIndex(
+/** One documents.get that yields everything the runner needs about the target doc. */
+export async function getDocSnapshot(
   accessToken: string,
-  documentId: string
-): Promise<number> {
+  documentId: string,
+  tailChars = 400
+): Promise<DocSnapshot> {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
   const docs = google.docs({ version: "v1", auth: client });
   const doc = await withRetry(() => docs.documents.get({ documentId }));
-  return doc.data.body?.content?.slice(-1)?.[0]?.endIndex ?? 1;
+  const content = doc.data.body?.content ?? [];
+  const endIndex = content.slice(-1)[0]?.endIndex ?? 1;
+  let text = "";
+  for (const element of content) {
+    for (const el of element.paragraph?.elements ?? []) {
+      if (el.textRun?.content) text += el.textRun.content;
+    }
+  }
+  const trimmed = text.trim();
+  const wordCount = trimmed ? trimmed.split(/\s+/).length : 0;
+  // Google Docs always ends the body with a trailing newline that is not user text.
+  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return { endIndex, tail: body.slice(-tailChars), wordCount };
 }
 
 export async function deleteRange(
@@ -188,35 +177,6 @@ export async function insertAtIndex(
     })
   );
   return { insertedAt: index, length: text.length };
-}
-
-export async function getDocWordCount(
-  accessToken: string,
-  documentId: string
-): Promise<number> {
-  const client = getOAuth2Client();
-  client.setCredentials({ access_token: accessToken });
-  const docs = google.docs({ version: "v1", auth: client });
-  const doc = await withRetry(() => docs.documents.get({ documentId }));
-  
-  // Extract all text content from the document
-  let text = "";
-  const content = doc.data.body?.content || [];
-  for (const element of content) {
-    if (element.paragraph?.elements) {
-      for (const elem of element.paragraph.elements) {
-        if (elem.textRun?.content) {
-          text += elem.textRun.content;
-        }
-      }
-    }
-  }
-  
-  // Count words (split by whitespace, filter empty)
-  const trimmed = text.trim();
-  if (!trimmed) return 0;
-  const words = trimmed.split(/\s+/).filter(w => w.length > 0);
-  return words.length;
 }
 
 export async function refreshAccessToken(refreshToken: string): Promise<{
