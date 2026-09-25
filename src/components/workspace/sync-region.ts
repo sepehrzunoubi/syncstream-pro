@@ -233,12 +233,6 @@ export const SyncRegion = Extension.create({
 
   addKeyboardShortcuts() {
     return {
-      // Esc stops placing, so the page reads like a normal document
-      Escape: ({ editor }) => {
-        if (!isPlacing(editor.state)) return false;
-        setPlacing(editor, false);
-        return true;
-      },
       // Select all selects the text to sync, not the document around it
       "Mod-a": ({ editor }) => {
         const { doc } = editor.state;
@@ -262,6 +256,8 @@ export const SyncRegion = Extension.create({
           apply: (tr, value) => {
             const meta = tr.getMeta(syncRegionKey) as { placing: boolean } | undefined;
             if (meta) return meta;
+            // Typing into the text accepts where it is
+            if (value.placing && tr.docChanged && !tr.getMeta(ALLOW_LOCKED)) return { placing: false };
             // Nothing to place when there is no document around the text
             return value.placing && !hasLocked(tr.doc) ? { placing: false } : value;
           },
