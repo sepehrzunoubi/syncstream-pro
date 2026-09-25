@@ -163,7 +163,12 @@ export const DocSync = Extension.create({
           });
           if (!ranges.length) return null;
           const tr = newState.tr;
-          for (const [from, to] of ranges) tr.addMark(from, Math.min(to, tr.doc.content.size), type.create());
+          // Text and images glow; a line break or an empty line is an edit to the document
+          for (const [from, to] of ranges) {
+            tr.doc.nodesBetween(from, Math.min(to, tr.doc.content.size), (node, pos) => {
+              if (node.isText || node.type.name === "image") tr.addMark(Math.max(pos, from), Math.min(pos + node.nodeSize, to), type.create());
+            });
+          }
           if (!tr.docChanged) return null;
           return tr.setMeta("ssAddMarked", true);
         },

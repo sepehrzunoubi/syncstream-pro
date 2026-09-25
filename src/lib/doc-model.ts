@@ -52,7 +52,8 @@ export type Tok =
 
 const isPendingMarks = (marks: Marks | undefined) => !!marks?.some((m) => m.type === PENDING_MARK);
 const withoutPending = (marks: Marks | undefined): Marks => (marks ?? []).filter((m) => m.type !== PENDING_MARK);
-const isPending = (t: Tok) => (t.k === "c" || t.k === "img" || t.k === "br") && t.pending;
+/** Only text and images are additions; line breaks on their own are edits to the document */
+const isPending = (t: Tok) => (t.k === "c" || t.k === "img") && t.pending;
 
 /** Size of a token in Docs indices */
 function sizeOf(t: Tok): number {
@@ -234,7 +235,7 @@ function regionsOf(base: Tok[], target: Tok[], match: number[]): Region[] {
  */
 function rotate(base: Tok[], target: Tok[], match: number[]): void {
   for (const r of regionsOf(base, target, match)) {
-    if (!r.pending || r.be !== r.bs || r.te === r.ts || r.ts === 0 || r.bs === 0) continue;
+    if (r.be !== r.bs || r.te === r.ts || r.ts === 0 || r.bs === 0) continue;
     if (target[r.te - 1].k !== "nl" || target[r.ts - 1].k !== "nl") continue;
     if (match[r.ts - 1] !== r.bs - 1 || base[r.bs - 1].k !== "nl") continue;
     match[r.te - 1] = r.bs - 1;
@@ -400,7 +401,7 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
         continue;
       }
       const ch = t.k === "c" ? t.c : t.k === "br" ? "\u000b" : "\n";
-      if (t.k === "c" || t.k === "br") {
+      if (t.k === "c") {
         const para = paragraphFromAttrs(nextNl(target, r.ts + q)?.attrs);
         styled.push({ from: pos + text.length, to: pos + text.length + 1, style: resolveTextStyle(styleFromMarks(withoutPending(t.marks)), para) });
       }

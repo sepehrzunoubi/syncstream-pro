@@ -113,3 +113,12 @@ test("text that comes back without glowing (undoing a deletion) is put back dire
   assert.deepEqual(requests[0], { insertText: { location: { index: 7 }, text: "es" } });
   assert.ok(requests.slice(1).every((r) => r.updateTextStyle));
 });
+
+test("line breaks and empty lines are saved directly, not synced", () => {
+  const withBreak: EditorNode = doc(p("Why?", { list: "ordered" }), { type: "paragraph", attrs: {}, content: [{ type: "text", text: "Yes." }, { type: "hardBreak", marks: [{ type: PENDING_MARK }] }] }, p("End"));
+  assert.deepEqual(additions(BASE, withBreak).segments, []);
+  assert.deepEqual(directEdits(BASE, withBreak).requests[0], { insertText: { location: { index: 10 }, text: "\u000b" } });
+  const emptyLine = doc(p("Why?", { list: "ordered" }), p("Yes."), p(""), p("End"));
+  assert.deepEqual(additions(BASE, emptyLine).segments, []);
+  assert.deepEqual(directEdits(BASE, emptyLine).requests[0], { insertText: { location: { index: 10 }, text: "\n" } });
+});
