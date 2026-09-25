@@ -5,6 +5,7 @@ import { TextStyle, Color } from "@tiptap/extension-text-style";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
+import { SyncRegion } from "./sync-region";
 import TextAlign from "@tiptap/extension-text-align";
 import {
   cssFontToFamily,
@@ -78,6 +79,39 @@ const DocParagraph = Paragraph.extend({
           return v === "bullet" || v === "ordered" || v === "check" ? v : null;
         },
         renderHTML: (a: { list?: string | null }) => (a.list ? { "data-list": a.list } : {}),
+      },
+      // A paragraph of the Google Doc being synced into: shown as it is there, not editable
+      locked: {
+        default: false,
+        parseHTML: () => false,
+        renderHTML: (a: { locked?: boolean }) => (a.locked ? { "data-locked": "" } : {}),
+      },
+      /** Where a sync can go around a locked paragraph (not rendered) */
+      anchors: { default: null, parseHTML: () => null, rendered: false },
+      /** The list label a locked paragraph shows in Docs ("2.", "a.", "●") */
+      label: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: (a: { label?: string | null }) => (a.label != null ? { "data-label": a.label } : {}),
+      },
+      /** Exact indents and spacing of a locked paragraph, in points */
+      box: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: (a: { box?: { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null; list?: string | null }) => {
+          const b = a.box;
+          if (!b) return {};
+          const css: string[] = [];
+          if (a.list) {
+            css.push(`--ss-li-start: ${b.start ?? 36}pt`, `--ss-li-marker: ${b.marker ?? -18}pt`);
+          } else {
+            if (b.start) css.push(`margin-left: ${b.start}pt`);
+            if (b.first) css.push(`text-indent: ${b.first}pt`);
+          }
+          if (b.above != null) css.push(`margin-top: ${b.above}pt`);
+          if (b.below != null) css.push(`margin-bottom: ${b.below}pt`);
+          return css.length ? { style: css.join("; ") } : {};
+        },
       },
       lineSpacing: {
         default: 115,
@@ -350,4 +384,5 @@ export const editorExtensions = [
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
   Pagination,
+  SyncRegion,
 ];

@@ -17,7 +17,8 @@ import { measureRemoteImage, uploadImage } from "./image-upload";
 import { isActive, statusLine } from "./job-status";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
-import { richFromEditorJSON, richToEditorJSON, type RichFormat } from "@/lib/rich-text";
+import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat } from "@/lib/rich-text";
+import { composeDocument, focusRegionEnd, hasLocked, regionAnchor, regionPlace, setRegion, splitRegion, type RegionPlace } from "./sync-region";
 import type { PublicJob } from "@/lib/sync-store";
 import { countWords, formatClock } from "@/lib/format";
 
@@ -27,8 +28,11 @@ const DRAFT_KEY = "syncstream_draft_v2";
 const LEGACY_DRAFT_KEY = "syncstream_draft";
 
 interface Draft {
+  /** The text to sync (without the document around it) */
   doc?: JSONContent;
   selectedDocId?: string;
+  /** Where the text goes in the selected document */
+  place?: RegionPlace | null;
   durationMinutes?: number | null;
   breaksMode?: BreaksMode;
   customBreaks?: number[];
@@ -75,7 +79,25 @@ function useNow(active: boolean, intervalMs = 1000): number {
   return now;
 }
 
-interface Source { text: string; format: RichFormat | null }
+interface Source { text: string; format: RichFormat | null; context?: { before: EditorNode[]; after: EditorNode[] } | null }
+
+/** What is known about the selected document's own content */
+interface DocContent {
+  docId: string;
+  status: "loading" | "ready" | "failed";
+  revisionId?: string;
+}
+
+/** Keep the paragraphs nearest the sync when the document is too big to store for the running view */
+function trimContext(before: EditorNode[], after: EditorNode[], maxChars = 350_000) {
+  let b = before;
+  let a = after;
+  while (JSON.stringify({ before: b, after: a }).length > maxChars && (b.length || a.length)) {
+    if (b.length >= a.length) b = b.slice(Math.ceil(b.length / 4));
+    else a = a.slice(0, Math.floor((a.length * 3) / 4));
+  }
+  return { before: b, after: a };
+}
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
   // Documents
@@ -98,6 +120,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [narrow, setNarrow] = useState(false);
   const [pageless, setPageless] = useState(false);
   const [draftLoaded, setDraftLoaded] = useState(false);
+  const [docContent, setDocContent] = useState<DocContent | null>(null);
+  const savedPlaceRef = useRef<RegionPlace | null>(null);
+  const contentReq = useRef(0);
+  const contentStale = useRef(false);
 
   // Syncs
   const [jobs, setJobs] = useState<PublicJob[]>([]);
@@ -197,7 +223,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   useEffect(() => {
     if (!editor || draftLoaded) return;
     const d = loadDraft();
-    if (d.doc) editor.commands.setContent(d.doc, { emitUpdate: false });
+    if (d.doc) composeDocument(editor, [], splitRegion(d.doc as EditorNode).region.content ?? []);
+    savedPlaceRef.current = d.place ?? null;
     setDocJSON(editor.getJSON());
     if (d.selectedDocId) setSelectedDocId(d.selectedDocId);
     if (d.durationMinutes !== undefined) setDurationMinutes(d.durationMinutes);
@@ -213,12 +240,57 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (!draftLoaded) return;
     const id = setTimeout(() => {
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({ doc: docJSON ?? undefined, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless } satisfies Draft));
+        const json = (docJSON ?? undefined) as EditorNode | undefined;
+        const place = json && editor ? regionPlace(json, regionAnchor(editor.state.doc), docContent?.revisionId) : null;
+        if (place) savedPlaceRef.current = place;
+        localStorage.setItem(DRAFT_KEY, JSON.stringify({
+          doc: json ? (splitRegion(json).region as JSONContent) : undefined,
+          selectedDocId,
+          place: place ?? savedPlaceRef.current,
+          durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless,
+        } satisfies Draft));
         localStorage.removeItem(LEGACY_DRAFT_KEY);
       } catch { /* storage full or blocked */ }
     }, 400);
     return () => clearTimeout(id);
-  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless]);
+  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, editor, docContent?.revisionId]);
+
+  // Show the selected Google Doc around the text to sync, so it can be placed anywhere in it
+  const loadDocContent = useCallback(async (docId: string) => {
+    if (!editor) return;
+    const req = ++contentReq.current;
+    const current = editor.getJSON() as EditorNode;
+    const place = regionPlace(current, regionAnchor(editor.state.doc), docContent?.docId === docId ? docContent.revisionId : undefined) ?? savedPlaceRef.current;
+    setDocContent({ docId, status: "loading" });
+    try {
+      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
+      const data = (await res.json().catch(() => ({}))) as { nodes?: EditorNode[]; revisionId?: string; error?: string };
+      if (res.status === 401) setScopeError(true);
+      if (!res.ok || !Array.isArray(data.nodes)) throw new Error(data.error || "Couldn't open this document");
+      if (req !== contentReq.current) return;
+      const region = splitRegion(editor.getJSON() as EditorNode).region.content ?? [];
+      composeDocument(editor, data.nodes, region, place, data.revisionId);
+      contentStale.current = false;
+      setDocContent({ docId, status: "ready", revisionId: data.revisionId });
+    } catch (err) {
+      if (req !== contentReq.current) return;
+      composeDocument(editor, [], splitRegion(editor.getJSON() as EditorNode).region.content ?? []);
+      setDocContent({ docId, status: "failed" });
+      setSnack(`${err instanceof Error ? err.message : "Couldn't open this document"}. Your text will be added at the end of it.`);
+    }
+  }, [editor, docContent]);
+
+  useEffect(() => {
+    if (!editor || !draftLoaded || !composing) return;
+    if (!selectedDocId) {
+      if (hasLocked(editor.state.doc)) composeDocument(editor, [], splitRegion(editor.getJSON() as EditorNode).region.content ?? []);
+      setDocContent(null);
+      return;
+    }
+    if (docContent?.docId === selectedDocId && !contentStale.current) return;
+    loadDocContent(selectedDocId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, draftLoaded, composing, selectedDocId]);
 
   // Snackbar auto-hide
   useEffect(() => {
@@ -294,14 +366,14 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     let cancelled = false;
     fetch(`/api/sync/source?jobId=${focusedJobId}`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d?.sourceText != null) setSources((s) => ({ ...s, [focusedJobId]: { text: d.sourceText, format: d.format ?? null } })); })
+      .then((d) => { if (!cancelled && d?.sourceText != null) setSources((s) => ({ ...s, [focusedJobId]: { text: d.sourceText, format: d.format ?? null, context: d.context ?? null } })); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [focusedJobId, sources]);
 
   // Preview: the same seed the server will use, so this is the schedule that runs
   const deferredJSON = useDeferredValue(docJSON);
-  const rich = useMemo(() => richFromEditorJSON(deferredJSON ?? undefined), [deferredJSON]);
+  const rich = useMemo(() => richFromEditorJSON(deferredJSON ? splitRegion(deferredJSON as EditorNode).region : undefined), [deferredJSON]);
   const hasText = rich.text.trim().length > 0;
   const preview = useMemo(() => {
     if (!hasText) return null;
@@ -317,11 +389,17 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   const startSync = useCallback(async () => {
     if (!editor || busy) return;
-    const current = richFromEditorJSON(editor.getJSON());
+    const { region, before, after } = splitRegion(editor.getJSON() as EditorNode);
+    const current = richFromEditorJSON(region);
     if (!current.text.trim() || !selectedDocId) return;
     setBusy(true);
     setStartError(null);
     try {
+      if (docContent?.docId === selectedDocId && docContent.status === "loading") throw new Error("The document is still opening. Try again in a moment.");
+      const inside = hasLocked(editor.state.doc);
+      const anchor = inside ? regionAnchor(editor.state.doc) : null;
+      if (inside && !anchor) throw new Error("Text can't be added at that spot. Click another place in the document.");
+      const context = inside ? trimContext(before, after) : null;
       const doc = docs.find((d) => d.id === selectedDocId);
       const { ok, status, data } = await postJson<{ job: PublicJob }>("/api/sync/start", {
         text: current.text,
@@ -333,14 +411,17 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         typoFrequency,
         seed,
         startInMinutes,
+        ...(anchor ? { anchor, revisionId: docContent?.revisionId, context } : {}),
       });
       if (status === 401) { setScopeError(true); return; }
+      if (status === 409) loadDocContent(selectedDocId);
       if (!ok) throw new Error(data.error || `Couldn't start the sync (HTTP ${status})`);
-      setSources((s) => ({ ...s, [data.job.id]: { text: current.text, format: current.format } }));
+      setSources((s) => ({ ...s, [data.job.id]: { text: current.text, format: current.format, context } }));
       setJobs((prev) => [data.job, ...prev]);
       setFocusedJobId(data.job.id);
       setComposing(false);
-      editor.commands.clearContent(true);
+      setRegion(editor, []);
+      contentStale.current = true;
       setStartInMinutes(0);
       setSeed(randomSeed());
       setSnack(startInMinutes > 0 ? `Sync scheduled for ${formatClock(data.job.startAt)}` : "Sync started");
@@ -349,7 +430,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     } finally {
       setBusy(false);
     }
-  }, [editor, busy, selectedDocId, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes]);
+  }, [editor, busy, selectedDocId, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent]);
 
   const jobAction = useCallback(async (path: "pause" | "resume" | "cancel", jobId: string) => {
     if (busy) return;
@@ -376,7 +457,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   const editAsNew = useCallback((job: PublicJob) => {
     const src = sources[job.id];
-    if (src && editor) editor.commands.setContent(richToEditorJSON(src.text, src.format) as JSONContent, { emitUpdate: true });
+    if (src && editor) {
+      setRegion(editor, richToEditorJSON(src.text, src.format).content ?? []);
+      setDocJSON(editor.getJSON());
+    }
     setSelectedDocId(job.documentId);
     setComposing(true);
   }, [sources, editor]);
@@ -416,7 +500,9 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   useEffect(() => {
     if (!viewer || !focusedJob || !focusedSource) return;
     if (loadedRef.current !== focusedJob.id) {
-      viewer.commands.setContent(richToEditorJSON(focusedSource.text, focusedSource.format) as JSONContent, { emitUpdate: false });
+      const ctx = focusedSource.context;
+      const text = richToEditorJSON(focusedSource.text, focusedSource.format).content ?? [];
+      composeDocument(viewer, ctx ? [...ctx.before, ...ctx.after] : [], text, ctx ? ctx.before.length : 0);
       loadedRef.current = focusedJob.id;
     }
   }, [viewer, focusedJob, focusedSource]);
@@ -441,9 +527,13 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     ? statusLine(focusedJob)
     : !selectedDocId
       ? "Pick the Google Doc to type into"
-      : draftLoaded
-        ? "Draft saved on this device"
-        : "";
+      : docContent?.status === "loading"
+        ? "Opening the document"
+        : editor && docJSON && hasLocked(editor.state.doc)
+          ? "Your text is highlighted. Click the document to move it."
+          : draftLoaded
+            ? "Draft saved on this device"
+            : "";
   const primary = focusedJob
     ? { kind: "new" as const, label: "New sync", onClick: () => setComposing(true) }
     : {
@@ -473,13 +563,17 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   );
 
   const docUrlId = focusedJob ? focusedJob.documentId : selectedDocId;
+  const refreshDocs = () => {
+    fetchDocs();
+    if (selectedDocId && !focusedJob) loadDocContent(selectedDocId);
+  };
   const ease = [0.2, 0, 0, 1] as const;
 
   // Clicking the page margins puts the caret at the end, like Docs
   const onPageMouseDown = (e: React.MouseEvent) => {
     if (!editor || (e.target as HTMLElement).closest(".ProseMirror")) return;
     e.preventDefault();
-    editor.commands.focus("end");
+    focusRegionEnd(editor);
   };
 
   return (
@@ -492,7 +586,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         selectedDocId={selectedDocId}
         onSelectDoc={setSelectedDocId}
         onCreateDoc={createDoc}
-        onRefreshDocs={fetchDocs}
+        onRefreshDocs={refreshDocs}
         isCreatingDoc={isCreatingDoc}
         jobDocName={focusedJob?.documentName}
         jobDocId={focusedJob?.documentId}
@@ -511,7 +605,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onToggleRail={() => setRailOpen((o) => !o)}
             onNewSync={() => setComposing(true)}
             onCreateDoc={createDoc}
-            onRefreshDocs={fetchDocs}
+            onRefreshDocs={refreshDocs}
             docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
             onSignOut={onSignOut}
             pageless={pageless}

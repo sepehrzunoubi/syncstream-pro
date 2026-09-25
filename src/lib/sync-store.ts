@@ -51,6 +51,8 @@ export interface SyncJob {
   generation: number;
   /** List state of the paragraph being typed into (formatted plans only) */
   docList?: DocListState;
+  /** Where a sync into an existing document types. Absent: it appends at the end. */
+  anchor?: JobAnchor;
   failures: number;
 
   // Credentials for the Docs API
@@ -72,11 +74,34 @@ export interface SyncJob {
 }
 
 /** What the dashboard sees: a job without credentials. */
-export type PublicJob = Omit<SyncJob, "accessToken" | "refreshToken" | "inFlight">;
+/**
+ * A typing position inside an existing document. The first write opens a new
+ * paragraph there ("before": at the start of the paragraph at the position,
+ * "after": after the paragraph that ends there). Later writes find their
+ * place again from the text just before it, so edits elsewhere in the doc
+ * while the sync runs do not throw it off.
+ */
+export interface JobAnchor {
+  mode: "before" | "after";
+  /** Document text just before the typing position when the sync started */
+  ctx: string;
+  /** Expected index of the next character, used to pick between repeated matches */
+  cursor: number;
+  /** True once the new paragraph exists */
+  opened: boolean;
+}
+
+/** What the running view shows around the sync: the document's paragraphs before and after it */
+export interface SyncContext {
+  before: unknown[];
+  after: unknown[];
+}
+
+export type PublicJob = Omit<SyncJob, "accessToken" | "refreshToken" | "inFlight" | "docList" | "anchor">;
 
 export function toPublicJob(job: SyncJob): PublicJob {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { accessToken, refreshToken, inFlight, docList, ...rest } = job;
+  const { accessToken, refreshToken, inFlight, docList, anchor, ...rest } = job;
   return rest;
 }
 
@@ -115,6 +140,7 @@ export function isTerminal(status: JobStatus): boolean {
 const TTL_SECONDS = 7 * 24 * 3600;
 const JOB_PREFIX = "syncjob:";
 const PLAN_PREFIX = "syncplan:";
+const CONTEXT_PREFIX = "syncctx:";
 const USER_JOBS_PREFIX = "userjobs:";
 const LOCK_PREFIX = "synclock:";
 const KICK_PREFIX = "synckick:";
@@ -128,6 +154,8 @@ export interface SyncStore {
   setJob(job: SyncJob): Promise<void>;
   getPlan(id: string): Promise<SyncPlan | null>;
   setPlan(plan: SyncPlan): Promise<void>;
+  getContext(id: string): Promise<SyncContext | null>;
+  setContext(id: string, context: SyncContext): Promise<void>;
   deleteJob(id: string): Promise<void>;
   addUserJob(userId: string, id: string): Promise<void>;
   removeUserJob(userId: string, id: string): Promise<void>;
@@ -160,8 +188,14 @@ function createRedisStore(redis: Redis): SyncStore {
     async setPlan(plan) {
       await redis.set(PLAN_PREFIX + plan.id, plan, { ex: TTL_SECONDS });
     },
+    async getContext(id) {
+      return (await redis.get<SyncContext>(CONTEXT_PREFIX + id)) ?? null;
+    },
+    async setContext(id, context) {
+      await redis.set(CONTEXT_PREFIX + id, context, { ex: TTL_SECONDS });
+    },
     async deleteJob(id) {
-      await redis.del(JOB_PREFIX + id, PLAN_PREFIX + id, LOCK_PREFIX + id, KICK_PREFIX + id, CONTROL_PREFIX + id);
+      await redis.del(JOB_PREFIX + id, PLAN_PREFIX + id, CONTEXT_PREFIX + id, LOCK_PREFIX + id, KICK_PREFIX + id, CONTROL_PREFIX + id);
     },
     async addUserJob(userId, id) {
       await redis.sadd(USER_JOBS_PREFIX + userId, id);
@@ -209,6 +243,7 @@ function createRedisStore(redis: Redis): SyncStore {
 export function createMemoryStore(now: () => number = Date.now): SyncStore {
   const jobs = new Map<string, SyncJob>();
   const plans = new Map<string, SyncPlan>();
+  const contexts = new Map<string, SyncContext>();
   const userJobs = new Map<string, Set<string>>();
   const active = new Set<string>();
   const expiring = new Map<string, number>(); // key → expiry ms
@@ -223,7 +258,9 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
     async setJob(job) { jobs.set(job.id, structuredClone(job)); },
     async getPlan(id) { return structuredClone(plans.get(id) ?? null); },
     async setPlan(plan) { plans.set(plan.id, structuredClone(plan)); },
-    async deleteJob(id) { jobs.delete(id); plans.delete(id); expiring.delete(LOCK_PREFIX + id); expiring.delete(KICK_PREFIX + id); controls.delete(id); },
+    async getContext(id) { return structuredClone(contexts.get(id) ?? null); },
+    async setContext(id, context) { contexts.set(id, structuredClone(context)); },
+    async deleteJob(id) { jobs.delete(id); plans.delete(id); contexts.delete(id); expiring.delete(LOCK_PREFIX + id); expiring.delete(KICK_PREFIX + id); controls.delete(id); },
     async addUserJob(userId, id) { (userJobs.get(userId) ?? userJobs.set(userId, new Set()).get(userId)!).add(id); },
     async removeUserJob(userId, id) { userJobs.get(userId)?.delete(id); },
     async listUserJobIds(userId) { return Array.from(userJobs.get(userId) ?? []); },

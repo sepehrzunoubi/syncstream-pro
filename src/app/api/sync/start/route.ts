@@ -6,11 +6,12 @@ import {
   MAX_TARGET_MINUTES,
   MIN_TARGET_MINUTES,
 } from "@/lib/drip-engine";
-import { createJobId, getStore, hasRedis, toPublicJob, type SyncJob, type SyncPlan } from "@/lib/sync-store";
+import { createJobId, getStore, hasRedis, toPublicJob, type JobAnchor, type SyncContext, type SyncJob, type SyncPlan } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
-import { getDocSnapshot } from "@/lib/google";
+import { getDocument, snapshotOf } from "@/lib/google";
+import { anchorPosition } from "@/lib/doc-import";
 import { applyAuthCookies, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
-import { normalizeText, parseFormat } from "@/lib/rich-text";
+import { normalizeText, parseFormat, type DocListState } from "@/lib/rich-text";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,17 @@ interface StartBody {
   typoFrequency?: unknown;
   seed?: unknown;
   startInMinutes?: unknown;
+  /** Where to type inside an existing document: { mode: "before" | "after", at } */
+  anchor?: unknown;
+  /** Revision of the document the anchor was chosen in */
+  revisionId?: unknown;
+  /** Paragraphs shown around the sync in the running view */
+  context?: unknown;
 }
+
+const ANCHOR_CONTEXT_CHARS = 40;
+const MAX_CONTEXT_JSON = 400_000;
+const DOC_CHANGED = "This document changed since it was loaded. It has been reloaded: check where your text goes, then start again.";
 
 export async function POST(req: NextRequest) {
   const user = await resolveUser(req);
@@ -106,10 +117,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Nothing to type" }, { status: 400 });
   }
 
-  // Baseline word count of the target doc (best effort; also proves we can read it)
+  let requested: { mode: "before" | "after"; at: number } | null = null;
+  if (body.anchor != null) {
+    const a = body.anchor as { mode?: unknown; at?: unknown };
+    if ((a.mode !== "before" && a.mode !== "after") || typeof a.at !== "number" || !Number.isInteger(a.at)) {
+      return NextResponse.json({ error: "Invalid anchor" }, { status: 400 });
+    }
+    requested = { mode: a.mode, at: a.at };
+  }
+
+  // Read the target doc: baseline word count, proof we can open it, and the anchor's surroundings
   let baselineWordCount = 0;
+  let anchor: JobAnchor | undefined;
+  let docList: DocListState | undefined;
   try {
-    baselineWordCount = (await withGoogleToken(user, (t) => getDocSnapshot(t, documentId))).wordCount;
+    const doc = await withGoogleToken(user, (t) => getDocument(t, documentId));
+    const snap = snapshotOf(doc);
+    baselineWordCount = snap.wordCount;
+    if (requested) {
+      if (typeof body.revisionId === "string" && body.revisionId && body.revisionId !== snap.revisionId) {
+        return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });
+      }
+      const pos = anchorPosition(snap.chars, requested);
+      if (pos == null) return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });
+      anchor = { mode: requested.mode, ctx: snap.chars.slice(Math.max(0, pos - ANCHOR_CONTEXT_CHARS), pos), cursor: pos, opened: false };
+      // The new paragraph copies the style of the one it is opened from, bullets included
+      const from = requested.mode === "after" ? pos - 1 : pos;
+      const source = (doc.body?.content ?? []).find((el) => el.paragraph && (el.startIndex ?? 0) <= from && from < (el.endIndex ?? 0));
+      if (source?.paragraph?.bullet) docList = { type: "bullet", start: -1 };
+    }
   } catch (err) {
     const code = (err as { code?: number })?.code;
     if (code === 403 || code === 404) {
@@ -117,6 +153,16 @@ export async function POST(req: NextRequest) {
         { error: code === 404 ? "That document could not be found." : "SyncStream is not allowed to edit that document. Re-authenticate to grant access." },
         { status: 400 }
       );
+    }
+    // Typing inside a document needs its current text
+    if (requested) return NextResponse.json({ error: "Couldn't read the document. Try again." }, { status: 502 });
+  }
+
+  let context: SyncContext | null = null;
+  if (requested && body.context && typeof body.context === "object") {
+    const c = body.context as { before?: unknown; after?: unknown };
+    if (Array.isArray(c.before) && Array.isArray(c.after) && JSON.stringify(c).length <= MAX_CONTEXT_JSON) {
+      context = { before: c.before, after: c.after };
     }
   }
 
@@ -157,6 +203,8 @@ export async function POST(req: NextRequest) {
     etaTargetAt: startAt + plan.totalMs,
     wpm: 0,
     baselineWordCount,
+    ...(anchor ? { anchor } : {}),
+    ...(docList ? { docList } : {}),
     breaks: plan.breaks,
     completedBreaks: [],
     lastUpdate: now,
@@ -165,6 +213,7 @@ export async function POST(req: NextRequest) {
   const store = getStore();
   try {
     await store.setPlan(syncPlan);
+    if (context) await store.setContext(id, context);
     await store.setJob(job);
     await store.addUserJob(user.userId, id);
     await store.addActiveJob(id);

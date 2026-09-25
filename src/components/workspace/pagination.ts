@@ -236,13 +236,20 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
 
 export const progressKey = new PluginKey<{ typed: number }>("ssProgress");
 
-/** Source offset (text with "\n" between paragraphs, 1 per image) → document position */
+/**
+ * Source offset (text with "\n" between paragraphs, 1 per image) → document
+ * position. Locked paragraphs (the document around a sync) are not source.
+ */
 export function offsetToPos(doc: Parameters<typeof DecorationSet.create>[0], offset: number): number {
   let chars = 0;
   let result = -1;
-  doc.forEach((para, paraPos, idx) => {
+  let seen = 0;
+  let regionEnd = -1;
+  doc.forEach((para, paraPos) => {
+    if (para.attrs.locked) return;
+    regionEnd = paraPos + para.nodeSize - 1;
     if (result >= 0) return;
-    if (idx > 0) chars += 1; // the newline before this paragraph
+    if (seen++ > 0) chars += 1; // the newline before this paragraph
     let len = 0;
     para.forEach((c) => { len += c.isText ? c.text!.length : 1; });
     if (offset > chars + len) { chars += len; return; }
@@ -263,7 +270,14 @@ export function offsetToPos(doc: Parameters<typeof DecorationSet.create>[0], off
     });
     if (result < 0) result = pos;
   });
-  return result < 0 ? doc.content.size : result;
+  return result < 0 ? (regionEnd >= 0 ? regionEnd : doc.content.size) : result;
+}
+
+/** Position just inside the end of the last paragraph that is not locked */
+function sourceEnd(doc: Parameters<typeof DecorationSet.create>[0]): number {
+  let end = doc.content.size;
+  doc.forEach((para, pos) => { if (!para.attrs.locked) end = pos + para.nodeSize - 1; });
+  return end;
 }
 
 export const ProgressMarks = Extension.create({
@@ -283,8 +297,8 @@ export const ProgressMarks = Extension.create({
           decorations(state) {
             const typed = progressKey.getState(state)?.typed ?? 0;
             const pos = offsetToPos(state.doc, typed);
-            const end = state.doc.content.size;
-            if (pos >= end - 1) return DecorationSet.empty;
+            const end = sourceEnd(state.doc);
+            if (pos >= end) return DecorationSet.empty;
             const caret = () => {
               const el = document.createElement("span");
               el.className = "ss-caret";

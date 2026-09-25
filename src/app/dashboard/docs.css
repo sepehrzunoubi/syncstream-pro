@@ -18,6 +18,8 @@
   --ss-pressed: #d3e3fd;
   --ss-on-pressed: #041e49;
   --ss-blue: #0b57d0;
+  --ss-sync-tint: #e8f0fe;
+  --ss-sync-bar: #1a73e8;
   --ss-tonal: #c2e7ff;
   --ss-on-tonal: #001d35;
   --ss-soft: #f0f4f9;
@@ -356,6 +358,72 @@
   border-radius: 2px;
 }
 
+/* Syncing into a document that already has text */
+.ss-doc p[data-locked] { cursor: default; }
+.ss-doc p[data-locked][data-list] { margin-left: var(--ss-li-start, 36pt) !important; counter-increment: none; counter-set: none; }
+.ss-doc p[data-locked][data-label]::before {
+  content: attr(data-label);
+  left: var(--ss-li-marker, -18pt);
+  width: auto;
+  top: 0;
+  font-size: inherit;
+  text-align: left;
+  border: 0;
+}
+.ss-doc p[data-locked][data-list="check"]::before { left: calc(var(--ss-li-marker, -18pt) + 2pt); }
+/* A numbered list typed after the document's own list starts again at 1, as in Docs */
+.ss-doc > p[data-locked] + p[data-list="ordered"]:not([data-locked]),
+.ss-doc > p[data-locked] + .ss-page-gap + p[data-list="ordered"]:not([data-locked]) { counter-increment: none; counter-set: ss-ol 1; }
+/* The text that will be typed */
+.ss-doc.ss-has-locked p:not([data-locked]) {
+  background: var(--ss-sync-tint);
+  box-shadow: -10px 0 0 var(--ss-sync-tint), 10px 0 0 var(--ss-sync-tint), -13px 0 0 var(--ss-sync-bar);
+  animation: ss-sync-in 900ms cubic-bezier(0.2, 0, 0, 1);
+}
+@keyframes ss-sync-in {
+  from { background-color: #c2d7fb; box-shadow: -10px 0 0 #c2d7fb, 10px 0 0 #c2d7fb, -13px 0 0 var(--ss-sync-bar); }
+}
+.ss-doc p.ss-region-empty:not([data-list])::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: #5f6368;
+  pointer-events: none;
+}
+.ss-insert-line {
+  position: absolute;
+  z-index: 3;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ss-sync-bar);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms, top 90ms cubic-bezier(0.2, 0, 0, 1);
+}
+.ss-insert-line[data-show] { opacity: 1; }
+.ss-insert-line::after {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ss-sync-bar);
+}
+.ss-insert-pill {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: -10px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--ss-sync-bar);
+  color: #fff;
+  font: 500 12px/20px "Google Sans", Roboto, Arial, sans-serif;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) { .ss-doc.ss-has-locked p:not([data-locked]) { animation: none; } }
+
 /* Links and images */
 .ss-doc a { color: #1155cc; text-decoration: underline; cursor: text; }
 .ss-doc img { display: inline-block; max-width: 6.5in; vertical-align: bottom; }
@@ -450,6 +518,8 @@
   .ss-sheet, .ss-page-gap, .ss-caret { display: none !important; }
   .ss-sheet-content { padding: 0 !important; }
   .ss-untyped { color: inherit !important; }
+  .ss-doc.ss-has-locked p:not([data-locked]) { background: none !important; box-shadow: none !important; }
+  .ss-insert-line { display: none !important; }
 }
 
 /* Read-only progress view: text darkens as it is typed */

@@ -1,4 +1,5 @@
-import { google } from "googleapis";
+import { google, type docs_v1 } from "googleapis";
+import { indexedText } from "./doc-import";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -100,19 +101,27 @@ export interface DocSnapshot {
   /** Last characters of the document body, for idempotency checks */
   tail: string;
   wordCount: number;
+  /** The body with position i holding the character at Docs index i (see indexedText) */
+  chars: string;
+  revisionId: string;
 }
 
-/** One documents.get that yields everything the runner needs about the target doc. */
-export async function getDocSnapshot(
-  accessToken: string,
-  documentId: string,
-  tailChars = 400
-): Promise<DocSnapshot> {
+/** The whole document, as documents.get returns it */
+export async function getDocument(accessToken: string, documentId: string): Promise<docs_v1.Schema$Document> {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
   const docs = google.docs({ version: "v1", auth: client });
   const doc = await withRetry(() => docs.documents.get({ documentId }));
-  const content = doc.data.body?.content ?? [];
+  return doc.data;
+}
+
+/** One documents.get that yields everything the runner needs about the target doc. */
+export async function getDocSnapshot(accessToken: string, documentId: string, tailChars = 400): Promise<DocSnapshot> {
+  return snapshotOf(await getDocument(accessToken, documentId), tailChars);
+}
+
+export function snapshotOf(data: docs_v1.Schema$Document, tailChars = 400): DocSnapshot {
+  const content = data.body?.content ?? [];
   const endIndex = content.slice(-1)[0]?.endIndex ?? 1;
   let text = "";
   for (const element of content) {
@@ -122,11 +131,12 @@ export async function getDocSnapshot(
       else if (el.inlineObjectElement) text += "\uFFFC";
     }
   }
-  const trimmed = text.replace(/\uFFFC/g, " ").trim();
-  const wordCount = trimmed ? trimmed.split(/\s+/).length : 0;
+  const chars = indexedText(data);
+  const words = chars.replace(/[\u0000\uFFFC]/g, " ").trim();
+  const wordCount = words ? words.split(/\s+/).length : 0;
   // Google Docs always ends the body with a trailing newline that is not user text.
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
-  return { endIndex, tail: body.slice(-tailChars), wordCount };
+  return { endIndex, tail: body.slice(-tailChars), wordCount, chars, revisionId: data.revisionId ?? "" };
 }
 
 export async function deleteRange(

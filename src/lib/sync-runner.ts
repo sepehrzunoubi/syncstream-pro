@@ -18,7 +18,7 @@
 import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
 import { FormatIndex, OBJ, type DocsRequest } from "./rich-text";
-import { isTerminal, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
+import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 
 export interface DocsApi {
   snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
@@ -64,6 +64,7 @@ const PAUSE_CHECK_MS = 3_000;
 /** How soon a delivery that found the job busy asks for another go */
 const BUSY_RETRY_SEC = 25;
 const CONTEXT_CHARS = 60;
+const LOST_PLACE = "Couldn't find where this sync was typing. The text around it may have been changed or deleted in the document.";
 
 class Interrupted extends Error {
   constructor(public readonly outcome: RunOutcome, public readonly job: SyncJob) {
@@ -311,6 +312,11 @@ class Context {
     return s.slice(-CONTEXT_CHARS);
   }
 
+  /** Text just before the typing position of an anchored job: the doc text it started after, then what it typed */
+  private anchoredContext(anchor: JobAnchor): string {
+    return (anchor.ctx + this.sentContext()).slice(-CONTEXT_CHARS);
+  }
+
   /** Formatting lookups for this plan, or null for plans without formatting. */
   private formats(): FormatIndex | null {
     if (this.formatIndex !== undefined) return this.formatIndex;
@@ -322,7 +328,8 @@ class Context {
   }
 
   /**
-   * Append `text` to the document. `isSource` is true when the text is the
+   * Type `text` at the job's position: the end of the document, or its
+   * anchor inside it. `isSource` is true when the text is the
    * next slice of the source (it is styled range by range); a typo's wrong
    * characters take the style of the source character they stand in for.
    */
@@ -330,12 +337,32 @@ class Context {
     if (text.length === 0) return;
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
     const marker = this.job.inFlight;
-    const alreadyLanded =
+    const markerMatches =
       marker != null &&
       marker.action === this.job.currentAction &&
       marker.step === step &&
-      marker.text === text &&
-      snap.tail.endsWith(this.sentContext() + text);
+      marker.text === text;
+    const anchor = this.job.anchor;
+    let alreadyLanded: boolean;
+    let index: number;
+    /** Opens the new paragraph at the anchor, in the same batch as the first text */
+    const open: DocsRequest[] = [];
+    if (!anchor) {
+      alreadyLanded = markerMatches && snap.tail.endsWith(this.sentContext() + text);
+      index = snap.endIndex - 1;
+    } else {
+      const before = this.anchoredContext(anchor);
+      const landedAt = markerMatches ? locate(snap.chars, before + text, anchor.cursor + text.length) : null;
+      alreadyLanded = landedAt != null;
+      if (landedAt != null) {
+        index = landedAt - text.length;
+      } else {
+        const at = relocate(snap.chars, before, anchor.cursor);
+        if (at == null) throw new Error(LOST_PLACE);
+        index = at;
+        if (!anchor.opened) open.push({ insertText: { location: { index: anchor.mode === "after" ? at - 1 : at }, text: "\n" } });
+      }
+    }
     if (alreadyLanded) {
       this.log(`job ${this.job.id}: write for action ${this.job.currentAction} already landed, skipping`);
       this.job.liveWordCount = snap.wordCount;
@@ -343,12 +370,11 @@ class Context {
       this.job.inFlight = { action: this.job.currentAction, step, text };
       await this.persist();
     }
-    const index = snap.endIndex - 1;
     const fx = this.formats();
     const offset = this.job.charsSent;
     let nextList = this.job.docList ?? null;
     if (!alreadyLanded) {
-      const requests: DocsRequest[] = this.contentRequests(text, index, isSource ? offset : null);
+      const requests: DocsRequest[] = [...open, ...this.contentRequests(text, index, isSource ? offset : null)];
       if (fx) {
         if (isSource) {
           const r = fx.writeRequests(offset, offset + text.length, index, this.job.docList ?? null);
@@ -359,12 +385,16 @@ class Context {
         }
       }
       await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests));
-      this.job.liveWordCount = snap.wordCount + countWords(text, snap.tail);
+      this.job.liveWordCount = snap.wordCount + countWords(text, anchor ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
     } else if (fx && isSource) {
       // The earlier attempt's requests landed with the text, so its list state did too
       nextList = fx.writeRequests(offset, offset + text.length, index, this.job.docList ?? null).docList;
     }
     if (isSource && fx) this.job.docList = nextList;
+    if (anchor) {
+      anchor.opened = true;
+      anchor.cursor = index + text.length;
+    }
     this.job.inFlight = undefined;
     if (isSource) this.job.charsSent += text.length;
   }
@@ -398,6 +428,21 @@ class Context {
   private async erase(wrong: string): Promise<void> {
     if (wrong.length === 0) return;
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    const anchor = this.job.anchor;
+    if (anchor) {
+      const before = this.anchoredContext(anchor);
+      const end = relocate(snap.chars, before + wrong, anchor.cursor, wrong.length);
+      if (end == null) {
+        // Already deleted by an earlier attempt?
+        const at = relocate(snap.chars, before, anchor.cursor - wrong.length);
+        if (at == null) throw new Error(LOST_PLACE);
+        anchor.cursor = at;
+        return;
+      }
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end));
+      anchor.cursor = end - wrong.length;
+      return;
+    }
     if (!snap.tail.endsWith(wrong)) return; // already deleted by an earlier attempt
     const end = snap.endIndex - 1;
     const start = Math.max(1, end - wrong.length);
@@ -481,4 +526,39 @@ function countWords(text: string, tail: string): number {
   const words = joined.trim() ? joined.trim().split(/\s+/).length : 0;
   const tailWord = tail.slice(-1).trim() ? 1 : 0;
   return Math.max(0, words - tailWord);
+}
+
+/**
+ * Index just past the occurrence of `context` in the index-aligned document
+ * text that ends closest to `hint`, or null when it does not occur.
+ */
+export function locate(chars: string, context: string, hint: number): number | null {
+  if (!context) return hint >= 1 && hint < chars.length ? hint : null;
+  let best: number | null = null;
+  let bestDistance = Infinity;
+  for (let i = chars.indexOf(context); i !== -1; i = chars.indexOf(context, i + 1)) {
+    const end = i + context.length;
+    const distance = Math.abs(end - hint);
+    if (distance < bestDistance) {
+      best = end;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * Find the typing position again from the text before it. Edits close
+ * above the position can change the start of that text, so shorter endings
+ * of it are tried before giving up; the one nearest the expected index wins.
+ * `keep` characters at the end are always part of the search.
+ */
+export function relocate(chars: string, context: string, hint: number, keep = 0): number | null {
+  for (const extra of [Infinity, 24, 10]) {
+    const len = Math.min(context.length, keep + extra);
+    const found = locate(chars, context.slice(context.length - len), hint);
+    if (found != null) return found;
+    if (len === context.length && extra !== Infinity) break;
+  }
+  return null;
 }

@@ -18,5 +18,6 @@ export async function GET(req: NextRequest) {
   for (const action of plan.actions) {
     if (action.kind !== "pause") sourceText += action.text;
   }
-  return applyAuthCookies(NextResponse.json({ sourceText, format: plan.format ?? null, breaks: plan.breaks, totalMs: plan.totalMs }), user);
+  const context = await getStore().getContext(job.id);
+  return applyAuthCookies(NextResponse.json({ sourceText, format: plan.format ?? null, context, breaks: plan.breaks, totalMs: plan.totalMs }), user);
 }

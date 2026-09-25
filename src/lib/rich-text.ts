@@ -437,7 +437,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
 
 export type DocsRequest = Record<string, unknown>;
 
-/** List state of the paragraph the next write appends to */
+/** List state of the paragraph the next write appends to. A negative start is a list that is not ours. */
 export type DocListState = { type: ListType; start: number } | null;
 
 /** Precomputed lookups for turning text ranges into Docs formatting requests. */
@@ -512,6 +512,8 @@ export class FormatIndex {
       } else {
         requests.push(paragraphRequest(para, at(pStart), at(segEnd)));
         const listStart = this.listStartOf(p);
+        // A paragraph opened inside someone else's list first leaves it
+        if (docList && docList.start < 0) requests.push({ deleteParagraphBullets: { range: { startIndex: at(pStart), endIndex: at(segEnd) } } });
         if (!(docList && docList.type === para.list && docList.start === listStart)) {
           requests.push({ createParagraphBullets: { range: { startIndex: at(listStart), endIndex: at(segEnd) }, bulletPreset: LIST_PRESETS[para.list] } });
         }

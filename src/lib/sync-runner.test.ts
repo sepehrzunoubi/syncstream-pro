@@ -21,6 +21,8 @@ class FakeDoc implements DocsApi {
   /** When set, the next insert throws before writing. */
   failNextInsertBeforeWrite = false;
   tokensSeen = new Set<string>();
+  /** Accept inserts anywhere (syncs into an existing document) */
+  anywhere = false;
 
   async snapshot(token: string) {
     this.tokensSeen.add(token);
@@ -30,6 +32,9 @@ class FakeDoc implements DocsApi {
       endIndex: this.text.length + 2,
       tail: this.text.slice(-400),
       wordCount: trimmed ? trimmed.split(/\s+/).length : 0,
+      // Index 0 is the section break; the body ends with its own newline
+      chars: "\0" + this.text + "\n",
+      revisionId: "r1",
     };
   }
   /** Every non-content request the runner sent, in order */
@@ -48,7 +53,7 @@ class FakeDoc implements DocsApi {
       const ins = r.insertText ?? r.insertInlineImage;
       if (!ins) { this.styling.push(r); continue; }
       const index = ins.location!.index;
-      if (first) assert.equal(index, this.text.length + 1, "runner must append at the end");
+      if (first && !this.anywhere) assert.equal(index, this.text.length + 1, "runner must append at the end");
       first = false;
       const piece = r.insertText ? ins.text! : "\uFFFC";
       this.text = this.text.slice(0, index - 1) + piece + this.text.slice(index - 1);
@@ -71,10 +76,14 @@ interface Harness {
   jobId: string;
 }
 
-async function makeHarness(text: string, opts: { seed?: number; actions?: DripAction[]; startInMs?: number; windowMs?: number } = {}): Promise<Harness> {
+async function makeHarness(text: string, opts: { seed?: number; actions?: DripAction[]; startInMs?: number; windowMs?: number; existing?: string; anchor?: { mode: "before" | "after"; at: number } } = {}): Promise<Harness> {
   const clock = new FakeClock();
   const store = createMemoryStore(clock.now);
   const doc = new FakeDoc();
+  if (opts.existing != null) {
+    doc.text = opts.existing;
+    doc.anywhere = true;
+  }
   const queue: Harness["queue"] = [];
   const plan = buildDripPlan(text, { seed: opts.seed ?? 1, breaks: [] });
   const actions = opts.actions ?? plan.actions;
@@ -88,6 +97,11 @@ async function makeHarness(text: string, opts: { seed?: number; actions?: DripAc
     accessToken: "tok", refreshToken: "ref", activity: "Queued", wpm: 0, baselineWordCount: 0,
     breaks: [], completedBreaks: [], lastUpdate: clock.now(),
   };
+  if (opts.anchor) {
+    // As the start route does: the doc text just before the typing position
+    const chars = "\0" + doc.text + "\n";
+    job.anchor = { mode: opts.anchor.mode, ctx: chars.slice(Math.max(0, opts.anchor.at - 40), opts.anchor.at), cursor: opts.anchor.at, opened: false };
+  }
   await store.setPlan(syncPlan);
   await store.setJob(job);
   await store.addActiveJob(jobId);
@@ -463,4 +477,92 @@ test("image batches carry insertInlineImage with the image address and size", as
   assert.equal(img.uri, "https://example.com/b.jpg");
   assert.equal(img.objectSize.width.magnitude, 300);
   assert.equal(h.doc.text, "A\uFFFCB");
+});
+
+// ── Syncing into an existing document ─────────────────────────────────────
+
+const EXISTING = "Why do you want to join?\nBecause.\nWhat else?\nNothing.";
+
+test("types after a chosen paragraph inside an existing document", async () => {
+  // "Because.\n" ends at doc index 35, and "What else?" starts there
+  const h = await makeHarness(TEXT, { seed: 5, existing: EXISTING, anchor: { mode: "after", at: 35 } });
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, "Why do you want to join?\nBecause.\n" + TEXT + "\nWhat else?\nNothing.");
+  assert.equal((await h.store.getJob(h.jobId))!.status, "done");
+});
+
+test("types before the first paragraph", async () => {
+  const h = await makeHarness(TEXT, { seed: 6, existing: EXISTING, anchor: { mode: "before", at: 1 } });
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, TEXT + "\n" + EXISTING);
+});
+
+test("keeps its place when the document is edited above it during the sync", async () => {
+  const h = await makeHarness(TEXT, { seed: 7, existing: EXISTING, anchor: { mode: "after", at: 35 } });
+  let edits = 0;
+  h.doc.onBatch = () => {
+    // Someone types at the top of the doc in Google Docs between our writes
+    if (edits++ % 3 === 0) h.doc.text = "Note. " + h.doc.text;
+  };
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  const notes = "Note. ".repeat(Math.ceil(edits / 3));
+  assert.equal(h.doc.text, notes + "Why do you want to join?\nBecause.\n" + TEXT + "\nWhat else?\nNothing.");
+});
+
+test("a lost response on the first write does not open a second paragraph", async () => {
+  const actions: DripAction[] = [
+    { kind: "insert", text: "Hello ", delayMs: 0, activity: "Typing" },
+    { kind: "insert", text: "world", delayMs: 500, activity: "Typing" },
+  ];
+  const h = await makeHarness("Hello world", { actions, existing: EXISTING, anchor: { mode: "after", at: 35 } });
+  h.doc.failNextInsertAfterWrite = true;
+  const r = await runJobWindow(h.jobId, 0, h.deps);
+  assert.equal(r.outcome, "retry");
+  await drain(h);
+  assert.equal(h.doc.text, "Why do you want to join?\nBecause.\nHello world\nWhat else?\nNothing.");
+});
+
+test("typos inside an existing document are erased at the right place", async () => {
+  const actions: DripAction[] = [
+    { kind: "insert", text: "Good ", delayMs: 0, activity: "Typing" },
+    { kind: "typo", text: "answer", typoChars: "anwser", holdMs: 800, delayMs: 300, activity: "Typing" },
+  ];
+  const h = await makeHarness("Good answer", { actions, existing: EXISTING, anchor: { mode: "before", at: 35 } });
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, "Why do you want to join?\nBecause.\nGood answer\nWhat else?\nNothing.");
+  assert.equal(h.doc.calls.delete, 1);
+});
+
+test("fails clearly when the text around the sync was deleted", async () => {
+  const actions: DripAction[] = [
+    { kind: "insert", text: "One ", delayMs: 0, activity: "Typing" },
+    { kind: "insert", text: "two", delayMs: 500, activity: "Typing" },
+  ];
+  const h = await makeHarness("One two", { actions, existing: EXISTING, anchor: { mode: "after", at: 35 } });
+  h.doc.onBatch = () => { h.doc.text = "Rewritten"; };
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  const job = (await h.store.getJob(h.jobId))!;
+  assert.equal(job.status, "error");
+  assert.match(job.error ?? "", /Couldn't find where this sync was typing/);
+});
+
+test("a paragraph opened from a bulleted one leaves that list", async () => {
+  const { richFromEditorJSON } = await import("./rich-text");
+  const { text, format } = richFromEditorJSON({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Plain answer" }] }] });
+  const h = await makeHarness(text, { actions: [{ kind: "insert", text, delayMs: 0, activity: "Typing" }], existing: EXISTING, anchor: { mode: "after", at: 26 } });
+  const plan = (await h.store.getPlan(h.jobId))!;
+  await h.store.setPlan({ ...plan, format });
+  const job = (await h.store.getJob(h.jobId))!;
+  await h.store.setJob({ ...job, docList: { type: "bullet", start: -1 } });
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, "Why do you want to join?\nPlain answer\nBecause.\nWhat else?\nNothing.");
+  const del = h.doc.styling.find((r) => r.deleteParagraphBullets) as { deleteParagraphBullets: { range: { startIndex: number } } } | undefined;
+  assert.ok(del, "bullets inherited from the list item are removed");
+  assert.equal(del!.deleteParagraphBullets.range.startIndex, 26);
 });
