@@ -10,6 +10,19 @@
 
 export type NamedStyle = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3";
 export type Align = "left" | "center" | "right" | "justify";
+export type ListType = "bullet" | "ordered" | "check";
+
+/** Placeholder character for an inline image in the source text (one Docs index, like the image) */
+export const OBJ = "\uFFFC";
+
+const LIST_PRESETS: Record<ListType, string> = {
+  bullet: "BULLET_DISC_CIRCLE_SQUARE",
+  ordered: "NUMBERED_DECIMAL_ALPHA_ROMAN",
+  check: "BULLET_CHECKBOX",
+};
+const LIST_TYPES = new Set<string>(["bullet", "ordered", "check"]);
+/** Docs' default link colour */
+export const LINK_COLOR = "#1155cc";
 
 export const NAMED_STYLES: Record<NamedStyle, { label: string; size: number; docs: string }> = {
   normal: { label: "Normal text", size: 11, docs: "NORMAL_TEXT" },
@@ -81,6 +94,8 @@ export interface ParagraphFormat {
   firstLine: boolean;
   /** Line spacing in percent, 100 = single */
   spacing: number;
+  /** Bulleted, numbered or checklist paragraph */
+  list?: ListType;
 }
 
 export interface RunFormat {
@@ -92,12 +107,27 @@ export interface RunFormat {
   font?: string;
   /** Point size; when absent the paragraph's named-style size applies */
   size?: number;
+  /** Text colour, #rrggbb */
+  color?: string;
+  /** Highlight colour, #rrggbb */
+  bg?: string;
+  /** Link target (http, https or mailto) */
+  link?: string;
+}
+
+/** An inline image at source offset `at` (where the text holds OBJ). Size in points. */
+export interface ImageRef {
+  at: number;
+  src: string;
+  w: number;
+  h: number;
 }
 
 export interface RichFormat {
   v: 1;
   paragraphs: ParagraphFormat[];
   runs: RunFormat[];
+  images?: ImageRef[];
 }
 
 export const DEFAULT_PARAGRAPH: ParagraphFormat = { style: "normal", align: "left", indent: 0, firstLine: false, spacing: 115 };
@@ -154,6 +184,31 @@ export function cssLengthToPt(value: string | null | undefined): number | undefi
   return Number.isFinite(pt) ? pt : undefined;
 }
 
+/** "#abc", "#aabbcc", "rgb(1, 2, 3)" → "#010203"; transparent or unknown → undefined */
+export function cssColorToHex(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const v = value.trim().toLowerCase();
+  let m = /^#([0-9a-f]{3})$/.exec(v);
+  if (m) return "#" + m[1].split("").map((c) => c + c).join("");
+  m = /^#([0-9a-f]{6})$/.exec(v);
+  if (m) return v;
+  m = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:[\s,/]+([\d.]+%?))?\s*\)$/.exec(v);
+  if (m) {
+    if (m[4] != null && parseFloat(m[4]) === 0) return undefined;
+    return "#" + [m[1], m[2], m[3]].map((n) => Math.min(255, parseInt(n, 10)).toString(16).padStart(2, "0")).join("");
+  }
+  return undefined;
+}
+
+/** Only web and mail links; adds https:// to bare domains */
+export function normalizeLink(href: string | null | undefined): string | undefined {
+  if (!href) return undefined;
+  let h = href.trim();
+  if (!h || h.length > 2000) return undefined;
+  if (/^(www\.|[a-z0-9-]+\.[a-z]{2,})/i.test(h) && !/^[a-z][a-z0-9+.-]*:/i.test(h)) h = `https://${h}`;
+  return /^(https?:\/\/|mailto:)/i.test(h) ? h : undefined;
+}
+
 export function roundSize(pt: number): number {
   return Math.min(400, Math.max(1, Math.round(pt * 2) / 2));
 }
@@ -181,7 +236,8 @@ function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): Paragra
   const align = a.textAlign === "center" || a.textAlign === "right" || a.textAlign === "justify" ? a.textAlign : "left";
   const indent = typeof a.indent === "number" ? Math.max(0, Math.min(MAX_INDENT, Math.round(a.indent))) : 0;
   const spacing = typeof a.lineSpacing === "number" && Number.isFinite(a.lineSpacing) ? Math.max(50, Math.min(500, Math.round(a.lineSpacing))) : 115;
-  return { style, align, indent, firstLine: a.firstLine === true, spacing };
+  const list = typeof a.list === "string" && LIST_TYPES.has(a.list) ? (a.list as ListType) : undefined;
+  return list ? { style, align, indent: 0, firstLine: false, spacing, list } : { style, align, indent, firstLine: a.firstLine === true, spacing };
 }
 
 function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
@@ -197,27 +253,45 @@ function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
       const raw = m.attrs?.fontSize;
       const size = typeof raw === "number" ? raw : typeof raw === "string" ? cssLengthToPt(raw) : undefined;
       if (size != null && size > 0) s.size = roundSize(size);
+      const color = typeof m.attrs?.color === "string" ? cssColorToHex(m.attrs.color) : undefined;
+      if (color && color !== "#000000") s.color = color;
+    } else if (m.type === "highlight") {
+      const bg = typeof m.attrs?.color === "string" ? cssColorToHex(m.attrs.color) : "#ffff00";
+      if (bg) s.bg = bg;
+    } else if (m.type === "link") {
+      const link = normalizeLink(typeof m.attrs?.href === "string" ? m.attrs.href : undefined);
+      if (link) s.link = link;
     }
   }
   return s;
 }
 
 const sameStyle = (a: RunStyle, b: RunStyle) =>
-  a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.font === b.font && a.size === b.size;
+  a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.font === b.font && a.size === b.size &&
+  a.color === b.color && a.bg === b.bg && a.link === b.link;
 
 /** Convert editor JSON into source text plus formatting. */
 export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: string; format: RichFormat } {
-  const lines: { para: ParagraphFormat; pieces: { text: string; style: RunStyle }[] }[] = [];
+  type Piece = { text: string; style: RunStyle; image?: Omit<ImageRef, "at"> };
+  const lines: { para: ParagraphFormat; pieces: Piece[] }[] = [];
   const newLine = (para: ParagraphFormat) => {
-    const line = { para, pieces: [] as { text: string; style: RunStyle }[] };
+    const line = { para, pieces: [] as Piece[] };
     lines.push(line);
     return line;
   };
 
   const visitInline = (node: EditorNode, para: ParagraphFormat, state: { line: ReturnType<typeof newLine> }) => {
-    if (node.type === "text" && typeof node.text === "string") {
+    if (node.type === "image") {
+      const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+      if (/^https?:\/\//i.test(src)) {
+        const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) || 0 : 0);
+        const wpx = num(node.attrs?.width);
+        const hpx = num(node.attrs?.height);
+        state.line.pieces.push({ text: OBJ, style: styleFromMarks(node.marks), image: { src, w: Math.round(wpx * 0.75 * 10) / 10, h: Math.round(hpx * 0.75 * 10) / 10 } });
+      }
+    } else if (node.type === "text" && typeof node.text === "string") {
       const style = styleFromMarks(node.marks);
-      const parts = normalizeText(node.text).split("\n");
+      const parts = normalizeText(node.text).replace(/\uFFFC/g, "").split("\n");
       parts.forEach((part, idx) => {
         if (idx > 0) state.line = newLine({ ...para });
         if (part) state.line.pieces.push({ text: part, style });
@@ -243,8 +317,18 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
   for (const block of doc?.content ?? []) visitBlock(block);
   if (lines.length === 0) newLine({ ...DEFAULT_PARAGRAPH });
 
+  // Docs removes leading tabs when it turns a paragraph into a list item; drop them here so offsets agree.
+  for (const line of lines) {
+    if (!line.para.list) continue;
+    while (line.pieces.length && line.pieces[0].text.startsWith("\t")) {
+      line.pieces[0].text = line.pieces[0].text.replace(/^\t+/, "");
+      if (!line.pieces[0].text) line.pieces.shift();
+    }
+  }
+
   let text = "";
   const runs: RunFormat[] = [];
+  const images: ImageRef[] = [];
   const push = (len: number, style: RunStyle) => {
     if (len <= 0) return;
     const last = runs[runs.length - 1];
@@ -254,16 +338,22 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
   lines.forEach((line, idx) => {
     if (idx > 0) {
       const prev = lines[idx - 1].pieces;
-      push(1, prev.length ? prev[prev.length - 1].style : {});
+      // Docs can't link a newline, so it never carries the link
+      const nl: RunStyle = prev.length ? { ...prev[prev.length - 1].style } : {};
+      delete nl.link;
+      push(1, nl);
       text += "\n";
     }
     for (const piece of line.pieces) {
+      if (piece.image) images.push({ at: text.length, ...piece.image });
       text += piece.text;
       push(piece.text.length, piece.style);
     }
   });
 
-  return { text, format: { v: 1, paragraphs: lines.map((l) => l.para), runs } };
+  const format: RichFormat = { v: 1, paragraphs: lines.map((l) => l.para), runs };
+  if (images.length) format.images = images;
+  return { text, format };
 }
 
 // ── Validation (server side) ────────────────────────────────────────────────
@@ -287,9 +377,15 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           indent: (p as ParagraphFormat).indent,
           firstLine: (p as ParagraphFormat).firstLine,
           lineSpacing: (p as ParagraphFormat).spacing,
+          list: (p as ParagraphFormat).list,
         }
       : undefined
   ));
+  // List items can't start with a tab (Docs would delete it and shift every index after it)
+  const lineTexts = text.split("\n");
+  for (let i = 0; i < paragraphs.length; i++) {
+    if (paragraphs[i].list && lineTexts[i].startsWith("\t")) return { ok: false, error: "List items can't start with a tab" };
+  }
 
   const runs: RunFormat[] = [];
   let total = 0;
@@ -305,15 +401,44 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
     if (run.s) clean.s = 1;
     if (typeof run.font === "string" && isSafeFontName(run.font)) clean.font = run.font;
     if (typeof run.size === "number" && Number.isFinite(run.size) && run.size > 0) clean.size = roundSize(run.size);
+    if (typeof run.color === "string" && /^#[0-9a-f]{6}$/i.test(run.color)) clean.color = run.color.toLowerCase();
+    if (typeof run.bg === "string" && /^#[0-9a-f]{6}$/i.test(run.bg)) clean.bg = run.bg.toLowerCase();
+    const link = typeof run.link === "string" ? normalizeLink(run.link) : undefined;
+    if (link) clean.link = link;
     runs.push(clean);
   }
   if (total !== text.length) return { ok: false, error: `format covers ${total} characters, text has ${text.length}` };
-  return { ok: true, format: { v: 1, paragraphs, runs } };
+
+  // Every image placeholder needs exactly one image, and nothing else may use the placeholder
+  const rawImages = (raw as { images?: unknown }).images;
+  const images: ImageRef[] = [];
+  if (rawImages != null) {
+    if (!Array.isArray(rawImages) || rawImages.length > 200) return { ok: false, error: "Invalid images" };
+    for (const item of rawImages) {
+      const im = item as Partial<ImageRef>;
+      if (!im || !Number.isInteger(im.at) || typeof im.src !== "string") return { ok: false, error: "Invalid image" };
+      if (!/^https?:\/\//i.test(im.src) || im.src.length > 2000) return { ok: false, error: "Images need a web address" };
+      const clamp = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(2000, n)) : 0);
+      images.push({ at: im.at as number, src: im.src, w: clamp(im.w), h: clamp(im.h) });
+    }
+  }
+  images.sort((a, b) => a.at - b.at);
+  const objectAt: number[] = [];
+  for (let i = 0; i < text.length; i++) if (text[i] === OBJ) objectAt.push(i);
+  if (objectAt.length !== images.length || objectAt.some((at, i) => images[i].at !== at)) {
+    return { ok: false, error: "Images don't line up with the text" };
+  }
+  const format: RichFormat = { v: 1, paragraphs, runs };
+  if (images.length) format.images = images;
+  return { ok: true, format };
 }
 
 // ── To Google Docs requests ─────────────────────────────────────────────────
 
 export type DocsRequest = Record<string, unknown>;
+
+/** List state of the paragraph the next write appends to */
+export type DocListState = { type: ListType; start: number } | null;
 
 /** Precomputed lookups for turning text ranges into Docs formatting requests. */
 export class FormatIndex {
@@ -345,10 +470,33 @@ export class FormatIndex {
 
   /** Requests that style the source range [start, end) once it sits at docIndex in the doc. */
   styleRequests(start: number, end: number, docIndex: number): DocsRequest[] {
-    if (end <= start || this.format.runs.length === 0) return [];
-    const requests: DocsRequest[] = [];
+    return this.writeRequests(start, end, docIndex, null).requests;
+  }
 
-    // Paragraph styles, applied once: in the chunk that contains the paragraph's start.
+  /** The image placed at source offset `at`, if any */
+  imageAt(at: number): ImageRef | undefined {
+    return this.format.images?.find((im) => im.at === at);
+  }
+
+  /**
+   * Everything needed after inserting source range [start, end) at docIndex:
+   * paragraph styles and list membership for paragraphs that begin in the
+   * range, then character styles.
+   *
+   * `docList` is the list state of the paragraph text is being appended to,
+   * as it was before this write. Every paragraph created by the write
+   * inherits it (Docs copies the paragraph style, bullets included, on each
+   * new line), so each new paragraph is corrected against it. A list item
+   * joins its list by re-creating bullets from the list's first item, which
+   * keeps numbering continuous across writes. Returns the new state of the
+   * paragraph that the next write will append to.
+   */
+  writeRequests(start: number, end: number, docIndex: number, docList: DocListState): { requests: DocsRequest[]; docList: DocListState } {
+    if (end <= start || this.format.runs.length === 0) return { requests: [], docList };
+    const requests: DocsRequest[] = [];
+    const at = (offset: number) => docIndex + offset - start;
+    const processed = new Map<number, DocListState>();
+
     const firstPara = this.paragraphIndexAt(start);
     const lastPara = this.paragraphIndexAt(end - 1);
     for (let p = firstPara; p <= lastPara; p++) {
@@ -356,13 +504,25 @@ export class FormatIndex {
       if (pStart < start || pStart >= end) continue;
       const pEnd = this.paraStarts[p + 1] ?? this.text.length;
       const segEnd = Math.min(end, Math.max(pEnd, pStart + 1));
-      requests.push(paragraphRequest(this.format.paragraphs[p] ?? DEFAULT_PARAGRAPH, docIndex + pStart - start, docIndex + segEnd - start));
+      const para = this.format.paragraphs[p] ?? DEFAULT_PARAGRAPH;
+      if (!para.list) {
+        if (docList) requests.push({ deleteParagraphBullets: { range: { startIndex: at(pStart), endIndex: at(segEnd) } } });
+        requests.push(paragraphRequest(para, at(pStart), at(segEnd)));
+        processed.set(p, null);
+      } else {
+        requests.push(paragraphRequest(para, at(pStart), at(segEnd)));
+        const listStart = this.listStartOf(p);
+        if (!(docList && docList.type === para.list && docList.start === listStart)) {
+          requests.push({ createParagraphBullets: { range: { startIndex: at(listStart), endIndex: at(segEnd) }, bulletPreset: LIST_PRESETS[para.list] } });
+        }
+        processed.set(p, { type: para.list, start: listStart });
+      }
     }
 
     // Character styles, split at run and paragraph boundaries, merged when equal.
     let pending: { from: number; to: number; key: string; style: DocsRequest } | null = null;
     const flush = () => {
-      if (pending) requests.push(textRequest(pending.style, docIndex + pending.from - start, docIndex + pending.to - start));
+      if (pending) requests.push(textRequest(pending.style, at(pending.from), at(pending.to)));
       pending = null;
     };
     let pos = start;
@@ -384,7 +544,23 @@ export class FormatIndex {
       pos = segEnd;
     }
     flush();
-    return requests;
+
+    // The paragraph the next write appends to: created by this write (it
+    // inherited the old state), or the last paragraph this write styled.
+    let next = docList;
+    if (end > 0 && this.text[end - 1] !== "\n") {
+      const pl = this.paragraphIndexAt(end - 1);
+      if (processed.has(pl)) next = processed.get(pl) ?? null;
+    }
+    return { requests, docList: next };
+  }
+
+  /** Source offset of the first paragraph of the list that paragraph p belongs to */
+  private listStartOf(p: number): number {
+    const type = this.format.paragraphs[p]?.list;
+    let q = p;
+    while (q > 0 && this.format.paragraphs[q - 1]?.list === type) q--;
+    return this.paraStarts[q];
   }
 
   /**
@@ -396,10 +572,9 @@ export class FormatIndex {
     const at = Math.max(0, Math.min(offset, this.text.length - 1));
     const pi = this.paragraphIndexAt(at);
     const para = this.format.paragraphs[pi] ?? DEFAULT_PARAGRAPH;
-    const requests: DocsRequest[] = [];
-    if (this.paraStarts[pi] === offset) requests.push(paragraphRequest(para, docIndex, docIndex + length));
-    requests.push(textRequest(resolveTextStyle(this.format.runs[this.runIndexAt(at)], para), docIndex, docIndex + length));
-    return requests;
+    const run = { ...this.format.runs[this.runIndexAt(at)] };
+    delete run.link;
+    return [textRequest(resolveTextStyle(run, para), docIndex, docIndex + length)];
   }
 }
 
@@ -417,15 +592,26 @@ function lastLE(sorted: number[], value: number): number {
   return ans;
 }
 
+function rgb(hex: string) {
+  const n = parseInt(hex.slice(1), 16);
+  return { color: { rgbColor: { red: ((n >> 16) & 255) / 255, green: ((n >> 8) & 255) / 255, blue: (n & 255) / 255 } } };
+}
+
 function resolveTextStyle(run: RunFormat, para: ParagraphFormat): DocsRequest {
-  return {
+  const style: DocsRequest = {
     bold: !!run.b,
     italic: !!run.i,
-    underline: !!run.u,
+    underline: !!run.u || !!run.link,
     strikethrough: !!run.s,
     fontSize: { magnitude: run.size ?? NAMED_STYLES[para.style].size, unit: "PT" },
     weightedFontFamily: { fontFamily: run.font ?? DEFAULT_FONT, weight: 400 },
   };
+  // Fields listed in the mask but left unset are reset to their defaults
+  const color = run.color ?? (run.link ? LINK_COLOR : undefined);
+  if (color) style.foregroundColor = rgb(color);
+  if (run.bg) style.backgroundColor = rgb(run.bg);
+  if (run.link) style.link = { url: run.link };
+  return style;
 }
 
 function textRequest(textStyle: DocsRequest, startIndex: number, endIndex: number): DocsRequest {
@@ -433,12 +619,22 @@ function textRequest(textStyle: DocsRequest, startIndex: number, endIndex: numbe
     updateTextStyle: {
       range: { startIndex, endIndex },
       textStyle,
-      fields: "bold,italic,underline,strikethrough,fontSize,weightedFontFamily",
+      fields: "bold,italic,underline,strikethrough,fontSize,weightedFontFamily,foregroundColor,backgroundColor,link",
     },
   };
 }
 
 function paragraphRequest(p: ParagraphFormat, startIndex: number, endIndex: number): DocsRequest {
+  if (p.list) {
+    // Bullets own the indentation of list items
+    return {
+      updateParagraphStyle: {
+        range: { startIndex, endIndex },
+        paragraphStyle: { namedStyleType: NAMED_STYLES[p.style].docs, alignment: DOCS_ALIGN[p.align], lineSpacing: p.spacing },
+        fields: "namedStyleType,alignment,lineSpacing",
+      },
+    };
+  }
   const indentStart = p.indent * INDENT_PT;
   return {
     updateParagraphStyle: {
@@ -470,7 +666,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
     const p = fmt.paragraphs[li] ?? DEFAULT_PARAGRAPH;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing },
+      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null },
       content: [],
     };
     const end = pos + line.length;
@@ -484,8 +680,19 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       if (run.i) marks.push({ type: "italic" });
       if (run.u) marks.push({ type: "underline" });
       if (run.s) marks.push({ type: "strike" });
-      if (run.font || run.size) marks.push({ type: "textStyle", attrs: { fontFamily: run.font ?? null, fontSize: run.size ?? null } });
-      node.content!.push(marks.length ? { type: "text", text: text.slice(at, segEnd), marks } : { type: "text", text: text.slice(at, segEnd) });
+      if (run.link) marks.push({ type: "link", attrs: { href: run.link } });
+      if (run.bg) marks.push({ type: "highlight", attrs: { color: run.bg } });
+      if (run.font || run.size || run.color) marks.push({ type: "textStyle", attrs: { fontFamily: run.font ?? null, fontSize: run.size ?? null, color: run.color ?? null } });
+      // Images are single placeholder characters; emit them as image nodes
+      let cursor = at;
+      for (let k = at; k < segEnd; k++) {
+        if (text[k] !== OBJ) continue;
+        if (k > cursor) node.content!.push(marks.length ? { type: "text", text: text.slice(cursor, k), marks } : { type: "text", text: text.slice(cursor, k) });
+        const im = fmt.images?.find((x) => x.at === k);
+        if (im) node.content!.push({ type: "image", attrs: { src: im.src, width: im.w ? Math.round(im.w / 0.75) : null, height: im.h ? Math.round(im.h / 0.75) : null } });
+        cursor = k + 1;
+      }
+      if (segEnd > cursor) node.content!.push(marks.length ? { type: "text", text: text.slice(cursor, segEnd), marks } : { type: "text", text: text.slice(cursor, segEnd) });
       at = segEnd;
     }
     content.push(node);

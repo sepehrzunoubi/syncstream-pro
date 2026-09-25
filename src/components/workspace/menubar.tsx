@@ -67,6 +67,8 @@ interface DocsMenubarProps {
   onRefreshDocs: () => void;
   docUrl: string | null;
   onSignOut: () => void;
+  pageless: boolean;
+  onPageless: (on: boolean) => void;
 }
 
 export function DocsMenubar(p: DocsMenubarProps) {
@@ -85,6 +87,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         align: (para.textAlign as string) ?? "left",
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
+        list: (para.list as string | null) ?? null,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
       };
@@ -102,6 +105,12 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item onSelect={p.onCreateDoc}>Create a new Google Doc</Item>
         <Item onSelect={p.onRefreshDocs}>Refresh document list</Item>
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
+        <Sep />
+        <Sub label="Page setup">
+          <Item checkable checked={!p.pageless} onSelect={() => p.onPageless(false)}>Pages</Item>
+          <Item checkable checked={p.pageless} onSelect={() => p.onPageless(true)}>Pageless</Item>
+        </Sub>
+        <Item shortcut={`${mod}P`} onSelect={() => window.print()}>Print</Item>
         <Sep />
         <Item onSelect={p.onSignOut}>Sign out</Item>
       </TopMenu>
@@ -121,6 +130,14 @@ export function DocsMenubar(p: DocsMenubarProps) {
           ))}
         </Sub>
         <Item checkable checked={p.railOpen} onSelect={p.onToggleRail}>Show syncs</Item>
+      </TopMenu>
+
+      <TopMenu label="Insert">
+        <Sub label="Image" disabled={off}>
+          <Item onSelect={() => window.dispatchEvent(new CustomEvent("ss-image-upload"))}>Upload from computer</Item>
+          <Item onSelect={() => window.dispatchEvent(new CustomEvent("ss-image-url"))}>By URL</Item>
+        </Sub>
+        <Item disabled={off} shortcut={`${mod}K`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-open-link"))}>Link</Item>
       </TopMenu>
 
       <TopMenu label="Format">
@@ -143,6 +160,11 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item shortcut={`${mod}]`} onSelect={() => run((c) => c.indent())}>Increase indent</Item>
           <Item shortcut={`${mod}[`} onSelect={() => run((c) => c.outdent())}>Decrease indent</Item>
           <Item checkable checked={st?.firstLine} shortcut="Tab" onSelect={() => run((c) => c.setFirstLine(!st?.firstLine))}>Indent first line</Item>
+        </Sub>
+        <Sub label="Bullets & numbering" disabled={off}>
+          <Item checkable checked={st?.list === "check"} shortcut={`${mod}Shift+9`} onSelect={() => run((c) => c.toggleList("check"))}>Checklist</Item>
+          <Item checkable checked={st?.list === "bullet"} shortcut={`${mod}Shift+8`} onSelect={() => run((c) => c.toggleList("bullet"))}>Bulleted list</Item>
+          <Item checkable checked={st?.list === "ordered"} shortcut={`${mod}Shift+7`} onSelect={() => run((c) => c.toggleList("ordered"))}>Numbered list</Item>
         </Sub>
         <Sub label="Line & paragraph spacing" disabled={off}>
           {LINE_SPACINGS.map((ls) => (

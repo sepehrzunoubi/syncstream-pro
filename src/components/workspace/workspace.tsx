@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { EditorContent, useEditor, type JSONContent } from "@tiptap/react";
+import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { editorExtensions, flattenPastedLists } from "./extensions";
 import { Toolbar } from "./toolbar";
@@ -11,7 +11,9 @@ import { Header, type HeaderUser } from "./header";
 import { SyncRail } from "./sync-rail";
 import { SyncPanel, type BreaksMode } from "./sync-panel";
 import { JobPanel } from "./job-panel";
-import { ProgressPage } from "./progress-page";
+import { PagedSurface } from "./paged-surface";
+import { ProgressMarks, progressKey } from "./pagination";
+import { measureRemoteImage, uploadImage } from "./image-upload";
 import { isActive, statusLine } from "./job-status";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
@@ -32,6 +34,7 @@ interface Draft {
   customBreaks?: number[];
   typoFrequency?: number;
   zoom?: number | "fit";
+  pageless?: boolean;
 }
 
 function plainToDoc(text: string): JSONContent {
@@ -92,6 +95,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [zoom, setZoom] = useState<number | "fit">("fit");
   const canvasRef = useRef<HTMLElement>(null);
   const [fitScale, setFitScale] = useState(1);
+  const [narrow, setNarrow] = useState(false);
+  const [pageless, setPageless] = useState(false);
   const [draftLoaded, setDraftLoaded] = useState(false);
 
   // Syncs
@@ -106,6 +111,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [railOpen, setRailOpen] = useState(false);
   const [wide, setWide] = useState(true);
 
+  // Pasted or dropped image files are uploaded, then inserted (the handler is set below)
+  const imageFilesRef = useRef<(files: File[], at?: number) => void>(() => {});
+  const imageFilesOf = (list: FileList | null | undefined) => Array.from(list ?? []).filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
+
   const editor = useEditor({
     extensions: editorExtensions,
     immediatelyRender: false,
@@ -113,13 +122,44 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     editorProps: {
       attributes: { class: "ss-doc", spellcheck: "true", "aria-label": "Text to sync" },
       transformPastedHTML: flattenPastedLists,
+      handlePaste: (_view, event) => {
+        const files = imageFilesOf(event.clipboardData?.files);
+        if (!files.length) return false;
+        event.preventDefault();
+        imageFilesRef.current(files);
+        return true;
+      },
+      handleDrop: (view, event, _slice, moved) => {
+        if (moved) return false;
+        const files = imageFilesOf(event.dataTransfer?.files);
+        if (!files.length) return false;
+        event.preventDefault();
+        imageFilesRef.current(files, view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos);
+        return true;
+      },
     },
     onUpdate: ({ editor: e }) => setDocJSON(e.getJSON()),
+  });
+
+  // A read-only copy of the editor shows a running sync, paginated the same way
+  const viewer = useEditor({
+    extensions: [...editorExtensions, ProgressMarks],
+    immediatelyRender: false,
+    editable: false,
+    editorProps: { attributes: { class: "ss-doc", "aria-label": "Text being typed into Google Docs", "aria-readonly": "true" } },
   });
 
   const focusedJob = !composing ? jobs.find((j) => j.id === focusedJobId) ?? null : null;
   const anyActive = jobs.some(isActive);
   const now = useNow(!!focusedJob && isActive(focusedJob));
+
+  // Icons are ligatures in the Material Symbols font; reveal them once it has loaded
+  const [iconsReady, setIconsReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    document.fonts?.load('20px "Material Symbols Outlined"', "undo").then((faces) => { if (alive && faces.length) setIconsReady(true); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // Layout: the syncs list is a column on wide screens and a drawer on narrow ones
   useEffect(() => {
@@ -138,6 +178,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     const measure = () => {
       const w = el.clientWidth;
       setFitScale(w < 720 ? 1 : Math.min(1, (w - 48) / 816));
+      setNarrow(w < 720);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -145,6 +186,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     return () => ro.disconnect();
   }, [ready]);
   const scale = zoom === "fit" ? fitScale : zoom / 100;
+  // Narrow screens reflow the page, so page breaks would be wrong there
+  const effectivePageless = pageless || narrow;
+  useEffect(() => {
+    editor?.commands.setPaginated(!effectivePageless);
+    viewer?.commands.setPaginated(!effectivePageless);
+  }, [editor, viewer, effectivePageless]);
 
   // Restore the draft once the editor exists
   useEffect(() => {
@@ -158,6 +205,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (Array.isArray(d.customBreaks)) setCustomBreaks(d.customBreaks);
     if (typeof d.typoFrequency === "number") setTypoFrequency(d.typoFrequency);
     if (typeof d.zoom === "number" || d.zoom === "fit") setZoom(d.zoom);
+    if (typeof d.pageless === "boolean") setPageless(d.pageless);
     setDraftLoaded(true);
   }, [editor, draftLoaded]);
 
@@ -165,12 +213,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (!draftLoaded) return;
     const id = setTimeout(() => {
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({ doc: docJSON ?? undefined, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom } satisfies Draft));
+        localStorage.setItem(DRAFT_KEY, JSON.stringify({ doc: docJSON ?? undefined, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless } satisfies Draft));
         localStorage.removeItem(LEGACY_DRAFT_KEY);
       } catch { /* storage full or blocked */ }
     }, 400);
     return () => clearTimeout(id);
-  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom]);
+  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless]);
 
   // Snackbar auto-hide
   useEffect(() => {
@@ -333,8 +381,62 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     setComposing(true);
   }, [sources, editor]);
 
+  const insertImages = useCallback(async (files: File[], at?: number) => {
+    if (!editor) return;
+    setSnack(files.length > 1 ? `Uploading ${files.length} images` : "Uploading image");
+    let pos = at;
+    for (const file of files) {
+      try {
+        const { url, width, height } = await uploadImage(file);
+        const node = { type: "image", attrs: { src: url, width, height } };
+        if (pos != null) {
+          editor.chain().focus().insertContentAt(pos, node).run();
+          pos += 1;
+        } else editor.chain().focus().insertContent(node).run();
+      } catch (err) {
+        setSnack(err instanceof Error ? err.message : "Couldn't add the image");
+        return;
+      }
+    }
+    setSnack(files.length > 1 ? "Images added" : "Image added");
+  }, [editor]);
+  imageFilesRef.current = insertImages;
+
+  const insertImageUrl = useCallback(async (url: string) => {
+    if (!editor) return;
+    const { width, height } = await measureRemoteImage(url);
+    editor.chain().focus().insertContent({ type: "image", attrs: { src: url, width, height } }).run();
+  }, [editor]);
+
   // Header
   const focusedSource = focusedJob ? sources[focusedJob.id] : undefined;
+
+  // Load the focused sync into the viewer, then move its caret as typing progresses
+  const loadedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!viewer || !focusedJob || !focusedSource) return;
+    if (loadedRef.current !== focusedJob.id) {
+      viewer.commands.setContent(richToEditorJSON(focusedSource.text, focusedSource.format) as JSONContent, { emitUpdate: false });
+      loadedRef.current = focusedJob.id;
+    }
+  }, [viewer, focusedJob, focusedSource]);
+  const typed = focusedJob?.charsSent ?? 0;
+  useEffect(() => {
+    if (!viewer || !focusedJob || loadedRef.current !== focusedJob.id) return;
+    viewer.view.dispatch(viewer.state.tr.setMeta(progressKey, typed).setMeta("addToHistory", false));
+    const frame = requestAnimationFrame(() => {
+      const caret = viewer.view.dom.querySelector(".ss-caret");
+      const canvas = canvasRef.current;
+      if (!caret || !canvas) return;
+      const r = caret.getBoundingClientRect();
+      const c = canvas.getBoundingClientRect();
+      if (r.top < c.top + 60 || r.bottom > c.bottom - 60) {
+        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        caret.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [viewer, focusedJob, typed, focusedSource]);
   const subtitle = focusedJob
     ? statusLine(focusedJob)
     : !selectedDocId
@@ -382,7 +484,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   return (
     <MotionConfig reducedMotion="user">
-    <div className="ss-workspace">
+    <div className={`ss-workspace ${iconsReady ? "ss-icons-ready" : ""}`}>
       <Header
         user={user}
         mode={focusedJob ? "job" : "draft"}
@@ -412,15 +514,17 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onRefreshDocs={fetchDocs}
             docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
             onSignOut={onSignOut}
+            pageless={pageless}
+            onPageless={setPageless}
           />
         }
       />
 
-      <div className="flex-none px-4 pb-1">
-        <Toolbar editor={editor} disabled={!!focusedJob} zoom={zoom} onZoom={setZoom} />
+      <div className="ss-noprint flex-none px-4 pb-1">
+        <Toolbar editor={editor} disabled={!!focusedJob} zoom={zoom} onZoom={setZoom} onInsertImages={insertImages} onInsertImageUrl={insertImageUrl} />
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
+      <div className="ss-body flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
         <AnimatePresence initial={false}>
           {railOpen && wide && (
             <motion.div
@@ -469,22 +573,16 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
           {focusedJob && (
             <motion.div key={focusedJob.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease }}>
-              {focusedSource ? (
-                <ProgressPage text={focusedSource.text} format={focusedSource.format} typed={focusedJob.charsSent} scale={scale} />
-              ) : (
-                <div className="ss-page" style={{ zoom: scale }} />
-              )}
+              <PagedSurface editor={viewer} pageless={effectivePageless} scale={scale} />
             </motion.div>
           )}
           <motion.div
-            className="ss-page"
-            style={{ zoom: scale, display: focusedJob ? "none" : undefined }}
+            style={{ display: focusedJob ? "none" : undefined }}
             initial={{ opacity: 0, y: 12 }}
             animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
             transition={{ duration: 0.32, ease }}
-            onMouseDown={onPageMouseDown}
           >
-            <EditorContent editor={editor} />
+            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} onMouseDown={onPageMouseDown} />
           </motion.div>
         </main>
 

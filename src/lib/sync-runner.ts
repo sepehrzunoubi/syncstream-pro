@@ -17,12 +17,13 @@
 
 import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
-import { FormatIndex } from "./rich-text";
+import { FormatIndex, OBJ, type DocsRequest } from "./rich-text";
 import { isTerminal, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 
 export interface DocsApi {
   snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
-  insert(accessToken: string, documentId: string, text: string, index: number, extraRequests?: object[]): Promise<unknown>;
+  /** One atomic batchUpdate */
+  batch(accessToken: string, documentId: string, requests: object[]): Promise<unknown>;
   deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number): Promise<unknown>;
 }
 
@@ -341,19 +342,57 @@ class Context {
     } else {
       this.job.inFlight = { action: this.job.currentAction, step, text };
       await this.persist();
-      const index = snap.endIndex - 1;
-      const fx = this.formats();
-      const offset = this.job.charsSent;
-      const styles = fx
-        ? isSource
-          ? fx.styleRequests(offset, offset + text.length, index)
-          : fx.uniformStyleRequests(offset, text.length, index)
-        : [];
-      await this.withToken((t) => this.deps.docs.insert(t, this.job.documentId, text, index, styles));
-      this.job.liveWordCount = snap.wordCount + countWords(text, snap.tail);
     }
+    const index = snap.endIndex - 1;
+    const fx = this.formats();
+    const offset = this.job.charsSent;
+    let nextList = this.job.docList ?? null;
+    if (!alreadyLanded) {
+      const requests: DocsRequest[] = this.contentRequests(text, index, isSource ? offset : null);
+      if (fx) {
+        if (isSource) {
+          const r = fx.writeRequests(offset, offset + text.length, index, this.job.docList ?? null);
+          requests.push(...r.requests);
+          nextList = r.docList;
+        } else {
+          requests.push(...fx.uniformStyleRequests(offset, text.length, index));
+        }
+      }
+      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests));
+      this.job.liveWordCount = snap.wordCount + countWords(text, snap.tail);
+    } else if (fx && isSource) {
+      // The earlier attempt's requests landed with the text, so its list state did too
+      nextList = fx.writeRequests(offset, offset + text.length, index, this.job.docList ?? null).docList;
+    }
+    if (isSource && fx) this.job.docList = nextList;
     this.job.inFlight = undefined;
     if (isSource) this.job.charsSent += text.length;
+  }
+
+  /** insertText for text, insertInlineImage for each image placeholder, in order */
+  private contentRequests(text: string, index: number, sourceOffset: number | null): DocsRequest[] {
+    const requests: DocsRequest[] = [];
+    const fx = this.formats();
+    let pos = index;
+    let buf = "";
+    const flush = () => {
+      if (buf) requests.push({ insertText: { location: { index: pos }, text: buf } });
+      pos += buf.length;
+      buf = "";
+    };
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const image = ch === OBJ && sourceOffset != null && fx ? fx.imageAt(sourceOffset + i) : undefined;
+      if (!image) { buf += ch; continue; }
+      flush();
+      const size: Record<string, unknown> = {};
+      if (image.w > 0) size.width = { magnitude: image.w, unit: "PT" };
+      if (image.h > 0) size.height = { magnitude: image.h, unit: "PT" };
+      requests.push({ insertInlineImage: { location: { index: pos }, uri: image.src, ...(Object.keys(size).length ? { objectSize: size } : {}) } });
+      pos += 1;
+    }
+    flush();
+    return requests;
   }
 
   private async erase(wrong: string): Promise<void> {
@@ -436,6 +475,8 @@ export async function applyControl(
 
 /** Words added by appending `text` to a document whose tail is `tail`. */
 function countWords(text: string, tail: string): number {
+  text = text.replace(/\uFFFC/g, " ");
+  tail = tail.replace(/\uFFFC/g, " ");
   const joined = tail.slice(-1) + text;
   const words = joined.trim() ? joined.trim().split(/\s+/).length : 0;
   const tailWord = tail.slice(-1).trim() ? 1 : 0;

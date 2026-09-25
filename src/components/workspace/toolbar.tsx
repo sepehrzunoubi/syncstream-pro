@@ -4,6 +4,8 @@ import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
+import { ColorMenu } from "./color-menu";
+import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
 import {
   DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, NAMED_STYLES, NAMED_STYLE_ORDER,
@@ -26,13 +28,54 @@ function useModKey() {
 interface ToolbarProps {
   editor: Editor | null;
   disabled?: boolean;
+  onInsertImages: (files: File[]) => void;
+  onInsertImageUrl: (url: string) => void;
   /** A percentage, or "fit" to scale the page to the available width */
   zoom: number | "fit";
   onZoom: (z: number | "fit") => void;
 }
 
-export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
+type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para: Record<string, unknown> } | null;
+
+export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl }: ToolbarProps) {
   const mod = useModKey();
+  const [spellcheck, setSpellcheck] = useState(true);
+  const [painter, setPainter] = useState<Painter>(null);
+
+  useEffect(() => {
+    editor?.view.dom.setAttribute("spellcheck", spellcheck ? "true" : "false");
+  }, [editor, spellcheck]);
+
+  // Paint format: copy the formatting at the cursor, apply it to the next selection
+  useEffect(() => {
+    if (!editor || !painter) return;
+    const dom = editor.view.dom as HTMLElement;
+    dom.classList.add("ss-painting");
+    const applyPaint = () => setTimeout(() => {
+      if (editor.state.selection.empty) return;
+      let chain = editor.chain().focus().unsetAllMarks();
+      for (const m of painter.marks) chain = chain.setMark(m.type, m.attrs);
+      const { styleName, textAlign, lineSpacing, indent, firstLine, list } = painter.para;
+      chain.updateAttributes("paragraph", { styleName, textAlign, lineSpacing, indent, firstLine, list }).run();
+      setPainter(null);
+    }, 0);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPainter(null); };
+    dom.addEventListener("mouseup", applyPaint);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      dom.classList.remove("ss-painting");
+      dom.removeEventListener("mouseup", applyPaint);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [editor, painter]);
+
+  const togglePainter = () => {
+    if (!editor) return;
+    if (painter) { setPainter(null); return; }
+    const { state } = editor;
+    const marks = (state.storedMarks ?? state.selection.$from.marks()).map((m) => ({ type: m.type.name, attrs: { ...m.attrs } }));
+    setPainter({ marks, para: { ...editor.getAttributes("paragraph") } });
+  };
   const s = useEditorState({
     editor,
     selector: ({ editor: e }) => {
@@ -54,6 +97,10 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
         indent: (para.indent as number) ?? 0,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
+        color: (ts.color as string | undefined) ?? null,
+        highlight: (e.getAttributes("highlight").color as string | undefined) ?? (e.isActive("highlight") ? "#ffff00" : null),
+        link: e.isActive("link"),
+        list: (para.list as string | null) ?? null,
       };
     },
   });
@@ -85,6 +132,15 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
       </button>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.redo())} disabled={!s?.canRedo} title={`Redo (${mod}Y)`} aria-label="Redo">
         <Icon name="redo" />
+      </button>
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => window.print()} title={`Print (${mod}P)`} aria-label="Print">
+        <Icon name="print" />
+      </button>
+      <button className="ss-icon-btn" data-on={spellcheck} onMouseDown={keep} onClick={() => setSpellcheck((v) => !v)} title="Spelling check" aria-label="Spelling check" aria-pressed={spellcheck}>
+        <Icon name="spellcheck" />
+      </button>
+      <button className="ss-icon-btn" data-armed={!!painter} onMouseDown={keep} onClick={togglePainter} title="Paint format" aria-label="Paint format" aria-pressed={!!painter}>
+        <Icon name="format_paint" />
       </button>
 
       <span className="ss-sep" />
@@ -179,6 +235,13 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
       <button className="ss-icon-btn" data-on={s?.strike} onMouseDown={keep} onClick={() => run((c) => c.toggleStrike())} title={`Strikethrough (${mod}Shift+S)`} aria-label="Strikethrough" aria-pressed={!!s?.strike}>
         <Icon name="format_strikethrough" />
       </button>
+      <ColorMenu editor={editor} kind="text" current={s?.color ?? null} />
+      <ColorMenu editor={editor} kind="highlight" current={s?.highlight ?? null} />
+
+      <span className="ss-sep" />
+
+      <LinkPopover editor={editor} active={!!s?.link} disabled={off} />
+      <ImageMenu onUpload={onInsertImages} onUrl={onInsertImageUrl} disabled={off} />
 
       <span className="ss-sep" />
 
@@ -211,6 +274,16 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
           Indent first line
         </MenuItem>
       </Menu>
+
+      <button className="ss-icon-btn" data-on={s?.list === "check"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("check"))} title={`Checklist (${mod}Shift+9)`} aria-label="Checklist" aria-pressed={s?.list === "check"}>
+        <Icon name="checklist" />
+      </button>
+      <button className="ss-icon-btn" data-on={s?.list === "bullet"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("bullet"))} title={`Bulleted list (${mod}Shift+8)`} aria-label="Bulleted list" aria-pressed={s?.list === "bullet"}>
+        <Icon name="format_list_bulleted" />
+      </button>
+      <button className="ss-icon-btn" data-on={s?.list === "ordered"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("ordered"))} title={`Numbered list (${mod}Shift+7)`} aria-label="Numbered list" aria-pressed={s?.list === "ordered"}>
+        <Icon name="format_list_numbered" />
+      </button>
 
       <span className="ss-sep" />
 

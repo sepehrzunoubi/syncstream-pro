@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import type { DripAction, StreamEvent } from "./drip-engine";
-import type { RichFormat } from "./rich-text";
+import type { DocListState, RichFormat } from "./rich-text";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -49,6 +49,8 @@ export interface SyncJob {
   inFlight?: { action: number; step: number; text: string };
   /** Bumped on resume so stale queue messages are ignored */
   generation: number;
+  /** List state of the paragraph being typed into (formatted plans only) */
+  docList?: DocListState;
   failures: number;
 
   // Credentials for the Docs API
@@ -74,7 +76,7 @@ export type PublicJob = Omit<SyncJob, "accessToken" | "refreshToken" | "inFlight
 
 export function toPublicJob(job: SyncJob): PublicJob {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { accessToken, refreshToken, inFlight, ...rest } = job;
+  const { accessToken, refreshToken, inFlight, docList, ...rest } = job;
   return rest;
 }
 

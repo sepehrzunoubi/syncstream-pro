@@ -124,8 +124,8 @@ test("uniform requests style typo characters like the text they precede", () => 
   const { text, format } = richFromEditorJSON({ type: "doc", content: [p([t("ab")]), p([t("cd", { type: "bold" })], { styleName: "h1" })] });
   const idx = new FormatIndex(text, format);
   const reqs = idx.uniformStyleRequests(3, 4, 10);
-  assert.equal(reqs.length, 2, "paragraph starts here, so its style is included");
-  const tsr = reqs[1].updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: { bold: boolean; fontSize: { magnitude: number } } };
+  assert.equal(reqs.length, 1, "only character styling; the paragraph is set with the real text");
+  const tsr = reqs[0].updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: { bold: boolean; fontSize: { magnitude: number } } };
   assert.deepEqual(tsr.range, { startIndex: 10, endIndex: 14 });
   assert.equal(tsr.textStyle.bold, true);
   assert.equal(tsr.textStyle.fontSize.magnitude, 20);
@@ -160,3 +160,29 @@ test("richToEditorJSON round-trips through richFromEditorJSON", async () => {
   const plain = richFromEditorJSON(richToEditorJSON("x\ny", null));
   assert.equal(plain.text, "x\ny");
 });
+
+test("colours, highlight, links, lists and images convert and validate", async () => {
+  const { OBJ } = await import("./rich-text");
+  const { text, format } = richFromEditorJSON({ type: "doc", content: [
+    p([t("red", { type: "textStyle", attrs: { color: "rgb(255, 0, 0)" } }), t(" mark", { type: "highlight", attrs: { color: "#ff0" } }), t(" link", { type: "link", attrs: { href: "www.example.com" } })]),
+    p([t("\t\tfirst item")], { list: "bullet", indent: 3 }),
+    p([t("img "), { type: "image", attrs: { src: "https://x.test/i.png", width: 100, height: 50 } }]),
+  ] });
+  assert.equal(text, `red mark link\nfirst item\nimg ${OBJ}`, "leading tabs are dropped from list items");
+  assert.equal(format.paragraphs[1].list, "bullet");
+  assert.equal(format.paragraphs[1].indent, 0);
+  assert.ok(format.runs.some((r) => r.color === "#ff0000"));
+  assert.ok(format.runs.some((r) => r.bg === "#ffff00"));
+  assert.ok(format.runs.some((r) => r.link === "https://www.example.com"));
+  assert.deepEqual(format.images, [{ at: text.length - 1, src: "https://x.test/i.png", w: 75, h: 37.5 }]);
+  const ok = parseFormat(text, format);
+  assert.ok(ok.ok);
+  assert.equal(parseFormat(text, { ...format, images: [] }).ok, false, "placeholder without image");
+  assert.equal(parseFormat(text, { ...format, images: [{ at: 0, src: "https://x.test/i.png", w: 1, h: 1 }] }).ok, false, "image not on a placeholder");
+  assert.equal(parseFormat("\tx", { v: 1, paragraphs: [{ style: "normal", align: "left", indent: 0, firstLine: false, spacing: 115, list: "bullet" }], runs: [{ len: 2 }] }).ok, false);
+  const back = richFromEditorJSON(richToEditorJSONFor(text, format));
+  assert.equal(back.text, text);
+  assert.deepEqual(back.format, format);
+});
+
+import { richToEditorJSON as richToEditorJSONFor } from "./rich-text";

@@ -1,7 +1,10 @@
-import { Extension, type Editor } from "@tiptap/core";
+import { Extension, InputRule, type Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Paragraph from "@tiptap/extension-paragraph";
-import { TextStyle } from "@tiptap/extension-text-style";
+import { TextStyle, Color } from "@tiptap/extension-text-style";
+import Highlight from "@tiptap/extension-highlight";
+import Image from "@tiptap/extension-image";
+import { Pagination } from "./pagination";
 import TextAlign from "@tiptap/extension-text-align";
 import {
   cssFontToFamily,
@@ -13,6 +16,7 @@ import {
   MAX_INDENT,
   NAMED_STYLES,
   roundSize,
+  type ListType,
   type NamedStyle,
 } from "@/lib/rich-text";
 
@@ -27,6 +31,7 @@ declare module "@tiptap/core" {
       setFirstLine: (on: boolean) => ReturnType;
       setLineSpacing: (spacing: number) => ReturnType;
       clearFormatting: () => ReturnType;
+      toggleList: (type: ListType) => ReturnType;
     };
   }
 }
@@ -65,6 +70,14 @@ const DocParagraph = Paragraph.extend({
         default: false,
         parseHTML: (el: HTMLElement) => el.hasAttribute("data-first-line") || (cssLengthToPt(el.style.textIndent) ?? 0) > 1,
         renderHTML: (a: { firstLine?: boolean }) => (a.firstLine ? { "data-first-line": "", style: `text-indent: ${INDENT_PT / 72}in` } : {}),
+      },
+      list: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = el.getAttribute("data-list");
+          return v === "bullet" || v === "ordered" || v === "check" ? v : null;
+        },
+        renderHTML: (a: { list?: string | null }) => (a.list ? { "data-list": a.list } : {}),
       },
       lineSpacing: {
         default: 115,
@@ -161,21 +174,75 @@ const DocFormat = Extension.create({
           .updateAttributes("paragraph", { styleName: style })
           .run();
       },
-      indent: () => updateParagraphs((a) => ({ indent: Math.min(MAX_INDENT, ((a.indent as number) ?? 0) + 1) })),
-      outdent: () => updateParagraphs((a) => ({ indent: Math.max(0, ((a.indent as number) ?? 0) - 1) })),
-      setFirstLine: (on) => updateParagraphs(() => ({ firstLine: on })),
+      indent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.min(MAX_INDENT, ((a.indent as number) ?? 0) + 1) })),
+      outdent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.max(0, ((a.indent as number) ?? 0) - 1) })),
+      setFirstLine: (on) => updateParagraphs((a) => (a.list ? {} : { firstLine: on })),
+      toggleList: (type) => ({ tr, state, dispatch }) => {
+        const { from, to } = state.selection;
+        const paras: { pos: number; attrs: Record<string, unknown> }[] = [];
+        state.doc.nodesBetween(from, to, (node, pos) => {
+          if (node.type.name === "paragraph") paras.push({ pos, attrs: node.attrs });
+        });
+        const allOn = paras.length > 0 && paras.every((p) => p.attrs.list === type);
+        for (const p of paras) {
+          tr.setNodeMarkup(p.pos, undefined, allOn ? { ...p.attrs, list: null } : { ...p.attrs, list: type, indent: 0, firstLine: false });
+        }
+        if (dispatch) dispatch(tr);
+        return true;
+      },
       setLineSpacing: (spacing) => updateParagraphs(() => ({ lineSpacing: spacing })),
       clearFormatting: () => ({ chain }) =>
         chain()
           .unsetAllMarks()
-          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null })))
+          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, list: null })))
           .run(),
     };
   },
+  addInputRules() {
+    const listRule = (find: RegExp, type: ListType) =>
+      new InputRule({
+        find,
+        handler: ({ state, range }) => {
+          const $from = state.doc.resolve(range.from);
+          const para = $from.parent;
+          if (para.type.name !== "paragraph" || para.attrs.list) return null;
+          state.tr.delete(range.from, range.to);
+          state.tr.setNodeMarkup($from.before(), undefined, { ...para.attrs, list: type, indent: 0, firstLine: false });
+        },
+      });
+    // Like Docs' autocorrect: "* " or "- " starts a bulleted list, "1. " a numbered one, "[] " a checklist
+    return [listRule(/^\s*[-*]\s$/, "bullet"), listRule(/^\s*1[.)]\s$/, "ordered"), listRule(/^\s*\[\s?\]\s$/, "check")];
+  },
   addKeyboardShortcuts() {
+    const inEmptyListItem = (editor: Editor) => {
+      const { selection } = editor.state;
+      const parent = selection.$from.parent;
+      return selection.empty && parent.type.name === "paragraph" && parent.attrs.list && parent.content.size === 0;
+    };
     return {
+      Enter: ({ editor }) => {
+        // Enter on an empty list item ends the list, as in Docs
+        if (inEmptyListItem(editor)) return editor.commands.updateAttributes("paragraph", { list: null });
+        return false;
+      },
+      Backspace: ({ editor }) => {
+        const { selection } = editor.state;
+        const parent = selection.$from.parent;
+        if (selection.empty && selection.$from.parentOffset === 0 && parent.attrs.list) {
+          return editor.commands.updateAttributes("paragraph", { list: null });
+        }
+        return false;
+      },
+      "Mod-Shift-7": ({ editor }) => editor.commands.toggleList("ordered"),
+      "Mod-Shift-8": ({ editor }) => editor.commands.toggleList("bullet"),
+      "Mod-Shift-9": ({ editor }) => editor.commands.toggleList("check"),
+      "Mod-k": () => {
+        window.dispatchEvent(new CustomEvent("ss-open-link"));
+        return true;
+      },
       Tab: ({ editor }) => {
         const { selection } = editor.state;
+        if (selection.$from.parent.attrs.list && selection.$from.parentOffset === 0) return true; // no nested lists
         const paragraphs = paragraphsInSelection(editor, selection.from, selection.to);
         if (paragraphs.length > 1) return editor.commands.indent();
         const atStart = selection.empty && selection.$from.parentOffset === 0;
@@ -203,8 +270,8 @@ const DocFormat = Extension.create({
 });
 
 /**
- * Lists are not supported in the Docs output, so pasted lists become plain
- * paragraphs that keep their bullet or number as text.
+ * Pasted HTML lists become list paragraphs (Docs stores lists as a property
+ * of each paragraph). Nested lists are flattened to one level.
  */
 export function flattenPastedLists(html: string): string {
   if (typeof DOMParser === "undefined" || !/<(ol|ul)\b/i.test(html)) return html;
@@ -212,20 +279,53 @@ export function flattenPastedLists(html: string): string {
   let list = doc.querySelector("ol, ul");
   let guard = 0;
   while (list && guard++ < 500) {
-    let n = parseInt(list.getAttribute("start") ?? "1", 10) || 1;
-    const ordered = list.tagName === "OL";
+    const type = list.tagName === "OL" ? "ordered" : "bullet";
     for (const li of Array.from(list.children).filter((c) => c.tagName === "LI")) {
+      // Keep nested lists after their item; they are handled in a later pass
+      const nested = Array.from(li.querySelectorAll(":scope > ol, :scope > ul"));
+      nested.forEach((n) => n.remove());
       const p = doc.createElement("p");
       const style = li.getAttribute("style");
       if (style) p.setAttribute("style", style);
-      p.innerHTML = `${ordered ? `${n++}. ` : "• "}${li.innerHTML}`;
+      p.setAttribute("data-list", li.getAttribute("role") === "checkbox" || li.querySelector("input[type=checkbox]") ? "check" : type);
+      p.innerHTML = li.innerHTML.replace(/^\s*<p[^>]*>|<\/p>\s*$/gi, "");
       list.parentNode?.insertBefore(p, list);
+      for (const n of nested) list.parentNode?.insertBefore(n, list);
     }
     list.remove();
     list = doc.querySelector("ol, ul");
   }
   return doc.body.innerHTML;
 }
+
+/** Inline, resizable images, like Docs' in-line images */
+const DocImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      width: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = parseFloat(el.getAttribute("width") ?? el.style.width ?? "");
+          return Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+        },
+        renderHTML: (a: { width?: number | null }) => (a.width ? { width: a.width } : {}),
+      },
+      height: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const v = parseFloat(el.getAttribute("height") ?? el.style.height ?? "");
+          return Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+        },
+        renderHTML: (a: { height?: number | null }) => (a.height ? { height: a.height } : {}),
+      },
+    };
+  },
+}).configure({
+  inline: true,
+  allowBase64: false,
+  resize: { enabled: true, directions: ["top-left", "top-right", "bottom-left", "bottom-right"], minWidth: 32, minHeight: 32, alwaysPreserveAspectRatio: true },
+});
 
 export const editorExtensions = [
   StarterKit.configure({
@@ -239,11 +339,15 @@ export const editorExtensions = [
     listItem: false,
     listKeymap: false,
     horizontalRule: false,
-    link: false,
+    link: { openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: "https", HTMLAttributes: { rel: "noopener noreferrer", target: null } },
   }),
   DocParagraph,
   TextStyle,
   FontAttributes,
+  Color,
+  Highlight.configure({ multicolor: true }),
+  DocImage,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
+  Pagination,
 ];

@@ -32,13 +32,28 @@ class FakeDoc implements DocsApi {
       wordCount: trimmed ? trimmed.split(/\s+/).length : 0,
     };
   }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async insert(token: string, _doc: string, text: string, index: number, _extra?: object[]) {
+  /** Every non-content request the runner sent, in order */
+  styling: Record<string, unknown>[] = [];
+  /** Hook to observe the text after each batch */
+  onBatch?: (text: string) => void;
+  failNextBatch?: Error;
+
+  async batch(token: string, _doc: string, requests: object[]) {
     if (token === "expired") { const e = new Error("unauthorized") as Error & { code: number }; e.code = 401; throw e; }
+    if (this.failNextBatch) { const e = this.failNextBatch; this.failNextBatch = undefined; throw e; }
     this.calls.insert++;
     if (this.failNextInsertBeforeWrite) { this.failNextInsertBeforeWrite = false; throw new Error("network down"); }
-    assert.equal(index, this.text.length + 1, "runner must append at the end");
-    this.text += text;
+    let first = true;
+    for (const r of requests as Record<string, { location?: { index: number }; text?: string; uri?: string }>[]) {
+      const ins = r.insertText ?? r.insertInlineImage;
+      if (!ins) { this.styling.push(r); continue; }
+      const index = ins.location!.index;
+      if (first) assert.equal(index, this.text.length + 1, "runner must append at the end");
+      first = false;
+      const piece = r.insertText ? ins.text! : "\uFFFC";
+      this.text = this.text.slice(0, index - 1) + piece + this.text.slice(index - 1);
+    }
+    this.onBatch?.(this.text);
     if (this.failNextInsertAfterWrite) { this.failNextInsertAfterWrite = false; throw new Error("socket hang up"); }
   }
   async deleteRange(_t: string, _d: string, start: number, end: number) {
@@ -180,7 +195,7 @@ test("a failure before the write is retried and then succeeds", async () => {
 
 test("repeated failures end the job with an error", async () => {
   const h = await makeHarness("x", { actions: [{ kind: "insert", text: "x", delayMs: 0, activity: "Typing…" }] });
-  h.doc.insert = async () => { throw new Error("quota exceeded"); };
+  h.doc.batch = async () => { throw new Error("quota exceeded"); };
   let last = await runJobWindow(h.jobId, 0, h.deps);
   while (last.outcome === "retry") {
     const msg = h.queue.shift()!;
@@ -202,8 +217,7 @@ test("typos type the wrong text, hold, delete it and type the right text", async
   ];
   const h = await makeHarness("I think so.", { actions });
   const seen: string[] = [];
-  const origInsert = h.doc.insert.bind(h.doc);
-  h.doc.insert = async (...args) => { await origInsert(...args); seen.push(h.doc.text); };
+  h.doc.onBatch = (text) => seen.push(text);
   await runJobWindow(h.jobId, 0, h.deps);
   await drain(h);
   assert.equal(h.doc.text, "I think so.");
@@ -322,51 +336,131 @@ test("a cancel intent waiting when a delivery arrives cancels before any typing"
   assert.deepEqual(await h.store.getActiveJobIds(), []);
 });
 
-test("formatted plans send styling in the same call as each insert, at the right indices", async () => {
+type Req = Record<string, { range: { startIndex: number; endIndex: number }; textStyle?: Record<string, unknown>; paragraphStyle?: Record<string, unknown>; bulletPreset?: string }>;
+
+async function formattedHarness(content: Record<string, unknown>[], actions: DripAction[]) {
   const { richFromEditorJSON } = await import("./rich-text");
-  const { text, format } = richFromEditorJSON({
-    type: "doc",
-    content: [
-      { type: "paragraph", attrs: { styleName: "h1" }, content: [{ type: "text", text: "Big" }] },
-      { type: "paragraph", attrs: { firstLine: true }, content: [{ type: "text", text: "said ", marks: [{ type: "italic" }] }, { type: "text", text: "hi" }] },
-    ],
-  });
-  assert.equal(text, "Big\nsaid hi");
-  const actions: DripAction[] = [
-    { kind: "insert", text: "Big\n", delayMs: 0, activity: "Typing…" },
-    { kind: "typo", text: "said ", typoChars: "siad", delayMs: 500, holdMs: 500, activity: "Correcting a typo…" },
-    { kind: "insert", text: "hi", delayMs: 500, activity: "Typing…" },
-  ];
+  const { text, format } = richFromEditorJSON({ type: "doc", content });
   const h = await makeHarness(text, { actions });
   const plan = (await h.store.getPlan(h.jobId))!;
   await h.store.setPlan({ ...plan, format });
-  const calls: { text: string; index: number; extra: Record<string, { range: { startIndex: number; endIndex: number }; textStyle?: Record<string, unknown>; paragraphStyle?: Record<string, unknown> }>[] }[] = [];
-  const orig = h.doc.insert.bind(h.doc);
-  h.doc.insert = async (tok, d, tx, index, extra) => {
-    calls.push({ text: tx, index, extra: (extra ?? []) as typeof calls[number]["extra"] });
-    return orig(tok, d, tx, index);
+  const batches: { text: string; reqs: Req[] }[] = [];
+  const origBatch = h.doc.batch.bind(h.doc);
+  h.doc.batch = async (tok, d, requests) => {
+    const n = h.doc.styling.length;
+    await origBatch(tok, d, requests);
+    const inserted = (requests as Record<string, { text?: string }>[])
+      .map((r) => (r.insertText ? r.insertText.text : r.insertInlineImage ? "\uFFFC" : ""))
+      .join("");
+    batches.push({ text: inserted, reqs: h.doc.styling.slice(n) as Req[] });
   };
   await runJobWindow(h.jobId, 0, h.deps);
   await drain(h);
-  assert.equal(h.doc.text, text);
-  assert.deepEqual(calls.map((c) => c.text), ["Big\n", "siad", "said ", "hi"]);
+  return { h, text, batches };
+}
 
-  // "Big\n" at index 1: H1 paragraph + 20pt text
-  const [c0, c1, c2, c3] = calls;
-  assert.equal(c0.index, 1);
-  assert.equal(c0.extra[0].updateParagraphStyle.paragraphStyle!.namedStyleType, "HEADING_1");
-  assert.deepEqual(c0.extra[1].updateTextStyle.range, { startIndex: 1, endIndex: 5 });
-  assert.deepEqual((c0.extra[1].updateTextStyle.textStyle!.fontSize as { magnitude: number }).magnitude, 20);
-  // Typo at the start of paragraph 2: paragraph style (first-line indent) + italic text style
-  assert.equal(c1.index, 5);
-  assert.equal((c1.extra[0].updateParagraphStyle.paragraphStyle!.indentFirstLine as { magnitude: number }).magnitude, 36);
-  assert.equal(c1.extra[1].updateTextStyle.textStyle!.italic, true);
-  assert.deepEqual(c1.extra[1].updateTextStyle.range, { startIndex: 5, endIndex: 9 });
-  // Correct text after deleting the typo lands at the same place
-  assert.equal(c2.index, 5);
-  assert.equal(c2.extra[1].updateTextStyle.textStyle!.italic, true);
-  // "hi" continues the paragraph: no paragraph restyle, plain text
-  assert.equal(c3.index, 10);
-  assert.equal(c3.extra.length, 1);
-  assert.equal(c3.extra[0].updateTextStyle.textStyle!.italic, false);
+test("formatted plans send styling in the same batch as each insert, at the right indices", async () => {
+  const { h, text, batches } = await formattedHarness(
+    [
+      { type: "paragraph", attrs: { styleName: "h1" }, content: [{ type: "text", text: "Big" }] },
+      { type: "paragraph", attrs: { firstLine: true }, content: [{ type: "text", text: "said ", marks: [{ type: "italic" }] }, { type: "text", text: "hi" }] },
+    ],
+    [
+      { kind: "insert", text: "Big\n", delayMs: 0, activity: "Typing" },
+      { kind: "typo", text: "said ", typoChars: "siad", delayMs: 500, holdMs: 500, activity: "Fixing a typo" },
+      { kind: "insert", text: "hi", delayMs: 500, activity: "Typing" },
+    ]
+  );
+  assert.equal(h.doc.text, text);
+  assert.deepEqual(batches.map((b) => b.text), ["Big\n", "siad", "said ", "hi"]);
+  const [b0, b1, b2, b3] = batches;
+  assert.equal(b0.reqs[0].updateParagraphStyle.paragraphStyle!.namedStyleType, "HEADING_1");
+  assert.deepEqual(b0.reqs[1].updateTextStyle.range, { startIndex: 1, endIndex: 5 });
+  assert.equal((b0.reqs[1].updateTextStyle.textStyle!.fontSize as { magnitude: number }).magnitude, 20);
+  // The typo's wrong characters only get character styling
+  assert.equal(b1.reqs.length, 1);
+  assert.equal(b1.reqs[0].updateTextStyle.textStyle!.italic, true);
+  assert.deepEqual(b1.reqs[0].updateTextStyle.range, { startIndex: 5, endIndex: 9 });
+  // The correct text sets the paragraph (first-line indent) and italic
+  assert.equal((b2.reqs[0].updateParagraphStyle.paragraphStyle!.indentFirstLine as { magnitude: number }).magnitude, 36);
+  assert.equal(b2.reqs[1].updateTextStyle.textStyle!.italic, true);
+  // "hi" continues the paragraph: plain text, no paragraph request
+  assert.equal(b3.reqs.length, 1);
+  assert.equal(b3.reqs[0].updateTextStyle.textStyle!.italic, false);
+});
+
+test("lists: bullets start once, items join the same list across writes, and plain paragraphs leave it", async () => {
+  const item = (t: string, list: string | null) => ({ type: "paragraph", attrs: { list }, content: [{ type: "text", text: t }] });
+  const { h, text, batches } = await formattedHarness(
+    [item("Intro", null), item("one", "ordered"), item("two", "ordered"), item("three", "ordered"), item("After", null)],
+    [
+      { kind: "insert", text: "Intro\n", delayMs: 0, activity: "Typing" },
+      { kind: "insert", text: "one\ntwo\n", delayMs: 400, activity: "Typing" },
+      { kind: "insert", text: "thr", delayMs: 400, activity: "Typing" },
+      { kind: "insert", text: "ee\n", delayMs: 400, activity: "Typing" },
+      { kind: "insert", text: "After", delayMs: 400, activity: "Typing" },
+    ]
+  );
+  assert.equal(h.doc.text, text);
+  const creates = batches.map((b) => b.reqs.filter((r) => r.createParagraphBullets).map((r) => r.createParagraphBullets));
+  const deletes = batches.map((b) => b.reqs.filter((r) => r.deleteParagraphBullets).length);
+  // Batch 1 (Intro): not a list, nothing to delete (nothing inherited)
+  assert.deepEqual(creates[0], []);
+  assert.equal(deletes[0], 0);
+  // Batch 2 starts the numbered list at "one" (doc index 7) and covers "two" in the same list
+  assert.equal(creates[1].length, 2);
+  assert.deepEqual(creates[1][1].range, { startIndex: 7, endIndex: 15 });
+  assert.equal(creates[1][1].bulletPreset, "NUMBERED_DECIMAL_ALPHA_ROMAN");
+  // Batch 3: "three" was created by a newline typed in "two", which was not a list yet
+  // at that moment, so it re-creates the list from "one" to keep numbering continuous
+  assert.equal(creates[2].length, 1);
+  assert.deepEqual(creates[2][0].range, { startIndex: 7, endIndex: 18 });
+  // Batch 4 finishes "three"; its newline is typed inside a list item, so the next line inherits the list
+  assert.deepEqual(creates[3], []);
+  // Batch 5: "After" leaves the inherited list
+  assert.equal(deletes[4], 1);
+  assert.deepEqual(creates[4], []);
+  const job = (await h.store.getJob(h.jobId))!;
+  assert.equal(job.docList ?? null, null);
+});
+
+test("images are inserted inline in the same batch, and links get Docs' link colour", async () => {
+  const { h, batches } = await formattedHarness(
+    [{ type: "paragraph", content: [
+      { type: "text", text: "See " },
+      { type: "image", attrs: { src: "https://example.com/a.png", width: 200, height: 100 } },
+      { type: "text", text: " site", marks: [{ type: "link", attrs: { href: "example.com" } }] },
+    ] }],
+    [
+      { kind: "insert", text: "See \uFFFC", delayMs: 0, activity: "Typing" },
+      { kind: "insert", text: " site", delayMs: 400, activity: "Typing" },
+    ]
+  );
+  assert.equal(h.doc.text, "See \uFFFC site");
+  const linkReq = batches[1].reqs.find((r) => r.updateTextStyle && (r.updateTextStyle.textStyle as { link?: unknown }).link)!;
+  const ts = linkReq.updateTextStyle.textStyle as { link: { url: string }; underline: boolean; foregroundColor: { color: { rgbColor: { blue: number } } } };
+  assert.equal(ts.link.url, "https://example.com");
+  assert.equal(ts.underline, true);
+  assert.ok(ts.foregroundColor.color.rgbColor.blue > 0.7);
+});
+
+test("image batches carry insertInlineImage with the image address and size", async () => {
+  const { richFromEditorJSON } = await import("./rich-text");
+  const { text, format } = richFromEditorJSON({ type: "doc", content: [{ type: "paragraph", content: [
+    { type: "text", text: "A" }, { type: "image", attrs: { src: "https://example.com/b.jpg", width: 400, height: 300 } }, { type: "text", text: "B" },
+  ] }] });
+  const h = await makeHarness(text, { actions: [{ kind: "insert", text, delayMs: 0, activity: "Typing" }] });
+  const plan = (await h.store.getPlan(h.jobId))!;
+  await h.store.setPlan({ ...plan, format });
+  let seen: object[] = [];
+  const orig = h.doc.batch.bind(h.doc);
+  h.doc.batch = async (tok, d, requests) => { seen = requests; return orig(tok, d, requests); };
+  await runJobWindow(h.jobId, 0, h.deps);
+  const kinds = seen.map((r) => Object.keys(r)[0]);
+  assert.deepEqual(kinds.slice(0, 3), ["insertText", "insertInlineImage", "insertText"]);
+  const img = (seen[1] as { insertInlineImage: { location: { index: number }; uri: string; objectSize: { width: { magnitude: number } } } }).insertInlineImage;
+  assert.equal(img.location.index, 2);
+  assert.equal(img.uri, "https://example.com/b.jpg");
+  assert.equal(img.objectSize.width.magnitude, 300);
+  assert.equal(h.doc.text, "A\uFFFCB");
 });

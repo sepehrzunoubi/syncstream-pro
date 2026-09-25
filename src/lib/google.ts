@@ -118,9 +118,11 @@ export async function getDocSnapshot(
   for (const element of content) {
     for (const el of element.paragraph?.elements ?? []) {
       if (el.textRun?.content) text += el.textRun.content;
+      // An inline image occupies one index, like the placeholder in our source text
+      else if (el.inlineObjectElement) text += "\uFFFC";
     }
   }
-  const trimmed = text.trim();
+  const trimmed = text.replace(/\uFFFC/g, " ").trim();
   const wordCount = trimmed ? trimmed.split(/\s+/).length : 0;
   // Google Docs always ends the body with a trailing newline that is not user text.
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
@@ -150,6 +152,15 @@ export async function deleteRange(
       },
     })
   );
+}
+
+/** Apply Docs requests in one atomic batchUpdate */
+export async function batchUpdate(accessToken: string, documentId: string, requests: object[]) {
+  if (requests.length === 0) return;
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const docs = google.docs({ version: "v1", auth: client });
+  await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests } }));
 }
 
 export async function insertAtIndex(
