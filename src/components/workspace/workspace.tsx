@@ -19,7 +19,7 @@ import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat } from "@/lib/rich-text";
 import { loadDocument } from "./doc-sync";
-import { additions, directEdits, hasPending, rebase, PENDING_MARK } from "@/lib/doc-model";
+import { additions, directEdits, hasPending, rebase, signature, PENDING_MARK } from "@/lib/doc-model";
 import type { PublicJob } from "@/lib/sync-store";
 import { countWords, formatClock } from "@/lib/format";
 
@@ -311,6 +311,28 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   docBusyRef.current = docBusy;
 
   /**
+   * Read the document back after a save. If Google applied the edit
+   * differently from what the editor expected, reload it (keeping the new
+   * text) so later edits land in the right places.
+   */
+  const verifyAgainstGoogle = useCallback(async (docId: string) => {
+    try {
+      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
+      if (!res.ok || !editor) return;
+      const data = (await res.json()) as { nodes?: EditorNode[]; revisionId?: string };
+      if (!Array.isArray(data.nodes) || docContentRef.current?.docId !== docId) return;
+      if (data.revisionId) revisionRef.current = data.revisionId;
+      const fresh: EditorNode = { type: "doc", content: data.nodes };
+      if (signature(fresh) === signature(baseRef.current)) return;
+      console.warn("Google Docs applied an edit differently than expected; reloading the document");
+      baseRef.current = fresh;
+      loadDocument(editor, rebase(fresh, editor.getJSON() as EditorNode), true);
+      setDocJSON(editor.getJSON());
+      setSnack("Google Docs applied that change a little differently, so SyncStream reloaded the document. Your new text is kept.");
+    } catch { /* the next save or reload catches up */ }
+  }, [editor]);
+
+  /**
    * Save direct edits (formatting, deleting) to the Google Doc. Additions
    * are left for a sync. Resolves false when the save failed.
    */
@@ -329,6 +351,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         baseRef.current = saved;
         if (data.revisionId) revisionRef.current = data.revisionId;
         setSaveState("saved");
+        await verifyAgainstGoogle(content.docId);
         return true;
       }
       setSaveState("error");
@@ -342,7 +365,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     } finally {
       savingRef.current = null;
     }
-  }, [editor]);
+  }, [editor, verifyAgainstGoogle]);
 
   /**
    * Show a Google Doc. `keep` is what the editor shows now: its additions are

@@ -117,7 +117,8 @@ test("text that comes back without glowing (undoing a deletion) is put back dire
 test("line breaks and empty lines are saved directly, not synced", () => {
   const withBreak: EditorNode = doc(p("Why?", { list: "ordered" }), { type: "paragraph", attrs: {}, content: [{ type: "text", text: "Yes." }, { type: "hardBreak", marks: [{ type: PENDING_MARK }] }] }, p("End"));
   assert.deepEqual(additions(BASE, withBreak).segments, []);
-  assert.deepEqual(directEdits(BASE, withBreak).requests[0], { insertText: { location: { index: 10 }, text: "\u000b" } });
+  // Docs drops soft breaks sent through the API, so they go in as a new paragraph
+  assert.deepEqual(directEdits(BASE, withBreak).requests[0], { insertText: { location: { index: 10 }, text: "\n" } });
   const emptyLine = doc(p("Why?", { list: "ordered" }), p("Yes."), p(""), p("End"));
   assert.deepEqual(additions(BASE, emptyLine).segments, []);
   assert.deepEqual(directEdits(BASE, emptyLine).requests[0], { insertText: { location: { index: 10 }, text: "\n" } });

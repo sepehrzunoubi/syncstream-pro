@@ -101,6 +101,13 @@ const listLabelKey = new PluginKey<DecorationSet>("ssListLabels");
 
 export const DocSync = Extension.create({
   name: "docSync",
+  priority: 1000,
+
+  addKeyboardShortcuts() {
+    // Google Docs doesn't accept soft line breaks through its API, so Shift+Enter starts a new line like Enter
+    const newLine = () => this.editor.commands.splitBlock();
+    return { "Shift-Enter": newLine, "Mod-Enter": newLine };
+  },
 
   addCommands() {
     return {

@@ -119,6 +119,14 @@ export function untokenize(tokens: Tok[]): EditorNode {
   return { type: "doc", content };
 }
 
+/** The document's characters and structure, ignoring formatting: equal when two copies read the same */
+export function signature(doc: EditorNode | null | undefined): string {
+  return tokenize(doc)
+    .filter((t) => !isPending(t))
+    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "nl" ? "\n" : `\u0000${sizeOf(t)}\u0000`))
+    .join("");
+}
+
 /** True when the editor holds any addition */
 export function hasPending(doc: EditorNode | null | undefined): boolean {
   return tokenize(doc).some(isPending);
@@ -400,7 +408,8 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
         }
         continue;
       }
-      const ch = t.k === "c" ? t.c : t.k === "br" ? "\u000b" : "\n";
+      // Docs drops soft line breaks sent through the API, so a line break becomes a new paragraph
+      const ch = t.k === "c" ? t.c : "\n";
       if (t.k === "c") {
         const para = paragraphFromAttrs(nextNl(target, r.ts + q)?.attrs);
         styled.push({ from: pos + text.length, to: pos + text.length + 1, style: resolveTextStyle(styleFromMarks(withoutPending(t.marks)), para) });
