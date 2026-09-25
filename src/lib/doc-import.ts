@@ -130,7 +130,14 @@ function textMarks(ts: TextStyle, style: NamedStyle): NonNullable<EditorNode["ma
 }
 
 function textNode(text: string, marks: NonNullable<EditorNode["marks"]>): EditorNode {
-  return marks.length ? { type: "text", text, marks } : { type: "text", text };
+  // The editor rejects empty text nodes, so a nameless chip shows as a space
+  const t = text || " ";
+  return marks.length ? { type: "text", text: t, marks } : { type: "text", text: t };
+}
+
+/** Plain text of a paragraph, for showing one that couldn't be read properly */
+function plainText(p: docs_v1.Schema$Paragraph | undefined): string {
+  return (p?.elements ?? []).map((e) => e.textRun?.content ?? "").join("").replace(/[\n\u000b]/g, " ").trim();
 }
 
 /** Read a documents.get response into editor paragraphs. */
@@ -234,6 +241,16 @@ export function importDoc(doc: Doc): ImportedDoc {
   const content = doc.body?.content ?? [];
   content.forEach((el, i) => {
     const size = (el.endIndex ?? 0) - (el.startIndex ?? 0);
+    try {
+      addElement(el, i, size);
+    } catch (err) {
+      // One element Docs describes in a way we don't expect shouldn't hide the whole document
+      console.error("Couldn't read a document element:", err);
+      const text = plainText(el.paragraph ?? undefined);
+      nodes.push(lock({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] }, size));
+    }
+  });
+  function addElement(el: Element, i: number, size: number) {
     if (el.paragraph) {
       const node = paragraphNode(el.paragraph);
       nodes.push(node.attrs?.locked ? lock(node, size) : node);
@@ -247,7 +264,7 @@ export function importDoc(doc: Doc): ImportedDoc {
     } else if (el.sectionBreak && i > 0) {
       nodes.push(lock({ type: "paragraph", attrs: { kind: "section" }, content: [] }, size));
     }
-  });
+  }
 
   if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
   return { revisionId: doc.revisionId ?? "", empty: !hasContent, nodes };

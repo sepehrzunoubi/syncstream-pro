@@ -124,6 +124,15 @@ interface DocContent {
   docId: string;
   status: "loading" | "ready" | "failed";
   revisionId?: string;
+  /** Why it couldn't be opened */
+  error?: string;
+}
+
+/** Drop what the editor would reject (empty text nodes), so one odd paragraph can't block the page */
+function sanitize(node: EditorNode): EditorNode | null {
+  if (node.type === "text") return node.text ? node : null;
+  if (!node.content) return node;
+  return { ...node, content: node.content.map(sanitize).filter((n): n is EditorNode => n !== null) };
 }
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
@@ -296,6 +305,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   // ── The selected Google Doc, editable ──
   const docContentRef = useRef<DocContent | null>(null);
+  const retried = useRef(new Set<string>());
   docContentRef.current = docContent;
   const docBusyRef = useRef(false);
   docBusyRef.current = docBusy;
@@ -348,6 +358,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       writeAdditions(prev.docId, hasPending(json) ? { revisionId: revisionRef.current, doc: json } : null);
     }
     const req = ++contentReq.current;
+    // Text typed before a document was open becomes additions to it
+    if (!keep && prev?.status !== "ready" && !readAdditions(docId)) {
+      const json = editor.getJSON() as EditorNode;
+      if (hasPending(json)) legacyTextRef.current = additionsOnly(json);
+    }
     if (!keep) setDocContent({ docId, status: "loading" });
     try {
       const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
@@ -366,9 +381,15 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         else if (legacyTextRef.current) target = { type: "doc", content: [...(fresh.content ?? []), ...(legacyTextRef.current.content ?? [])] };
         legacyTextRef.current = null;
       }
+      try {
+        loadDocument(editor, target, true);
+      } catch (err) {
+        console.error("The editor couldn't show this document as is:", err);
+        const clean = sanitize(target) ?? fresh;
+        try { loadDocument(editor, clean, true); } catch { loadDocument(editor, sanitize(fresh) ?? fresh, true); }
+      }
       baseRef.current = fresh;
       revisionRef.current = revision;
-      loadDocument(editor, target, !data.empty);
       setDocJSON(editor.getJSON());
       contentStale.current = false;
       setSaveState("idle");
@@ -377,12 +398,19 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     } catch (err) {
       if (req !== contentReq.current) return;
       if (keep) return; // keep editing what is shown
+      console.error("Couldn't open the document:", err);
       baseRef.current = null;
-      loadDocument(editor, additionsOnly(editor.getJSON() as EditorNode), false);
+      // Show only the new text, still glowing; a sync would add it at the end of the document
+      loadDocument(editor, legacyTextRef.current ?? additionsOnly(editor.getJSON() as EditorNode), true);
       setDocJSON(editor.getJSON());
-      setDocContent({ docId, status: "failed" });
-      setSnack(`${err instanceof Error ? err.message : "Couldn't open this document"}. Your text will be added at the end of it.`);
+      setDocContent({ docId, status: "failed", error: err instanceof Error ? err.message : "Couldn't open this document" });
+      // One automatic retry: most failures are a slow or expired Google response
+      if (!retried.current.has(docId)) {
+        retried.current.add(docId);
+        setTimeout(() => { if (docContentRef.current?.docId === docId && docContentRef.current.status === "failed") loadDocContent(docId); }, 2000);
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, saveNow]);
 
   // Open the selected document (again after a sync into it finishes)
@@ -697,6 +725,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       ? "Pick the Google Doc to type into"
       : docContent?.status === "loading"
         ? "Opening the document"
+        : docContent?.status === "failed"
+          ? `Couldn't open this document (${docContent.error}). Your new text will be added at its end. Try File > Refresh.`
         : docBusy
           ? "A sync is typing into this document. You can edit it when it finishes."
           : saveState === "saving"
