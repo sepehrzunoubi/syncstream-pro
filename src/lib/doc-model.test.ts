@@ -123,3 +123,14 @@ test("line breaks and empty lines are saved directly, not synced", () => {
   assert.deepEqual(additions(BASE, emptyLine).segments, []);
   assert.deepEqual(directEdits(BASE, emptyLine).requests[0], { insertText: { location: { index: 10 }, text: "\n" } });
 });
+
+test("reopening shows Google's copy: only additions come back, not edits Google never got", () => {
+  const google = doc(p("Why?", { list: "ordered" }), p("Yes.End"));
+  // Last time the editor had a line break Google dropped, a split it never got, and one addition
+  const shown = doc(
+    p(["Why?", add(" Now")], { list: "ordered" }),
+    { type: "paragraph", attrs: {}, content: [{ type: "text", text: "Ye" }, { type: "hardBreak" }, { type: "text", text: "s." }] },
+    p("End"),
+  );
+  assert.deepEqual(rebase(google, shown), doc(p(["Why?", add(" Now")], { list: "ordered" }), p("Yes.End")));
+});

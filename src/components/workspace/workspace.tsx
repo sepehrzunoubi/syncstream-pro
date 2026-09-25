@@ -400,7 +400,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       if (keep) target = rebase(fresh, keep);
       else {
         const saved = readAdditions(docId);
-        if (saved) target = saved.revisionId === revision ? saved.doc : rebase(fresh, saved.doc);
+        // Google's copy is the truth: only the glowing additions come back from last time
+        if (saved) target = rebase(fresh, saved.doc);
         else if (legacyTextRef.current) target = { type: "doc", content: [...(fresh.content ?? []), ...(legacyTextRef.current.content ?? [])] };
         legacyTextRef.current = null;
       }
