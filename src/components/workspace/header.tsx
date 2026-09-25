@@ -47,7 +47,7 @@ export function Header(props: HeaderProps) {
       <div className="min-w-0 flex-1 pl-1">
         <div className="flex h-7 items-center gap-1">
           {mode === "draft" ? (
-            <Menu label="Target Google Doc" trigger={
+            <Menu label="Target Google Doc" className="w-[min(480px,calc(100vw-16px))]" trigger={
               <button className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[18px] leading-6 hover:bg-[var(--ss-hover)]">
                 <span className="truncate">{title}</span>
                 <Icon name="arrow_drop_down" className="flex-none text-[var(--ss-text-2)]" />
@@ -56,7 +56,7 @@ export function Header(props: HeaderProps) {
               <MenuLabel>Type into</MenuLabel>
               {docs.length === 0 && <MenuItem disabled>No recent documents</MenuItem>}
               {docs.map((d) => (
-                <MenuItem key={d.id} checkable checked={d.id === selectedDocId} onSelect={() => props.onSelectDoc(d.id)}>
+                <MenuItem key={d.id} checkable checked={d.id === selectedDocId} onSelect={() => props.onSelectDoc(d.id)} shortcut={editedLabel(d.modifiedTime)}>
                   {d.name}
                 </MenuItem>
               ))}
@@ -124,4 +124,12 @@ export function Header(props: HeaderProps) {
       </Menu>
     </header>
   );
+}
+
+function editedLabel(iso: string): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
 }

@@ -196,7 +196,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const createDoc = useCallback(async () => {
     setIsCreatingDoc(true);
     try {
-      const { ok, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "SyncStream draft" });
+      const { ok, status, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "Untitled document" });
+      if (status === 401) throw new Error("Your Google sign-in expired. Choose Reconnect Google account in the account menu.");
       if (!ok) throw new Error(data.error || "Couldn't create the document");
       setDocs((prev) => [{ id: data.id, name: data.name, modifiedTime: new Date().toISOString() }, ...prev]);
       setSelectedDocId(data.id);

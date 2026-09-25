@@ -9,7 +9,7 @@ import {
 import { createJobId, getStore, hasRedis, toPublicJob, type SyncJob, type SyncPlan } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
 import { getDocSnapshot } from "@/lib/google";
-import { applyAuthCookies, resolveUser, unauthorized } from "@/lib/auth";
+import { applyAuthCookies, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
 import { normalizeText, parseFormat } from "@/lib/rich-text";
 
 export const dynamic = "force-dynamic";
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
   // Baseline word count of the target doc (best effort; also proves we can read it)
   let baselineWordCount = 0;
   try {
-    baselineWordCount = (await getDocSnapshot(user.accessToken, documentId)).wordCount;
+    baselineWordCount = (await withGoogleToken(user, (t) => getDocSnapshot(t, documentId))).wordCount;
   } catch (err) {
     const code = (err as { code?: number })?.code;
     if (code === 403 || code === 404) {

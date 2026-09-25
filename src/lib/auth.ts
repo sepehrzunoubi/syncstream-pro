@@ -101,3 +101,32 @@ export function clearAuthCookies(res: NextResponse): void {
 export function unauthorized(): NextResponse {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
+
+function googleStatus(err: unknown): number | undefined {
+  const e = err as { code?: number | string; status?: number; response?: { status?: number } };
+  const code = typeof e?.code === "number" ? e.code : undefined;
+  return code ?? e?.status ?? e?.response?.status;
+}
+
+/**
+ * Call Google with the user's access token, refreshing it once if Google
+ * says it has expired. The refreshed token is recorded on `user` so
+ * applyAuthCookies can hand it back to the browser.
+ */
+export async function withGoogleToken<T>(user: SessionUser, fn: (token: string) => Promise<T>): Promise<T> {
+  try {
+    return await fn(user.accessToken);
+  } catch (err) {
+    if (googleStatus(err) === 401 && user.refreshToken && !user.refreshed) {
+      const r = await refreshAccessToken(user.refreshToken);
+      if (r) {
+        user.accessToken = r.access_token;
+        user.refreshed = r;
+        return await fn(r.access_token);
+      }
+    }
+    throw err;
+  }
+}
+
+export { googleStatus };
