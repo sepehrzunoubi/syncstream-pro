@@ -46,7 +46,7 @@ export function SyncPanel(p: SyncPanelProps) {
   const edits = plan ? plan.actions.filter((a) => a.kind !== "pause").length : 0;
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex flex-col gap-4 px-5 pt-4">
       <h2 className="text-[16px] font-medium leading-6">Sync settings</h2>
 
       {p.scopeError && (
@@ -65,10 +65,10 @@ export function SyncPanel(p: SyncPanelProps) {
         </select>
         <p className="ss-field-help">
           {p.durationMinutes == null
-            ? "Types at about 35 words a minute, with pauses between sentences."
+            ? "About 35 words a minute, with short pauses."
             : p.breaksMode === "auto"
-              ? "Typing speeds up or slows down a little, and breaks fill the rest of the time."
-              : "Typing speeds up or slows down to fit, within realistic limits."}
+              ? "Speed varies a little and breaks fill the rest."
+              : "Typing speeds up or slows down to fit."}
         </p>
       </div>
 
@@ -83,7 +83,7 @@ export function SyncPanel(p: SyncPanelProps) {
           ))}
         </div>
         {p.breaksMode === "custom" ? (
-          <motion.div className="mt-3 flex flex-wrap gap-2" layout>
+          <motion.div className="mt-2 flex flex-wrap gap-1.5" layout>
             <AnimatePresence mode="popLayout" initial={false}>
               {p.customBreaks.map((m, i) => (
                 <motion.button
@@ -100,7 +100,7 @@ export function SyncPanel(p: SyncPanelProps) {
                   aria-label={`Remove ${formatSpan(m)} break`}
                 >
                   {formatSpan(m)}
-                  <X className="h-4 w-4" />
+                  <X className="h-3.5 w-3.5" />
                 </motion.button>
               ))}
             </AnimatePresence>
@@ -115,29 +115,37 @@ export function SyncPanel(p: SyncPanelProps) {
           </motion.div>
         ) : (
           <p className="ss-field-help">
-            {p.breaksMode === "auto" ? "A few longer pauses, based on how long the text is." : "No long pauses. Only the short ones between sentences and paragraphs."}
+            {p.breaksMode === "auto" ? "A few longer pauses, based on how long the text is." : "Only short pauses between sentences."}
           </p>
         )}
       </div>
 
       <div>
-        <label className="ss-field-label" htmlFor="ss-typos">Typos</label>
-        <select id="ss-typos" className="ss-select" disabled={p.disabled} value={typoIdx} onChange={(e) => p.onTypoFrequencyChange(TYPO_OPTIONS[Number(e.target.value)].value)}>
-          {TYPO_OPTIONS.map((o, i) => <option key={o.label} value={i}>{o.label}</option>)}
-        </select>
-        <p className="ss-field-help">Each typo is typed, noticed, deleted and corrected.</p>
-      </div>
-
-      <div>
-        <label className="ss-field-label" htmlFor="ss-start">Start</label>
-        <select id="ss-start" className="ss-select" disabled={p.disabled} value={p.startInMinutes} onChange={(e) => p.onStartInChange(Number(e.target.value))}>
-          {START_OPTIONS.map((m) => <option key={m} value={m}>{m === 0 ? "Right away" : `In ${formatSpan(m)}`}</option>)}
-        </select>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="ss-field-label" htmlFor="ss-typos">Typos</label>
+            <select id="ss-typos" className="ss-select" disabled={p.disabled} value={typoIdx} onChange={(e) => p.onTypoFrequencyChange(TYPO_OPTIONS[Number(e.target.value)].value)}>
+              {TYPO_OPTIONS.map((o, i) => <option key={o.label} value={i}>{o.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="ss-field-label" htmlFor="ss-start">Start</label>
+            <select id="ss-start" className="ss-select" disabled={p.disabled} value={p.startInMinutes} onChange={(e) => p.onStartInChange(Number(e.target.value))}>
+              {START_OPTIONS.map((m) => <option key={m} value={m}>{m === 0 ? "Right away" : `In ${formatSpan(m)}`}</option>)}
+            </select>
+          </div>
+        </div>
         <p className="ss-field-help">
           {p.startInMinutes === 0 ? "Runs on our server, so you can close this tab." : `Starts at ${formatClock(startAt)}, even if this tab is closed.`}
         </p>
       </div>
 
+      {p.startError && (
+        <p role="alert" className="rounded-lg bg-[#fce8e6] p-3 text-[13px] leading-5 text-[#8c1d18]">{p.startError}</p>
+      )}
+
+      {/* Pinned to the bottom of the panel so the plan stays visible on short screens */}
+      <div className="sticky bottom-0 -mx-5 -mt-3 bg-[linear-gradient(to_bottom,transparent,var(--ss-surface)_12px)] px-5 pb-4 pt-3">
       <motion.section layout transition={{ duration: 0.25, ease: [0.2, 0, 0, 1] }} className="rounded-xl bg-[var(--ss-soft)] p-4" aria-live="polite">
         {plan ? (
           <>
@@ -163,13 +171,16 @@ export function SyncPanel(p: SyncPanelProps) {
                 <Shuffle className="h-[18px] w-[18px]" />
               </button>
             </div>
-            <dl className="mt-4 grid grid-cols-[1fr_auto] gap-y-1.5 text-[14px]">
-              <dt className="text-[var(--ss-text-2)]">Edits</dt><dd className="tabular-nums">{edits}</dd>
-              <dt className="text-[var(--ss-text-2)]">Typos</dt><dd className="tabular-nums">{typos}</dd>
-              <dt className="text-[var(--ss-text-2)]">Breaks</dt><dd className="tabular-nums">{plan.breaks.length}</dd>
+            <dl className="mt-3 grid grid-cols-3 gap-2">
+              {([["Edits", edits], ["Typos", typos], ["Breaks", plan.breaks.length]] as const).map(([label, value]) => (
+                <div key={label} className="flex flex-col-reverse">
+                  <dt className="text-[12px] leading-4 text-[var(--ss-text-2)]">{label}</dt>
+                  <dd className="text-[16px] leading-6 tabular-nums">{value}</dd>
+                </div>
+              ))}
             </dl>
-            {plan.breaks.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
+            {plan.breaks.length > 0 && p.breaksMode !== "custom" && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
                 {plan.breaks.map((m, i) => (
                   <span key={i} className="rounded-md bg-white px-2 py-0.5 text-[12px] text-[var(--ss-text-2)]">{formatSpan(m)}</span>
                 ))}
@@ -198,10 +209,7 @@ export function SyncPanel(p: SyncPanelProps) {
           <p className="text-[14px] text-[var(--ss-text-2)]">Type or paste your text on the page to see how long it will take.</p>
         )}
       </motion.section>
-
-      {p.startError && (
-        <p role="alert" className="rounded-lg bg-[#fce8e6] p-3 text-[13px] leading-5 text-[#8c1d18]">{p.startError}</p>
-      )}
+      </div>
     </div>
   );
 }

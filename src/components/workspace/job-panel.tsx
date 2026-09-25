@@ -39,7 +39,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
   if (job.status === "paused" && job.pausedAt) rows.push(["Paused", formatClock(job.pausedAt)]);
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex flex-col gap-5 px-5 pb-5 pt-4">
       <div>
         <h2 className="text-[22px] leading-7">{statusTitle(job)}</h2>
         {isActive(job) && job.status !== "paused" && remaining > 0 && (
@@ -47,7 +47,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
             {job.status === "scheduled" ? `Starts in ${formatWait(remaining)}` : `About ${formatSpan(remaining / 60_000)} left`}
           </p>
         )}
-        <div className="mt-4 flex items-center gap-3">
+        <div className="mt-3 flex items-center gap-3">
           <div className="ss-progress flex-1" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label="Typed">
             <motion.div initial={false} animate={{ width: `${pct}%` }} transition={{ type: "spring", stiffness: 90, damping: 20 }} />
           </div>
@@ -71,7 +71,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
       {job.breaks.length > 0 && (
         <div>
           <h3 className="mb-2 text-[14px] font-medium">Breaks</h3>
-          <ul className="flex flex-col gap-1.5">
+          <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
             {job.breaks.map((m, i) => {
               const done = job.completedBreaks.includes(i);
               return (
