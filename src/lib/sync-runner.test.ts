@@ -32,7 +32,8 @@ class FakeDoc implements DocsApi {
       wordCount: trimmed ? trimmed.split(/\s+/).length : 0,
     };
   }
-  async insert(token: string, _doc: string, text: string, index: number) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async insert(token: string, _doc: string, text: string, index: number, _extra?: object[]) {
     if (token === "expired") { const e = new Error("unauthorized") as Error & { code: number }; e.code = 401; throw e; }
     this.calls.insert++;
     if (this.failNextInsertBeforeWrite) { this.failNextInsertBeforeWrite = false; throw new Error("network down"); }
@@ -319,4 +320,53 @@ test("a cancel intent waiting when a delivery arrives cancels before any typing"
   assert.equal(r.outcome, "cancelled");
   assert.equal(h.doc.text, "");
   assert.deepEqual(await h.store.getActiveJobIds(), []);
+});
+
+test("formatted plans send styling in the same call as each insert, at the right indices", async () => {
+  const { richFromEditorJSON } = await import("./rich-text");
+  const { text, format } = richFromEditorJSON({
+    type: "doc",
+    content: [
+      { type: "paragraph", attrs: { styleName: "h1" }, content: [{ type: "text", text: "Big" }] },
+      { type: "paragraph", attrs: { firstLine: true }, content: [{ type: "text", text: "said ", marks: [{ type: "italic" }] }, { type: "text", text: "hi" }] },
+    ],
+  });
+  assert.equal(text, "Big\nsaid hi");
+  const actions: DripAction[] = [
+    { kind: "insert", text: "Big\n", delayMs: 0, activity: "Typing…" },
+    { kind: "typo", text: "said ", typoChars: "siad", delayMs: 500, holdMs: 500, activity: "Correcting a typo…" },
+    { kind: "insert", text: "hi", delayMs: 500, activity: "Typing…" },
+  ];
+  const h = await makeHarness(text, { actions });
+  const plan = (await h.store.getPlan(h.jobId))!;
+  await h.store.setPlan({ ...plan, format });
+  const calls: { text: string; index: number; extra: Record<string, { range: { startIndex: number; endIndex: number }; textStyle?: Record<string, unknown>; paragraphStyle?: Record<string, unknown> }>[] }[] = [];
+  const orig = h.doc.insert.bind(h.doc);
+  h.doc.insert = async (tok, d, tx, index, extra) => {
+    calls.push({ text: tx, index, extra: (extra ?? []) as typeof calls[number]["extra"] });
+    return orig(tok, d, tx, index);
+  };
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, text);
+  assert.deepEqual(calls.map((c) => c.text), ["Big\n", "siad", "said ", "hi"]);
+
+  // "Big\n" at index 1: H1 paragraph + 20pt text
+  const [c0, c1, c2, c3] = calls;
+  assert.equal(c0.index, 1);
+  assert.equal(c0.extra[0].updateParagraphStyle.paragraphStyle!.namedStyleType, "HEADING_1");
+  assert.deepEqual(c0.extra[1].updateTextStyle.range, { startIndex: 1, endIndex: 5 });
+  assert.deepEqual((c0.extra[1].updateTextStyle.textStyle!.fontSize as { magnitude: number }).magnitude, 20);
+  // Typo at the start of paragraph 2: paragraph style (first-line indent) + italic text style
+  assert.equal(c1.index, 5);
+  assert.equal((c1.extra[0].updateParagraphStyle.paragraphStyle!.indentFirstLine as { magnitude: number }).magnitude, 36);
+  assert.equal(c1.extra[1].updateTextStyle.textStyle!.italic, true);
+  assert.deepEqual(c1.extra[1].updateTextStyle.range, { startIndex: 5, endIndex: 9 });
+  // Correct text after deleting the typo lands at the same place
+  assert.equal(c2.index, 5);
+  assert.equal(c2.extra[1].updateTextStyle.textStyle!.italic, true);
+  // "hi" continues the paragraph: no paragraph restyle, plain text
+  assert.equal(c3.index, 10);
+  assert.equal(c3.extra.length, 1);
+  assert.equal(c3.extra[0].updateTextStyle.textStyle!.italic, false);
 });

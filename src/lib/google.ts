@@ -156,7 +156,9 @@ export async function insertAtIndex(
   accessToken: string,
   documentId: string,
   text: string,
-  index: number
+  index: number,
+  /** Formatting requests applied atomically with the insert */
+  extraRequests: object[] = []
 ) {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
@@ -165,14 +167,7 @@ export async function insertAtIndex(
     docs.documents.batchUpdate({
       documentId,
       requestBody: {
-        requests: [
-          {
-            insertText: {
-              location: { index },
-              text,
-            },
-          },
-        ],
+        requests: [{ insertText: { location: { index }, text } }, ...extraRequests],
       },
     })
   );

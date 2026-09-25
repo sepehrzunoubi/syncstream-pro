@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import type { DripAction, StreamEvent } from "./drip-engine";
+import type { RichFormat } from "./rich-text";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -16,6 +17,8 @@ export interface SyncPlan {
   breaks: number[];
   seed: number;
   createdAt: number;
+  /** Character and paragraph formatting of the source text (absent on older plans) */
+  format?: RichFormat;
 }
 
 /** Small mutable state, rewritten as the job progresses. */

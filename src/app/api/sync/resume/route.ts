@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     return {
       ...fresh,
       status: "running",
-      activity: "Resuming…",
+      activity: "Resuming",
       pausedAt: undefined,
       nextActionAt: undefined,
       generation: fresh.generation + 1,

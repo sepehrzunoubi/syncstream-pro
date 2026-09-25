@@ -78,6 +78,6 @@ export async function mutateJob(
   await store.setControl(jobId, intent);
   const t = Date.now();
   return intent === "pause"
-    ? { ...current, status: "paused", activity: "Pausing…", pausedAt: t, lastUpdate: t }
-    : { ...current, status: "cancelled", activity: "Cancelling…", finishedAt: t, lastUpdate: t };
+    ? { ...current, status: "paused", activity: "Pausing", pausedAt: t, lastUpdate: t }
+    : { ...current, status: "cancelled", activity: "Cancelling", finishedAt: t, lastUpdate: t };
 }

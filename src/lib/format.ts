@@ -38,3 +38,23 @@ export function countWords(text: string): number {
   const t = text.trim();
   return t ? t.split(/\s+/).length : 0;
 }
+
+/** "45 min", "1 hr", "1 hr 30 min", "2 days 3 hr" */
+export function formatSpan(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 1) return "under a minute";
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (h < 24) return rest ? `${h} hr ${rest} min` : `${h} hr`;
+  const d = Math.floor(h / 24);
+  const hr = h % 24;
+  return `${d} ${d === 1 ? "day" : "days"}${hr ? ` ${hr} hr` : ""}`;
+}
+
+/** Short countdown: "8 sec", "3 min", "1 hr 5 min" */
+export function formatWait(ms: number): string {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  if (sec < 60) return `${sec} sec`;
+  return formatSpan(Math.ceil(sec / 60));
+}

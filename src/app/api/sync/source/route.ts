@@ -18,5 +18,5 @@ export async function GET(req: NextRequest) {
   for (const action of plan.actions) {
     if (action.kind !== "pause") sourceText += action.text;
   }
-  return applyAuthCookies(NextResponse.json({ sourceText, breaks: plan.breaks, totalMs: plan.totalMs }), user);
+  return applyAuthCookies(NextResponse.json({ sourceText, format: plan.format ?? null, breaks: plan.breaks, totalMs: plan.totalMs }), user);
 }

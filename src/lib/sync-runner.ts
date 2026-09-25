@@ -17,11 +17,12 @@
 
 import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
+import { FormatIndex } from "./rich-text";
 import { isTerminal, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 
 export interface DocsApi {
   snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
-  insert(accessToken: string, documentId: string, text: string, index: number): Promise<unknown>;
+  insert(accessToken: string, documentId: string, text: string, index: number, extraRequests?: object[]): Promise<unknown>;
   deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number): Promise<unknown>;
 }
 
@@ -123,7 +124,7 @@ export async function runJobWindow(
     if (job.status === "scheduled" || job.status === "pending") {
       job.status = "running";
       job.startedAt = now();
-      job.activity = "Starting…";
+      job.activity = "Starting";
     }
 
     const ctx = new Context(job, plan, deps, now, sleep, log);
@@ -140,7 +141,7 @@ export async function runJobWindow(
       if (ctx.job.nextActionAt == null) {
         const delay = ctx.job.typoSubStep === 1 ? action.holdMs ?? 1_000 : action.delayMs;
         ctx.job.nextActionAt = now() + delay;
-        ctx.job.activity = ctx.job.typoSubStep === 1 ? "Noticing a typo…" : action.activity;
+        ctx.job.activity = ctx.job.typoSubStep === 1 ? "Fixing a typo" : action.activity;
         ctx.refreshEstimates();
       }
 
@@ -160,7 +161,7 @@ export async function runJobWindow(
       ctx.job.typoSubStep = 0;
       ctx.job.typoCharsInDoc = 0;
       ctx.job.failures = 0;
-      ctx.job.activity = "Typing…";
+      ctx.job.activity = "Typing";
       ctx.refreshEstimates();
       await ctx.persist();
 
@@ -196,7 +197,7 @@ export async function runJobWindow(
     merged.lastUpdate = now();
     if (merged.failures <= MAX_FAILURES) {
       const delaySec = 15 * merged.failures;
-      merged.activity = `Retrying after an error (${merged.failures}/${MAX_FAILURES})…`;
+      merged.activity = `Retrying after a Google Docs error (attempt ${merged.failures} of ${MAX_FAILURES})`;
       merged.nextActionAt = undefined;
       await store.setJob(merged);
       handedOff = true;
@@ -218,6 +219,8 @@ export async function runJobWindow(
 
 /** Per-invocation working state around a job. */
 class Context {
+  private formatIndex: FormatIndex | null | undefined;
+
   constructor(
     public job: SyncJob,
     private readonly plan: SyncPlan,
@@ -280,7 +283,7 @@ class Context {
       this.job.typoSubStep = 1;
       this.job.typoCharsInDoc = wrong.length;
       this.job.nextActionAt = this.now() + (action.holdMs ?? 1_000);
-      this.job.activity = "Noticing a typo…";
+      this.job.activity = "Fixing a typo";
       this.refreshEstimates();
       await this.persist();
       await this.waitUntil(this.job.nextActionAt);
@@ -289,7 +292,7 @@ class Context {
       await this.erase(wrong);
       this.job.typoSubStep = 2;
       this.job.typoCharsInDoc = 0;
-      this.job.activity = "Correcting a typo…";
+      this.job.activity = "Fixing a typo";
       await this.persist();
     }
     if (this.job.typoSubStep === 2) {
@@ -307,7 +310,22 @@ class Context {
     return s.slice(-CONTEXT_CHARS);
   }
 
-  private async write(text: string, step: number, countChars: boolean): Promise<void> {
+  /** Formatting lookups for this plan, or null for plans without formatting. */
+  private formats(): FormatIndex | null {
+    if (this.formatIndex !== undefined) return this.formatIndex;
+    const format = this.plan.format;
+    if (!format) return (this.formatIndex = null);
+    let source = "";
+    for (const a of this.plan.actions) if (a.kind !== "pause") source += a.text;
+    return (this.formatIndex = new FormatIndex(source, format));
+  }
+
+  /**
+   * Append `text` to the document. `isSource` is true when the text is the
+   * next slice of the source (it is styled range by range); a typo's wrong
+   * characters take the style of the source character they stand in for.
+   */
+  private async write(text: string, step: number, isSource: boolean): Promise<void> {
     if (text.length === 0) return;
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
     const marker = this.job.inFlight;
@@ -323,11 +341,19 @@ class Context {
     } else {
       this.job.inFlight = { action: this.job.currentAction, step, text };
       await this.persist();
-      await this.withToken((t) => this.deps.docs.insert(t, this.job.documentId, text, snap.endIndex - 1));
+      const index = snap.endIndex - 1;
+      const fx = this.formats();
+      const offset = this.job.charsSent;
+      const styles = fx
+        ? isSource
+          ? fx.styleRequests(offset, offset + text.length, index)
+          : fx.uniformStyleRequests(offset, text.length, index)
+        : [];
+      await this.withToken((t) => this.deps.docs.insert(t, this.job.documentId, text, index, styles));
       this.job.liveWordCount = snap.wordCount + countWords(text, snap.tail);
     }
     this.job.inFlight = undefined;
-    if (countChars) this.job.charsSent += text.length;
+    if (isSource) this.job.charsSent += text.length;
   }
 
   private async erase(wrong: string): Promise<void> {

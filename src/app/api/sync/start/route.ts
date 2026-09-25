@@ -10,6 +10,7 @@ import { createJobId, getStore, hasRedis, toPublicJob, type SyncJob, type SyncPl
 import { enqueueProcess } from "@/lib/qstash";
 import { getDocSnapshot } from "@/lib/google";
 import { applyAuthCookies, resolveUser, unauthorized } from "@/lib/auth";
+import { normalizeText, parseFormat } from "@/lib/rich-text";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ const MAX_SCHEDULE_MINUTES = 7 * 24 * 60;
 
 interface StartBody {
   text?: unknown;
+  format?: unknown;
   documentId?: unknown;
   documentName?: unknown;
   targetMinutes?: unknown;
@@ -45,7 +47,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const text = typeof body.text === "string" ? body.text : "";
+  const rawText = typeof body.text === "string" ? body.text : "";
+  // Formatted text must already be normalized by the client (offsets depend on it).
+  const text = body.format != null ? rawText : normalizeText(rawText);
   const documentId = typeof body.documentId === "string" ? body.documentId : "";
   const documentName = typeof body.documentName === "string" && body.documentName.trim() ? body.documentName.trim().slice(0, 200) : "Untitled document";
   if (!text.trim() || !documentId) {
@@ -53,6 +57,14 @@ export async function POST(req: NextRequest) {
   }
   if (text.length > MAX_TEXT_CHARS) {
     return NextResponse.json({ error: `Text exceeds ${MAX_TEXT_CHARS.toLocaleString()} characters` }, { status: 400 });
+  }
+
+  if (body.format != null && normalizeText(text) !== text) {
+    return NextResponse.json({ error: "Text contains characters Google Docs would remove" }, { status: 400 });
+  }
+  const parsedFormat = parseFormat(text, body.format);
+  if (!parsedFormat.ok) {
+    return NextResponse.json({ error: `Invalid formatting: ${parsedFormat.error}` }, { status: 400 });
   }
 
   let targetMinutes: number | null = null;
@@ -121,6 +133,7 @@ export async function POST(req: NextRequest) {
     breaks: plan.breaks,
     seed: plan.seed,
     createdAt: now,
+    format: parsedFormat.format,
   };
   const job: SyncJob = {
     id,

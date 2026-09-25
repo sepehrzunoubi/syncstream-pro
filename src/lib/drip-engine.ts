@@ -193,14 +193,6 @@ export function autoBreaks(wordCount: number, rng: Rng): number[] {
   return pickDistinct(rng, 5, 25, 5);
 }
 
-const BREAK_ACTIVITIES = [
-  "Break — stepped away…",
-  "Break — re-reading the draft…",
-  "Break — thinking…",
-  "Break — getting coffee…",
-  "Break — checking notes…",
-];
-
 /**
  * Choose chunk boundaries for `count` breaks, spaced evenly through the text,
  * preferring paragraph ends, then sentence ends, then any chunk boundary.
@@ -353,10 +345,10 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
         typoChars: t.typoChars,
         delayMs,
         holdMs: Math.max(400, Math.round((t.holdMs ?? 1_000) * scale)),
-        activity: "Correcting a typo…",
+        activity: "Fixing a typo",
       });
     } else {
-      actions.push({ kind: "insert", text: t.chunk.text, delayMs, activity: "Typing…" });
+      actions.push({ kind: "insert", text: t.chunk.text, delayMs, activity: "Typing" });
     }
     const pauses = pauseAt.get(i);
     if (pauses) {
@@ -366,7 +358,7 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
           kind: "pause",
           text: "",
           delayMs: p.minutes * 60_000,
-          activity: p.isBreak ? rng.pick(BREAK_ACTIVITIES) : "Away from the keyboard…",
+          activity: p.isBreak ? "On a break" : "Away from the keyboard",
           breakIndex: breaks.length - 1,
         });
       }

@@ -91,19 +91,24 @@ src/
 │   │   ├── docs/        # List recent Google Docs, create a doc
 │   │   ├── health/      # Live check of every configured service (signed-in users)
 │   │   └── sync/        # start / list / status / pause / resume / cancel / dismiss / source / process
-│   ├── dashboard/       # Authenticated dashboard (sidebar + settings)
+│   ├── dashboard/       # Authenticated workspace (layout loads fonts, docs.css holds the Docs styles)
 │   ├── privacy/, tos/   # Legal pages
 │   └── page.tsx         # Landing page with Google sign-in
 ├── components/
-│   ├── dashboard/
-│   │   ├── dashboard-view.tsx   # Composer + job monitor
-│   │   ├── sync-controls.tsx    # Doc, total time, breaks, typos, start time, plan preview
-│   │   ├── job-list.tsx         # Strip of all your syncs
-│   │   ├── hero-status.tsx      # Status, countdown, progress bar
-│   │   └── login-screen.tsx     # Landing / Google OAuth login
-│   └── ui/                      # Sidebar, button, slider, tooltip, particles
+│   ├── workspace/
+│   │   ├── workspace.tsx        # State and layout of the dashboard
+│   │   ├── header.tsx           # Target doc picker, Start sync, account menu
+│   │   ├── toolbar.tsx          # Docs formatting toolbar
+│   │   ├── extensions.ts        # Editor (TipTap) setup: paragraph styles, indents, fonts, paste
+│   │   ├── sync-panel.tsx       # Total time, breaks, typos, start time, plan
+│   │   ├── job-panel.tsx        # Status and controls of a running sync
+│   │   ├── progress-page.tsx    # Read-only page showing what has been typed
+│   │   └── sync-rail.tsx        # List of syncs
+│   ├── dashboard/login-screen.tsx  # Landing page
+│   └── ui/                      # Button, particles
 ├── lib/
 │   ├── drip-engine.ts   # Seeded planner: chunks, pauses, typos, breaks, target duration
+│   ├── rich-text.ts     # Formatting model and the Docs formatting requests for any text range
 │   ├── sync-runner.ts   # Queue-driven worker: bounded windows, lock, idempotent writes, retries
 │   ├── sync-store.ts    # Redis-backed plans, jobs, per-user index, locks, control intents
 │   ├── sync-api.ts      # Ownership checks and lock-aware job mutations for the routes
@@ -134,6 +139,10 @@ src/
 Each hand-off is one QStash message. A typical 300-word sync uses roughly 60 to 80 messages; a very long, slow sync uses about one message per edit. Upstash's free tier allows a limited number of messages per day, so check the QStash dashboard if you plan to run many syncs.
 
 ## Controls
+
+The dashboard is laid out like Google Docs: a page in the middle, the formatting toolbar on top, your syncs on the left and the sync settings on the right.
+
+- **Formatting.** Paragraph styles (Normal text, Title, Subtitle, Headings 1 to 3), fonts, sizes in points, bold, italic, underline, strikethrough, alignment, line spacing, indents and first-line indent (Tab at the start of a paragraph). The same shortcuts as Docs work. Pasting from Google Docs or Word keeps this formatting; lists are pasted as paragraphs that keep their bullets or numbers as text. Every chunk is typed into the Google Doc together with its formatting in a single API call.
 
 - **Total time.** Auto types at a natural pace (roughly 35 words per minute plus pauses). A target duration is met exactly: a longer target inserts away-time between paragraphs, a shorter one drops automatic breaks and types faster, down to a realistic floor.
 - **Breaks.** Auto picks a few based on text length, None disables them, Custom lets you choose up to eight from 5 minutes to 3 hours. They run in order, spread through the text at paragraph or sentence ends.
