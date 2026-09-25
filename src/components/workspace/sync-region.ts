@@ -17,7 +17,17 @@ import type { Anchor, LockedAnchors } from "@/lib/doc-import";
 
 /** Transactions carrying this meta may change locked paragraphs (loading a document) */
 export const ALLOW_LOCKED = "ssAllowLocked";
-export const syncRegionKey = new PluginKey("ssSyncRegion");
+export const syncRegionKey = new PluginKey<{ placing: boolean }>("ssSyncRegion");
+
+/** Placing mode: hovering the document shows where the text can go, and a click moves it there */
+export function isPlacing(state: EditorState): boolean {
+  return syncRegionKey.getState(state)?.placing ?? false;
+}
+
+export function setPlacing(editor: Editor, placing: boolean) {
+  if (isPlacing(editor.state) === placing) return;
+  editor.view.dispatch(editor.state.tr.setMeta(syncRegionKey, { placing }).setMeta("addToHistory", false));
+}
 const PLACEHOLDER = "Type or paste the text to sync here";
 
 const isLocked = (node: PMNode) => node.attrs.locked === true;
@@ -151,6 +161,7 @@ export function composeDocument(editor: Editor, locked: EditorNode[], region: Ed
   const { state, view } = editor;
   const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
   tr.setMeta(ALLOW_LOCKED, true).setMeta("addToHistory", false);
+  if (editor.isEditable) tr.setMeta(syncRegionKey, { placing: locked.length > 0 && typeof place !== "number" && region.every((n) => !(n.content ?? []).length) });
   const region0 = regionOf(tr.doc);
   if (region0.length && editor.isEditable) {
     const last = region0[region0.length - 1];
@@ -189,7 +200,7 @@ function moveRegion(view: EditorView, targetPos: number, side: "before" | "after
   tr.insert(insertAt, Fragment.from(nodes));
   const size = nodes.reduce((n, node) => n + node.nodeSize, 0);
   tr.setSelection(TextSelection.near(tr.doc.resolve(insertAt + size - 1), -1));
-  tr.setMeta(ALLOW_LOCKED, true);
+  tr.setMeta(ALLOW_LOCKED, true).setMeta(syncRegionKey, { placing: false });
   view.dispatch(tr);
   view.focus();
 }
@@ -222,6 +233,12 @@ export const SyncRegion = Extension.create({
 
   addKeyboardShortcuts() {
     return {
+      // Esc stops placing, so the page reads like a normal document
+      Escape: ({ editor }) => {
+        if (!isPlacing(editor.state)) return false;
+        setPlacing(editor, false);
+        return true;
+      },
       // Select all selects the text to sync, not the document around it
       "Mod-a": ({ editor }) => {
         const { doc } = editor.state;
@@ -240,6 +257,15 @@ export const SyncRegion = Extension.create({
     return [
       new Plugin({
         key: syncRegionKey,
+        state: {
+          init: () => ({ placing: false }),
+          apply: (tr, value) => {
+            const meta = tr.getMeta(syncRegionKey) as { placing: boolean } | undefined;
+            if (meta) return meta;
+            // Nothing to place when there is no document around the text
+            return value.placing && !hasLocked(tr.doc) ? { placing: false } : value;
+          },
+        },
         filterTransaction(tr) {
           if (!tr.docChanged || tr.getMeta(ALLOW_LOCKED)) return true;
           if (touchesLocked(tr)) return false;
@@ -248,7 +274,8 @@ export const SyncRegion = Extension.create({
           return true;
         },
         props: {
-          attributes: (state: EditorState): Record<string, string> => (hasLocked(state.doc) ? { class: "ss-has-locked" } : {}),
+          attributes: (state: EditorState): Record<string, string> =>
+            hasLocked(state.doc) ? { class: isPlacing(state) ? "ss-has-locked ss-placing" : "ss-has-locked" } : {},
           decorations(state) {
             if (!hasLocked(state.doc)) return DecorationSet.empty;
             const region = regionOf(state.doc);
@@ -258,7 +285,7 @@ export const SyncRegion = Extension.create({
           },
           handleDOMEvents: {
             mousedown(view, event) {
-              if (!view.editable || event.button !== 0) return false;
+              if (!view.editable || event.button !== 0 || !isPlacing(view.state)) return false;
               const p = (event.target as HTMLElement).closest?.("p[data-locked]") as HTMLElement | null;
               if (!p || !view.dom.contains(p)) return false;
               event.preventDefault();
@@ -288,7 +315,7 @@ export const SyncRegion = Extension.create({
           const hide = () => line.removeAttribute("data-show");
           const onMove = (event: MouseEvent) => {
             const host = hostEl();
-            if (!editorView.editable || !host) return hide();
+            if (!editorView.editable || !host || !isPlacing(editorView.state)) return hide();
             const p = (event.target as HTMLElement).closest?.("p[data-locked]") as HTMLElement | null;
             if (!p) return hide();
             const place = placement(editorView, p, event.clientY);

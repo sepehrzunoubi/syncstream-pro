@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { useEditor, type JSONContent } from "@tiptap/react";
+import { useEditor, useEditorState, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { editorExtensions, flattenPastedLists } from "./extensions";
 import { Toolbar } from "./toolbar";
@@ -18,7 +18,7 @@ import { isActive, statusLine } from "./job-status";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat } from "@/lib/rich-text";
-import { composeDocument, focusRegionEnd, hasLocked, regionAnchor, regionPlace, setRegion, splitRegion, type RegionPlace } from "./sync-region";
+import { composeDocument, focusRegionEnd, hasLocked, isPlacing, regionAnchor, regionPlace, setPlacing, setRegion, splitRegion, type RegionPlace } from "./sync-region";
 import type { PublicJob } from "@/lib/sync-store";
 import { countWords, formatClock } from "@/lib/format";
 
@@ -174,6 +174,18 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     editable: false,
     editorProps: { attributes: { class: "ss-doc", "aria-label": "Text being typed into Google Docs", "aria-readonly": "true" } },
   });
+
+  // Placing mode: the document shows where the text can go. Esc leaves it to just read.
+  const placeState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => (e ? { inside: hasLocked(e.state.doc), placing: isPlacing(e.state) } : { inside: false, placing: false }),
+  }) ?? { inside: false, placing: false };
+  useEffect(() => {
+    if (!editor || !placeState.placing) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPlacing(editor, false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editor, placeState.placing]);
 
   const focusedJob = !composing ? jobs.find((j) => j.id === focusedJobId) ?? null : null;
   const anyActive = jobs.some(isActive);
@@ -529,8 +541,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       ? "Pick the Google Doc to type into"
       : docContent?.status === "loading"
         ? "Opening the document"
-        : editor && docJSON && hasLocked(editor.state.doc)
-          ? "Your text is highlighted. Click the document to move it."
+        : placeState.inside
+          ? placeState.placing
+            ? "Click where your text should go. Press Esc to just read."
+            : "The blue bar marks your text. Choose spot moves it."
           : draftLoaded
             ? "Draft saved on this device"
             : "";
@@ -615,7 +629,15 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       />
 
       <div className="ss-noprint flex-none px-4 pb-1">
-        <Toolbar editor={editor} disabled={!!focusedJob} zoom={zoom} onZoom={setZoom} onInsertImages={insertImages} onInsertImageUrl={insertImageUrl} />
+        <Toolbar
+          editor={editor}
+          disabled={!!focusedJob}
+          zoom={zoom}
+          onZoom={setZoom}
+          onInsertImages={insertImages}
+          onInsertImageUrl={insertImageUrl}
+          placing={placeState.inside && !focusedJob ? { on: placeState.placing, onToggle: () => editor && setPlacing(editor, !placeState.placing) } : null}
+        />
       </div>
 
       <div className="ss-body flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
@@ -677,6 +699,27 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             transition={{ duration: 0.32, ease }}
           >
             <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} onMouseDown={onPageMouseDown} />
+            {placeState.inside && !focusedJob && (
+              <div className="ss-place-chip ss-noprint">
+                <AnimatePresence mode="wait" initial={false}>
+                  {placeState.placing ? (
+                    <motion.div
+                      key="placing"
+                      className="flex items-center gap-2 rounded-full bg-[#1f1f1f] py-1.5 pl-4 pr-1.5 text-[14px] text-white shadow-lg"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 8 }}
+                      transition={{ duration: 0.18, ease }}
+                    >
+                      <span>Click where your text should go</span>
+                      <button className="rounded-full px-3 py-1 font-medium text-[#a8c7fa] hover:bg-white/10" onClick={() => editor && setPlacing(editor, false)}>
+                        Done <span className="text-white/60">Esc</span>
+                      </button>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+              </div>
+            )}
           </motion.div>
         </main>
 

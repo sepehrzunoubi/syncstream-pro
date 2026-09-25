@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
+import { MousePointerClick } from "lucide-react";
 import { ColorMenu } from "./color-menu";
 import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
@@ -33,11 +34,13 @@ interface ToolbarProps {
   /** A percentage, or "fit" to scale the page to the available width */
   zoom: number | "fit";
   onZoom: (z: number | "fit") => void;
+  /** Shown when syncing into a document that already has text: choose where the text goes */
+  placing?: { on: boolean; onToggle: () => void } | null;
 }
 
 type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para: Record<string, unknown> } | null;
 
-export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl }: ToolbarProps) {
+export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl, placing }: ToolbarProps) {
   const mod = useModKey();
   const [spellcheck, setSpellcheck] = useState(true);
   const [painter, setPainter] = useState<Painter>(null);
@@ -296,6 +299,20 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.clearFormatting())} title={`Clear formatting (${mod}\\)`} aria-label="Clear formatting">
         <Icon name="format_clear" />
       </button>
+
+      {placing && (
+        <button
+          className="ss-mode-btn"
+          data-on={placing.on}
+          onMouseDown={keep}
+          onClick={placing.onToggle}
+          aria-pressed={placing.on}
+          title={placing.on ? "Stop choosing (Esc)" : "Choose where your text goes in the document"}
+        >
+          <MousePointerClick className="h-[18px] w-[18px]" />
+          {placing.on ? "Choosing spot" : "Choose spot"}
+        </button>
+      )}
     </div>
   );
 }
