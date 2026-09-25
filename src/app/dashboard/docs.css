@@ -41,16 +41,43 @@
   outline: 2px solid var(--ss-blue);
   outline-offset: 1px;
 }
+/* The page is a writing surface, like Docs: the caret is the focus indicator */
+.ss-workspace .ss-doc:focus,
+.ss-workspace .ss-doc:focus-visible { outline: none; }
 
-.ss-workspace ::-webkit-scrollbar { width: 14px; height: 14px; }
+/* Material Symbols, as used across Google Docs */
+.ss-icon {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-feature-settings: "liga";
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 20;
+  user-select: none;
+  overflow: hidden;
+  width: 1em;
+}
+
+.ss-workspace * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.ss-workspace *:hover { scrollbar-color: #c4c7c5 transparent; }
+.ss-workspace ::-webkit-scrollbar { width: 12px; height: 12px; }
 .ss-workspace ::-webkit-scrollbar-track { background: transparent; }
 .ss-workspace ::-webkit-scrollbar-thumb {
-  background: #dadce0;
-  border: 4px solid transparent;
+  background: transparent;
+  border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 8px;
 }
-.ss-workspace ::-webkit-scrollbar-thumb:hover { background-color: #bdc1c6; }
+.ss-workspace *:hover::-webkit-scrollbar-thumb { background-color: #c4c7c5; }
+.ss-workspace ::-webkit-scrollbar-thumb:hover { background-color: #a8abad !important; }
 
 /* ── Buttons ─────────────────────────────────────────────────────────── */
 
@@ -84,6 +111,7 @@
   transition: background-color 120ms, box-shadow 120ms;
 }
 .ss-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.ss-btn { transition: background-color 150ms, box-shadow 150ms, opacity 200ms, color 150ms; }
 .ss-btn-tonal { background: var(--ss-tonal); color: var(--ss-on-tonal); }
 .ss-btn-tonal:hover:not(:disabled) { box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px 1px rgba(0,0,0,.15); }
 .ss-btn-filled { background: var(--ss-blue); color: #fff; }
@@ -138,6 +166,7 @@
 
 .ss-menu {
   z-index: 60;
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin, var(--radix-menubar-content-transform-origin, top left));
   min-width: 180px;
   max-height: var(--radix-dropdown-menu-content-available-height, 480px);
   overflow-y: auto;
@@ -149,6 +178,14 @@
   font-size: 14px;
   color: var(--ss-text);
 }
+.ss-menu[data-state="open"] { animation: ss-menu-in 140ms cubic-bezier(0.2, 0, 0, 1); }
+.ss-menu[data-state="closed"] { animation: ss-menu-out 90ms cubic-bezier(0.3, 0, 1, 1); }
+@keyframes ss-menu-in { from { opacity: 0; transform: scale(0.96) translateY(-2px); } }
+@keyframes ss-menu-out { to { opacity: 0; transform: scale(0.98); } }
+@media (prefers-reduced-motion: reduce) {
+  .ss-menu[data-state="open"], .ss-menu[data-state="closed"] { animation-duration: 1ms; }
+}
+
 .ss-menu-item {
   display: flex;
   align-items: center;
@@ -159,7 +196,9 @@
   outline: none;
   user-select: none;
 }
-.ss-menu-item[data-highlighted] { background: #f1f3f4; }
+.ss-menu-item[data-highlighted],
+.ss-menu-item[data-state="open"] { background: #f1f3f4; }
+.ss-menu-item .ss-sub-arrow { margin-left: auto; padding-left: 24px; color: var(--ss-text-2); }
 .ss-menu-item[data-disabled] { opacity: 0.38; }
 .ss-menu-item .ss-check { width: 18px; flex: none; color: var(--ss-text-2); }
 .ss-menu-item .ss-shortcut { margin-left: auto; padding-left: 24px; color: var(--ss-text-3); font-size: 13px; }
@@ -185,16 +224,20 @@
 .ss-select:focus { outline: none; border: 2px solid var(--ss-blue); padding-left: 11px; }
 .ss-segmented { display: flex; border: 1px solid var(--ss-outline); border-radius: 9999px; overflow: hidden; }
 .ss-segmented button {
+  position: relative;
   flex: 1;
   height: 36px;
   font-size: 14px;
   font-weight: 500;
   color: var(--ss-text);
   border-left: 1px solid var(--ss-outline);
+  transition: color 150ms;
 }
 .ss-segmented button:first-child { border-left: 0; }
-.ss-segmented button[aria-pressed="true"] { background: #c2e7ff; color: var(--ss-on-tonal); }
+.ss-segmented button[aria-pressed="true"] { color: var(--ss-on-tonal); }
 .ss-segmented button:hover:not([aria-pressed="true"]):not(:disabled) { background: var(--ss-hover); }
+.ss-segmented .ss-seg-pill { position: absolute; inset: 0; background: #c2e7ff; }
+.ss-segmented .ss-seg-label { position: relative; }
 .ss-chip {
   display: inline-flex;
   align-items: center;
@@ -212,10 +255,39 @@
 /* ── Canvas and page ─────────────────────────────────────────────────── */
 
 .ss-canvas { overflow: auto; }
+
+/* Ruler above the page, as in Docs */
+.ss-ruler-row {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding-top: 2px;
+  background: var(--ss-canvas);
+}
+.ss-ruler { width: 8.5in; height: 24px; margin: 0 auto; }
+.ss-ruler svg { display: block; overflow: visible; }
+.ss-ruler .ss-marker { cursor: ew-resize; }
+@media (max-width: 720px) { .ss-ruler-row { display: none; } }
+
+/* Menu bar under the title */
+.ss-menubar { display: flex; gap: 0; margin-left: -2px; }
+.ss-menubar-trigger {
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--ss-text);
+  outline: none;
+}
+.ss-menubar-trigger:hover,
+.ss-menubar-trigger[data-state="open"],
+.ss-menubar-trigger[data-highlighted] { background: var(--ss-hover); }
 .ss-page {
   width: 8.5in;
   min-height: 11in;
-  margin: 16px auto 64px;
+  margin: 8px auto 64px;
+  cursor: text;
   padding: 1in;
   background: #fff;
   box-shadow: 0 1px 3px 1px rgba(60,64,67,.15);
@@ -259,7 +331,8 @@
   pointer-events: none;
 }
 
-/* Read-only progress view */
+/* Read-only progress view: text darkens as it is typed */
+.ss-doc span { transition: color 450ms ease-out; }
 .ss-untyped { color: #b0b4b9; }
 .ss-caret {
   display: inline-block;
@@ -275,7 +348,7 @@
 
 /* Progress bar */
 .ss-progress { height: 4px; border-radius: 2px; background: #d3e3fd; overflow: hidden; }
-.ss-progress > div { height: 100%; background: var(--ss-blue); transition: width 400ms ease-out; }
+.ss-progress > div { height: 100%; background: var(--ss-blue); }
 
 /* Snackbar */
 .ss-snackbar {

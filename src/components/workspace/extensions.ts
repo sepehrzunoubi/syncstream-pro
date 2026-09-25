@@ -3,7 +3,6 @@ import StarterKit from "@tiptap/starter-kit";
 import Paragraph from "@tiptap/extension-paragraph";
 import { TextStyle } from "@tiptap/extension-text-style";
 import TextAlign from "@tiptap/extension-text-align";
-import { Placeholder } from "@tiptap/extensions";
 import {
   cssFontToFamily,
   cssLengthToPt,
@@ -247,5 +246,4 @@ export const editorExtensions = [
   FontAttributes,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
-  Placeholder.configure({ placeholder: "Type or paste your text" }),
 ];

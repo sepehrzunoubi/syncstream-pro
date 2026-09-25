@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, ExternalLink, FilePlus2, Menu as MenuIcon, Play, Plus, RotateCw } from "lucide-react";
+import { FilePlus2, RotateCw } from "lucide-react";
+import { Icon } from "./icon";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "./menu";
 
 type Doc = { id: string; name: string; modifiedTime: string };
@@ -25,6 +26,8 @@ interface HeaderProps {
   onToggleRail: () => void;
   onReauth: () => void;
   onSignOut: () => void;
+  /** The File / Edit / View / Format menu bar */
+  menubar: React.ReactNode;
 }
 
 export function Header(props: HeaderProps) {
@@ -36,18 +39,18 @@ export function Header(props: HeaderProps) {
   return (
     <header className="flex h-16 flex-none items-center gap-2 pl-2 pr-4">
       <button className="ss-icon-btn h-10 w-10 rounded-full" onClick={props.onToggleRail} aria-label="Show or hide syncs" title="Syncs">
-        <MenuIcon className="h-5 w-5" />
+        <Icon name="menu" />
       </button>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src="/sync-icon.png" alt="" className="hidden h-9 w-9 flex-none object-contain sm:block" />
 
       <div className="min-w-0 flex-1 pl-1">
-        <div className="flex items-center gap-1">
+        <div className="flex h-7 items-center gap-1">
           {mode === "draft" ? (
             <Menu label="Target Google Doc" trigger={
               <button className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[18px] leading-6 hover:bg-[var(--ss-hover)]">
                 <span className="truncate">{title}</span>
-                <ChevronDown className="h-4 w-4 flex-none text-[var(--ss-text-2)]" />
+                <Icon name="arrow_drop_down" className="flex-none text-[var(--ss-text-2)]" />
               </button>
             }>
               <MenuLabel>Type into</MenuLabel>
@@ -75,11 +78,14 @@ export function Header(props: HeaderProps) {
               title="Open in Google Docs"
               aria-label="Open in Google Docs"
             >
-              <ExternalLink className="h-4 w-4" />
+              <Icon name="open_in_new" size={18} />
             </a>
           )}
         </div>
-        <div className="truncate px-1.5 text-[12px] leading-4 text-[var(--ss-text-3)]">{subtitle}</div>
+        <div className="flex h-6 items-center gap-2 pl-1.5">
+          <div className="max-sm:hidden">{props.menubar}</div>
+          {subtitle && <span className="truncate text-[12px] text-[var(--ss-text-3)] sm:ml-2">{subtitle}</span>}
+        </div>
       </div>
 
       <button
@@ -89,7 +95,7 @@ export function Header(props: HeaderProps) {
         title={primary.title ?? primary.label}
         aria-label={primary.label}
       >
-        {primary.kind === "start" ? <Play className="h-4 w-4 fill-current" /> : <Plus className="h-4 w-4" />}
+        <Icon name={primary.kind === "start" ? "play_arrow" : "add"} />
         <span className="max-sm:hidden">{primary.label}</span>
       </button>
 

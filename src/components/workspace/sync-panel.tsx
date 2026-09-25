@@ -2,6 +2,7 @@
 
 import React from "react";
 import { Shuffle, X } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { MAX_CUSTOM_BREAKS, type DripPlan } from "@/lib/drip-engine";
 import { formatClock, formatSpan } from "@/lib/format";
 import { Menu, MenuItem } from "./menu";
@@ -75,17 +76,34 @@ export function SyncPanel(p: SyncPanelProps) {
         <span className="ss-field-label" id="ss-breaks-label">Breaks</span>
         <div className="ss-segmented" role="group" aria-labelledby="ss-breaks-label">
           {([["auto", "Automatic"], ["none", "None"], ["custom", "Choose"]] as const).map(([v, label]) => (
-            <button key={v} aria-pressed={p.breaksMode === v} disabled={p.disabled} onClick={() => p.onBreaksModeChange(v)}>{label}</button>
+            <button key={v} aria-pressed={p.breaksMode === v} disabled={p.disabled} onClick={() => p.onBreaksModeChange(v)}>
+              {p.breaksMode === v && <motion.span layoutId="ss-breaks-pill" className="ss-seg-pill" transition={{ type: "spring", stiffness: 520, damping: 40 }} />}
+              <span className="ss-seg-label">{label}</span>
+            </button>
           ))}
         </div>
         {p.breaksMode === "custom" ? (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {p.customBreaks.map((m, i) => (
-              <button key={`${m}-${i}`} className="ss-chip" data-selected="true" disabled={p.disabled} onClick={() => p.onCustomBreaksChange(p.customBreaks.filter((_, k) => k !== i))} aria-label={`Remove ${formatSpan(m)} break`}>
-                {formatSpan(m)}
-                <X className="h-4 w-4" />
-              </button>
-            ))}
+          <motion.div className="mt-3 flex flex-wrap gap-2" layout>
+            <AnimatePresence mode="popLayout" initial={false}>
+              {p.customBreaks.map((m, i) => (
+                <motion.button
+                  key={`${i}-${m}`}
+                  layout
+                  initial={{ opacity: 0, scale: 0.85 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.85 }}
+                  transition={{ type: "spring", stiffness: 520, damping: 34 }}
+                  className="ss-chip"
+                  data-selected="true"
+                  disabled={p.disabled}
+                  onClick={() => p.onCustomBreaksChange(p.customBreaks.filter((_, k) => k !== i))}
+                  aria-label={`Remove ${formatSpan(m)} break`}
+                >
+                  {formatSpan(m)}
+                  <X className="h-4 w-4" />
+                </motion.button>
+              ))}
+            </AnimatePresence>
             {p.customBreaks.length < MAX_CUSTOM_BREAKS && (
               <Menu label="Add a break" trigger={<button className="ss-chip" disabled={p.disabled}>Add a break</button>}>
                 {BREAK_CATALOG.map((m) => (
@@ -93,8 +111,8 @@ export function SyncPanel(p: SyncPanelProps) {
                 ))}
               </Menu>
             )}
-            <p className="ss-field-help w-full">Breaks happen in this order, spread through the text.</p>
-          </div>
+            <motion.p layout className="ss-field-help w-full">Breaks happen in this order, spread through the text.</motion.p>
+          </motion.div>
         ) : (
           <p className="ss-field-help">
             {p.breaksMode === "auto" ? "A few longer pauses, based on how long the text is." : "No long pauses. Only the short ones between sentences and paragraphs."}
@@ -120,12 +138,25 @@ export function SyncPanel(p: SyncPanelProps) {
         </p>
       </div>
 
-      <section className="rounded-xl bg-[var(--ss-soft)] p-4" aria-live="polite">
+      <motion.section layout transition={{ duration: 0.25, ease: [0.2, 0, 0, 1] }} className="rounded-xl bg-[var(--ss-soft)] p-4" aria-live="polite">
         {plan ? (
           <>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-[22px] leading-7">{formatSpan(plan.totalMs / 60_000)}</div>
+                <div className="relative h-7 overflow-hidden">
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    <motion.div
+                      key={formatSpan(plan.totalMs / 60_000)}
+                      className="text-[22px] leading-7"
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -12 }}
+                      transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+                    >
+                      {formatSpan(plan.totalMs / 60_000)}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
                 <div className="text-[14px] text-[var(--ss-text-2)]">Finishes around {formatClock(startAt + plan.totalMs)}</div>
               </div>
               <button className="ss-icon-btn h-9 w-9 rounded-full" onClick={p.onShuffle} disabled={p.disabled} title="Try a different schedule" aria-label="Try a different schedule">
@@ -144,18 +175,29 @@ export function SyncPanel(p: SyncPanelProps) {
                 ))}
               </div>
             )}
+            <AnimatePresence initial={false}>
             {plan.targetMs != null && !plan.fitsTarget && (
-              <p className="mt-4 rounded-lg bg-[#fef7e0] p-3 text-[13px] leading-5 text-[#5c4300]">
+              <motion.p
+                key="warn"
+                initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                animate={{ opacity: 1, height: "auto", marginTop: 16 }}
+                exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                transition={{ duration: 0.22, ease: [0.2, 0, 0, 1] }}
+                className="overflow-hidden rounded-lg bg-[#fef7e0] px-3 text-[13px] leading-5 text-[#5c4300]"
+              >
+                <span className="block py-3">
                 {plan.totalMs < plan.targetMs
                   ? `This text can't be stretched to ${formatSpan(plan.targetMs / 60_000)} ${p.breaksMode === "none" ? "without breaks" : "with these breaks"}. Choose automatic breaks to fill the time, or pick a shorter total.`
                   : `These breaks alone take longer than ${formatSpan(plan.targetMs / 60_000)}. Remove a break or pick a longer total.`}
-              </p>
+                </span>
+              </motion.p>
             )}
+            </AnimatePresence>
           </>
         ) : (
           <p className="text-[14px] text-[var(--ss-text-2)]">Type or paste your text on the page to see how long it will take.</p>
         )}
-      </section>
+      </motion.section>
 
       {p.startError && (
         <p role="alert" className="rounded-lg bg-[#fce8e6] p-3 text-[13px] leading-5 text-[#8c1d18]">{p.startError}</p>

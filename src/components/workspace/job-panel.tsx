@@ -2,6 +2,7 @@
 
 import React from "react";
 import { Check } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import type { PublicJob } from "@/lib/sync-store";
 import { formatClock, formatSpan, formatWait } from "@/lib/format";
 import { isActive, isFinished, progressOf, statusTitle } from "./job-status";
@@ -48,7 +49,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
         )}
         <div className="mt-4 flex items-center gap-3">
           <div className="ss-progress flex-1" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label="Typed">
-            <div style={{ width: `${pct}%` }} />
+            <motion.div initial={false} animate={{ width: `${pct}%` }} transition={{ type: "spring", stiffness: 90, damping: 20 }} />
           </div>
           <span className="w-10 text-right text-[14px] tabular-nums text-[var(--ss-text-2)]">{Math.round(pct)}%</span>
         </div>
@@ -75,8 +76,14 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
               const done = job.completedBreaks.includes(i);
               return (
                 <li key={i} className="flex items-center gap-2 text-[14px]">
-                  <span className={`flex h-5 w-5 items-center justify-center rounded-full ${done ? "bg-[#c4eed0] text-[#0d652d]" : "border border-[var(--ss-divider)]"}`}>
-                    {done && <Check className="h-3.5 w-3.5" />}
+                  <span className={`flex h-5 w-5 items-center justify-center rounded-full transition-colors duration-300 ${done ? "bg-[#c4eed0] text-[#0d652d]" : "border border-[var(--ss-divider)]"}`}>
+                    <AnimatePresence>
+                      {done && (
+                        <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: "spring", stiffness: 600, damping: 26 }}>
+                          <Check className="h-3.5 w-3.5" />
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
                   </span>
                   <span className={done ? "text-[var(--ss-text-3)]" : ""}>{formatSpan(m)}</span>
                 </li>
@@ -86,7 +93,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <motion.div layout className="flex flex-wrap items-center gap-2">
         {(running || job.status === "scheduled") && (
           <button className="ss-btn ss-btn-tonal" onClick={onPause} disabled={busy}>Pause</button>
         )}
@@ -101,7 +108,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
           <button className="ss-btn ss-btn-text" onClick={onEditAsNew}>Edit as new sync</button>
         )}
         {isFinished(job) && <button className="ss-btn ss-btn-text" onClick={onDismiss}>Remove from list</button>}
-      </div>
+      </motion.div>
 
       {isActive(job) && (
         <p className="text-[12px] leading-4 text-[var(--ss-text-3)]">This sync runs on our server. You can close this tab or turn off your computer.</p>

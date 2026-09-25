@@ -2,7 +2,7 @@
 
 import React from "react";
 import * as DM from "@radix-ui/react-dropdown-menu";
-import { Check } from "lucide-react";
+import { Icon } from "./icon";
 
 interface MenuProps {
   trigger: React.ReactNode;
@@ -48,7 +48,7 @@ interface MenuItemProps {
 export function MenuItem({ children, onSelect, checked, checkable, shortcut, icon, disabled, style }: MenuItemProps) {
   return (
     <DM.Item className="ss-menu-item" onSelect={onSelect} disabled={disabled} style={style}>
-      {checkable && <span className="ss-check">{checked ? <Check className="h-[18px] w-[18px]" /> : null}</span>}
+      {checkable && <span className="ss-check">{checked ? <Icon name="check" size={18} /> : null}</span>}
       {icon && <span className="flex w-5 justify-center text-[var(--ss-text-2)]">{icon}</span>}
       <span className="min-w-0 truncate">{children}</span>
       {shortcut && <span className="ss-shortcut">{shortcut}</span>}
@@ -62,4 +62,21 @@ export function MenuSeparator() {
 
 export function MenuLabel({ children }: { children: React.ReactNode }) {
   return <DM.Label className="ss-menu-label">{children}</DM.Label>;
+}
+
+export function SubMenu({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <DM.Sub>
+      <DM.SubTrigger className="ss-menu-item">
+        <span className="ss-check" />
+        <span className="min-w-0 truncate">{label}</span>
+        <span className="ss-sub-arrow"><Icon name="arrow_drop_down" className="-rotate-90" /></span>
+      </DM.SubTrigger>
+      <DM.Portal>
+        <DM.SubContent className="ss-menu" sideOffset={2} alignOffset={-6} collisionPadding={8}>
+          {children}
+        </DM.SubContent>
+      </DM.Portal>
+    </DM.Sub>
+  );
 }

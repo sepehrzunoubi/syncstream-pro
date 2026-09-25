@@ -2,8 +2,11 @@
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor, type JSONContent } from "@tiptap/react";
+import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { editorExtensions, flattenPastedLists } from "./extensions";
 import { Toolbar } from "./toolbar";
+import { DocsMenubar } from "./menubar";
+import { Ruler } from "./ruler";
 import { Header, type HeaderUser } from "./header";
 import { SyncRail } from "./sync-rail";
 import { SyncPanel, type BreaksMode } from "./sync-panel";
@@ -106,6 +109,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const editor = useEditor({
     extensions: editorExtensions,
     immediatelyRender: false,
+    autofocus: "end",
     editorProps: {
       attributes: { class: "ss-doc", spellcheck: "true", "aria-label": "Text to sync" },
       transformPastedHTML: flattenPastedLists,
@@ -335,7 +339,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     : !selectedDocId
       ? "Pick the Google Doc to type into"
       : draftLoaded
-        ? "Types into this Google Doc. Your draft is saved on this device."
+        ? "Draft saved on this device"
         : "";
   const primary = focusedJob
     ? { kind: "new" as const, label: "New sync", onClick: () => setComposing(true) }
@@ -365,7 +369,18 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     />
   );
 
+  const docUrlId = focusedJob ? focusedJob.documentId : selectedDocId;
+  const ease = [0.2, 0, 0, 1] as const;
+
+  // Clicking the page margins puts the caret at the end, like Docs
+  const onPageMouseDown = (e: React.MouseEvent) => {
+    if (!editor || (e.target as HTMLElement).closest(".ProseMirror")) return;
+    e.preventDefault();
+    editor.commands.focus("end");
+  };
+
   return (
+    <MotionConfig reducedMotion="user">
     <div className="ss-workspace">
       <Header
         user={user}
@@ -383,78 +398,158 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         onToggleRail={() => setRailOpen((o) => !o)}
         onReauth={onReauth}
         onSignOut={onSignOut}
+        menubar={
+          <DocsMenubar
+            editor={editor}
+            editingDisabled={!!focusedJob}
+            zoom={zoom}
+            onZoom={setZoom}
+            railOpen={railOpen}
+            onToggleRail={() => setRailOpen((o) => !o)}
+            onNewSync={() => setComposing(true)}
+            onCreateDoc={createDoc}
+            onRefreshDocs={fetchDocs}
+            docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
+            onSignOut={onSignOut}
+          />
+        }
       />
 
-      <div className="flex-none px-4 pb-2">
+      <div className="flex-none px-4 pb-1">
         <Toolbar editor={editor} disabled={!!focusedJob} zoom={zoom} onZoom={setZoom} />
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
-        {railOpen && wide && rail}
-        {railOpen && !wide && (
-          <div className="fixed inset-0 z-50 flex" role="dialog" aria-label="Syncs">
-            <div className="h-full bg-[var(--ss-canvas)] pt-4 shadow-xl">{rail}</div>
-            <button className="flex-1 bg-black/30" aria-label="Close syncs" onClick={() => setRailOpen(false)} />
-          </div>
-        )}
+        <AnimatePresence initial={false}>
+          {railOpen && wide && (
+            <motion.div
+              key="rail"
+              className="h-full flex-none overflow-hidden"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 264, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease }}
+            >
+              {rail}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {railOpen && !wide && (
+            <motion.div key="drawer" className="fixed inset-0 z-50 flex" role="dialog" aria-label="Syncs">
+              <motion.div
+                className="h-full bg-[var(--ss-canvas)] pt-4 shadow-xl"
+                initial={{ x: -280 }}
+                animate={{ x: 0 }}
+                exit={{ x: -280 }}
+                transition={{ type: "spring", stiffness: 420, damping: 40 }}
+              >
+                {rail}
+              </motion.div>
+              <motion.button
+                className="flex-1 bg-black/30"
+                aria-label="Close syncs"
+                onClick={() => setRailOpen(false)}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <main ref={canvasRef} className="ss-canvas min-w-0 flex-none lg:h-full lg:flex-1">
-          {focusedJob ? (
-            focusedSource ? (
-              <ProgressPage text={focusedSource.text} format={focusedSource.format} typed={focusedJob.charsSent} scale={scale} />
-            ) : (
-              <div className="ss-page flex items-start" style={{ zoom: scale }}>
-                <p className="text-[14px] text-[var(--ss-text-3)]">Loading text</p>
-              </div>
-            )
-          ) : null}
-          <div className="ss-page" style={{ zoom: scale, display: focusedJob ? "none" : undefined }} onClick={() => editor?.commands.focus()}>
-            <EditorContent editor={editor} />
+          <div className="ss-ruler-row">
+            <div style={{ zoom: scale }}>
+              <Ruler editor={editor} disabled={!!focusedJob} />
+            </div>
           </div>
+
+          {focusedJob && (
+            <motion.div key={focusedJob.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease }}>
+              {focusedSource ? (
+                <ProgressPage text={focusedSource.text} format={focusedSource.format} typed={focusedJob.charsSent} scale={scale} />
+              ) : (
+                <div className="ss-page" style={{ zoom: scale }} />
+              )}
+            </motion.div>
+          )}
+          <motion.div
+            className="ss-page"
+            style={{ zoom: scale, display: focusedJob ? "none" : undefined }}
+            initial={{ opacity: 0, y: 12 }}
+            animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
+            transition={{ duration: 0.32, ease }}
+            onMouseDown={onPageMouseDown}
+          >
+            <EditorContent editor={editor} />
+          </motion.div>
         </main>
 
-        <aside className="flex-none border-[var(--ss-divider)] bg-[var(--ss-surface)] lg:m-2 lg:mt-0 lg:h-[calc(100%-8px)] lg:w-[360px] lg:overflow-y-auto lg:rounded-2xl" aria-label={focusedJob ? "This sync" : "Sync settings"}>
-          {focusedJob ? (
-            <JobPanel
-              job={focusedJob}
-              now={now}
-              sourceWords={focusedSource ? countWords(focusedSource.text) : 0}
-              busy={busy}
-              canEditAsNew={!!focusedSource}
-              onPause={() => jobAction("pause", focusedJob.id)}
-              onResume={() => jobAction("resume", focusedJob.id)}
-              onCancel={() => jobAction("cancel", focusedJob.id)}
-              onDismiss={() => dismissJob(focusedJob.id)}
-              onEditAsNew={() => editAsNew(focusedJob)}
-            />
-          ) : (
-            <SyncPanel
-              durationMinutes={durationMinutes}
-              onDurationChange={setDurationMinutes}
-              breaksMode={breaksMode}
-              onBreaksModeChange={setBreaksMode}
-              customBreaks={customBreaks}
-              onCustomBreaksChange={setCustomBreaks}
-              typoFrequency={typoFrequency}
-              onTypoFrequencyChange={setTypoFrequency}
-              startInMinutes={startInMinutes}
-              onStartInChange={setStartInMinutes}
-              preview={preview}
-              onShuffle={() => setSeed(randomSeed())}
-              disabled={busy}
-              scopeError={scopeError}
-              startError={startError}
-            />
-          )}
+        <aside className="flex-none bg-[var(--ss-surface)] lg:m-2 lg:mt-0 lg:h-[calc(100%-8px)] lg:w-[360px] lg:overflow-y-auto lg:overflow-x-hidden lg:rounded-2xl" aria-label={focusedJob ? "This sync" : "Sync settings"}>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={focusedJob ? focusedJob.id : "draft"}
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              transition={{ duration: 0.18, ease }}
+            >
+              {focusedJob ? (
+                <JobPanel
+                  job={focusedJob}
+                  now={now}
+                  sourceWords={focusedSource ? countWords(focusedSource.text) : 0}
+                  busy={busy}
+                  canEditAsNew={!!focusedSource}
+                  onPause={() => jobAction("pause", focusedJob.id)}
+                  onResume={() => jobAction("resume", focusedJob.id)}
+                  onCancel={() => jobAction("cancel", focusedJob.id)}
+                  onDismiss={() => dismissJob(focusedJob.id)}
+                  onEditAsNew={() => editAsNew(focusedJob)}
+                />
+              ) : (
+                <SyncPanel
+                  durationMinutes={durationMinutes}
+                  onDurationChange={setDurationMinutes}
+                  breaksMode={breaksMode}
+                  onBreaksModeChange={setBreaksMode}
+                  customBreaks={customBreaks}
+                  onCustomBreaksChange={setCustomBreaks}
+                  typoFrequency={typoFrequency}
+                  onTypoFrequencyChange={setTypoFrequency}
+                  startInMinutes={startInMinutes}
+                  onStartInChange={setStartInMinutes}
+                  preview={preview}
+                  onShuffle={() => setSeed(randomSeed())}
+                  disabled={busy}
+                  scopeError={scopeError}
+                  startError={startError}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
         </aside>
       </div>
 
-      {snack && (
-        <div className="ss-snackbar" role="status">
-          <span className="text-[14px]">{snack}</span>
-          <button onClick={() => setSnack(null)}>Dismiss</button>
-        </div>
-      )}
+      <AnimatePresence>
+        {snack && (
+          <motion.div
+            key={snack}
+            className="ss-snackbar"
+            role="status"
+            initial={{ opacity: 0, y: 16, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, transition: { duration: 0.15 } }}
+            transition={{ type: "spring", stiffness: 500, damping: 38 }}
+          >
+            <span className="text-[14px]">{snack}</span>
+            <button onClick={() => setSnack(null)}>Dismiss</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
+    </MotionConfig>
   );
 }

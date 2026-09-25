@@ -99,6 +99,8 @@ src/
 │   │   ├── workspace.tsx        # State and layout of the dashboard
 │   │   ├── header.tsx           # Target doc picker, Start sync, account menu
 │   │   ├── toolbar.tsx          # Docs formatting toolbar
+│   │   ├── menubar.tsx          # File / Edit / View / Format menus
+│   │   ├── ruler.tsx            # Ruler with draggable indent markers
 │   │   ├── extensions.ts        # Editor (TipTap) setup: paragraph styles, indents, fonts, paste
 │   │   ├── sync-panel.tsx       # Total time, breaks, typos, start time, plan
 │   │   ├── job-panel.tsx        # Status and controls of a running sync
@@ -140,7 +142,7 @@ Each hand-off is one QStash message. A typical 300-word sync uses roughly 60 to 
 
 ## Controls
 
-The dashboard is laid out like Google Docs: a page in the middle, the formatting toolbar on top, your syncs on the left and the sync settings on the right.
+The dashboard is laid out like Google Docs: a File, Edit, View and Format menu bar, the formatting toolbar, a ruler with draggable indent markers, the page in the middle, your syncs on the left and the sync settings on the right. Animations use Framer Motion and turn off when the system asks for reduced motion.
 
 - **Formatting.** Paragraph styles (Normal text, Title, Subtitle, Headings 1 to 3), fonts, sizes in points, bold, italic, underline, strikethrough, alignment, line spacing, indents and first-line indent (Tab at the start of a paragraph). The same shortcuts as Docs work. Pasting from Google Docs or Word keeps this formatting; lists are pasted as paragraphs that keep their bullets or numbers as text. Every chunk is typed into the Google Doc together with its formatting in a single API call.
 

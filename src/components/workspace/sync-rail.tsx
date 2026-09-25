@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { Plus } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { Icon } from "./icon";
 import type { PublicJob } from "@/lib/sync-store";
 import { isActive, progressOf, statusLine } from "./job-status";
 
@@ -31,21 +32,25 @@ export function SyncRail({ jobs, focusedJobId, composing, onCompose, onFocus }: 
       <div className="flex h-10 items-center justify-between pl-3">
         <h2 className="text-[14px] font-medium">Syncs</h2>
         <button className="ss-icon-btn h-9 w-9 rounded-full" onClick={onCompose} title="New sync" aria-label="New sync">
-          <Plus className="h-5 w-5" />
+          <Icon name="add" />
         </button>
       </div>
 
       <RailItem selected={composing} onClick={onCompose} title="New sync" line="Draft on this device" />
 
       {active.length > 0 && <div className="mt-4 px-3 pb-1 text-[12px] text-[var(--ss-text-3)]">In progress</div>}
-      {active.map((j) => (
-        <RailItem key={j.id} selected={!composing && j.id === focusedJobId} onClick={() => onFocus(j.id)} title={j.documentName} line={statusLine(j)} dot={DOT[j.status]} progress={progressOf(j)} />
-      ))}
+      <AnimatePresence initial={false}>
+        {active.map((j) => (
+          <RailItem key={j.id} selected={!composing && j.id === focusedJobId} onClick={() => onFocus(j.id)} title={j.documentName} line={statusLine(j)} dot={DOT[j.status]} progress={progressOf(j)} />
+        ))}
+      </AnimatePresence>
 
       {finished.length > 0 && <div className="mt-4 px-3 pb-1 text-[12px] text-[var(--ss-text-3)]">Earlier</div>}
-      {finished.map((j) => (
-        <RailItem key={j.id} selected={!composing && j.id === focusedJobId} onClick={() => onFocus(j.id)} title={j.documentName} line={statusLine(j)} dot={DOT[j.status]} />
-      ))}
+      <AnimatePresence initial={false}>
+        {finished.map((j) => (
+          <RailItem key={j.id} selected={!composing && j.id === focusedJobId} onClick={() => onFocus(j.id)} title={j.documentName} line={statusLine(j)} dot={DOT[j.status]} />
+        ))}
+      </AnimatePresence>
 
       {jobs.length === 0 && (
         <p className="mt-4 px-3 text-[12px] leading-4 text-[var(--ss-text-3)]">
@@ -58,19 +63,32 @@ export function SyncRail({ jobs, focusedJobId, composing, onCompose, onFocus }: 
 
 function RailItem({ selected, onClick, title, line, dot, progress }: { selected: boolean; onClick: () => void; title: string; line: string; dot?: string; progress?: number }) {
   return (
-    <button
-      onClick={onClick}
-      aria-current={selected ? "true" : undefined}
-      className={`relative flex w-full items-start gap-3 rounded-2xl px-3 py-2 text-left transition-colors ${selected ? "bg-[#d3e3fd] text-[var(--ss-on-pressed)]" : "hover:bg-[var(--ss-hover)]"}`}
+    <motion.div
+      layout="position"
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
     >
-      {dot && <span className="mt-[7px] h-2 w-2 flex-none rounded-full" style={{ background: dot }} />}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[14px] leading-5">{title}</span>
-        <span className="block truncate text-[12px] leading-4 text-[var(--ss-text-2)]">{line}</span>
-        {progress != null && (
-          <span className="ss-progress mt-1.5 block" aria-hidden="true"><span className="block h-full bg-[var(--ss-blue)]" style={{ width: `${progress}%` }} /></span>
+      <button
+        onClick={onClick}
+        aria-current={selected ? "true" : undefined}
+        className={`relative flex w-full items-start gap-3 rounded-2xl px-3 py-2 text-left transition-colors duration-150 ${selected ? "text-[var(--ss-on-pressed)]" : "hover:bg-[var(--ss-hover)]"}`}
+      >
+        {selected && (
+          <motion.span layoutId="ss-rail-active" className="absolute inset-0 rounded-2xl bg-[#d3e3fd]" transition={{ type: "spring", stiffness: 520, damping: 42 }} />
         )}
-      </span>
-    </button>
+        {dot && <span className="relative mt-[7px] h-2 w-2 flex-none rounded-full" style={{ background: dot }} />}
+        <span className="relative min-w-0 flex-1">
+          <span className="block truncate text-[14px] leading-5">{title}</span>
+          <span className="block truncate text-[12px] leading-4 text-[var(--ss-text-2)]">{line}</span>
+          {progress != null && (
+            <span className="ss-progress mt-1.5 block" aria-hidden="true">
+              <motion.span className="block h-full bg-[var(--ss-blue)]" initial={false} animate={{ width: `${progress}%` }} transition={{ type: "spring", stiffness: 90, damping: 20 }} />
+            </span>
+          )}
+        </span>
+      </button>
+    </motion.div>
   );
 }

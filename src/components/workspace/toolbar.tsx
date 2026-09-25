@@ -3,11 +3,7 @@
 import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
-import {
-  Undo2, Redo2, Bold, Italic, Underline, Strikethrough, ChevronDown, Minus, Plus,
-  AlignLeft, AlignCenter, AlignRight, AlignJustify, IndentDecrease, IndentIncrease,
-  RemoveFormatting, ArrowUpDown,
-} from "lucide-react";
+import { Icon } from "./icon";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
 import {
   DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, NAMED_STYLES, NAMED_STYLE_ORDER,
@@ -15,7 +11,7 @@ import {
 } from "@/lib/rich-text";
 
 const ZOOMS = [50, 75, 90, 100, 125, 150];
-const ALIGN_ICONS = { left: AlignLeft, center: AlignCenter, right: AlignRight, justify: AlignJustify } as const;
+const ALIGN_ICONS = { left: "format_align_left", center: "format_align_center", right: "format_align_right", justify: "format_align_justify" } as const;
 const ALIGN_LABELS = { left: "Left", center: "Center", right: "Right", justify: "Justify" } as const;
 const ALIGN_KEYS = { left: "L", center: "E", right: "R", justify: "J" } as const;
 
@@ -79,21 +75,21 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
   };
 
   const keep = (e: React.MouseEvent) => e.preventDefault(); // keep the editor selection
-  const AlignIcon = ALIGN_ICONS[s?.align ?? "left"] ?? AlignLeft;
+  const alignIcon = ALIGN_ICONS[s?.align ?? "left"] ?? ALIGN_ICONS.left;
   const off = disabled || !s;
 
   return (
     <div className="ss-toolbar" role="toolbar" aria-label="Formatting" aria-disabled={off ? "true" : undefined}>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.undo())} disabled={!s?.canUndo} title={`Undo (${mod}Z)`} aria-label="Undo">
-        <Undo2 className="h-[18px] w-[18px]" />
+        <Icon name="undo" />
       </button>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.redo())} disabled={!s?.canRedo} title={`Redo (${mod}Y)`} aria-label="Redo">
-        <Redo2 className="h-[18px] w-[18px]" />
+        <Icon name="redo" />
       </button>
 
       <span className="ss-sep" />
 
-      <Menu label="Zoom" trigger={<button className="ss-select-btn" title="Zoom">{zoom === "fit" ? "Fit" : `${zoom}%`}<ChevronDown className="h-4 w-4" /></button>}>
+      <Menu label="Zoom" trigger={<button className="ss-select-btn" title="Zoom">{zoom === "fit" ? "Fit" : `${zoom}%`}<Icon name="arrow_drop_down" /></button>}>
         <MenuItem checkable checked={zoom === "fit"} onSelect={() => onZoom("fit")}>Fit</MenuItem>
         {ZOOMS.map((z) => (
           <MenuItem key={z} checkable checked={z === zoom} onSelect={() => onZoom(z)}>{z}%</MenuItem>
@@ -103,8 +99,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
       <span className="ss-sep" />
 
       <Menu keepFocus label="Styles" trigger={
-        <button className="ss-select-btn min-w-[112px] justify-between" title="Styles">
-          {NAMED_STYLES[s?.style ?? "normal"].label}<ChevronDown className="h-4 w-4" />
+        <button className="ss-select-btn min-w-[112px] justify-between pr-0.5" title="Styles">
+          {NAMED_STYLES[s?.style ?? "normal"].label}<Icon name="arrow_drop_down" />
         </button>
       }>
         {NAMED_STYLE_ORDER.map((st) => (
@@ -124,8 +120,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
       <span className="ss-sep" />
 
       <Menu keepFocus label="Font" trigger={
-        <button className="ss-select-btn min-w-[120px] justify-between" title="Font">
-          <span className="max-w-[110px] truncate">{s?.font ?? DEFAULT_FONT}</span><ChevronDown className="h-4 w-4" />
+        <button className="ss-select-btn min-w-[120px] justify-between pr-0.5" title="Font">
+          <span className="max-w-[110px] truncate">{s?.font ?? DEFAULT_FONT}</span><Icon name="arrow_drop_down" />
         </button>
       }>
         {FONT_FAMILIES.map((f) => (
@@ -138,7 +134,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
       <span className="ss-sep" />
 
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => stepSize(-1)} title="Decrease font size" aria-label="Decrease font size">
-        <Minus className="h-4 w-4" />
+        <Icon name="remove" />
       </button>
       <Menu keepFocus label="Font size" trigger={
         <input
@@ -166,35 +162,34 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
         ))}
       </Menu>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => stepSize(1)} title="Increase font size" aria-label="Increase font size">
-        <Plus className="h-4 w-4" />
+        <Icon name="add" />
       </button>
 
       <span className="ss-sep" />
 
       <button className="ss-icon-btn" data-on={s?.bold} onMouseDown={keep} onClick={() => run((c) => c.toggleBold())} title={`Bold (${mod}B)`} aria-label="Bold" aria-pressed={!!s?.bold}>
-        <Bold className="h-[18px] w-[18px]" />
+        <Icon name="format_bold" />
       </button>
       <button className="ss-icon-btn" data-on={s?.italic} onMouseDown={keep} onClick={() => run((c) => c.toggleItalic())} title={`Italic (${mod}I)`} aria-label="Italic" aria-pressed={!!s?.italic}>
-        <Italic className="h-[18px] w-[18px]" />
+        <Icon name="format_italic" />
       </button>
       <button className="ss-icon-btn" data-on={s?.underline} onMouseDown={keep} onClick={() => run((c) => c.toggleUnderline())} title={`Underline (${mod}U)`} aria-label="Underline" aria-pressed={!!s?.underline}>
-        <Underline className="h-[18px] w-[18px]" />
+        <Icon name="format_underlined" />
       </button>
       <button className="ss-icon-btn" data-on={s?.strike} onMouseDown={keep} onClick={() => run((c) => c.toggleStrike())} title={`Strikethrough (${mod}Shift+S)`} aria-label="Strikethrough" aria-pressed={!!s?.strike}>
-        <Strikethrough className="h-[18px] w-[18px]" />
+        <Icon name="format_strikethrough" />
       </button>
 
       <span className="ss-sep" />
 
       <Menu keepFocus label="Align" trigger={
         <button className="ss-select-btn" title="Align">
-          <AlignIcon className="h-[18px] w-[18px] text-[var(--ss-text-2)]" /><ChevronDown className="h-4 w-4" />
+          <Icon name={alignIcon} className="text-[var(--ss-text-2)]" /><Icon name="arrow_drop_down" />
         </button>
       }>
         {(Object.keys(ALIGN_ICONS) as (keyof typeof ALIGN_ICONS)[]).map((a) => {
-          const Icon = ALIGN_ICONS[a];
           return (
-            <MenuItem key={a} checkable checked={s?.align === a} icon={<Icon className="h-[18px] w-[18px]" />} shortcut={`${mod}Shift+${ALIGN_KEYS[a]}`} onSelect={() => run((c) => c.setTextAlign(a))}>
+            <MenuItem key={a} checkable checked={s?.align === a} icon={<Icon name={ALIGN_ICONS[a]} />} shortcut={`${mod}Shift+${ALIGN_KEYS[a]}`} onSelect={() => run((c) => c.setTextAlign(a))}>
               {ALIGN_LABELS[a]}
             </MenuItem>
           );
@@ -203,7 +198,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
 
       <Menu keepFocus label="Line and paragraph spacing" trigger={
         <button className="ss-select-btn" title="Line & paragraph spacing">
-          <ArrowUpDown className="h-[18px] w-[18px] text-[var(--ss-text-2)]" /><ChevronDown className="h-4 w-4" />
+          <Icon name="format_line_spacing" className="text-[var(--ss-text-2)]" /><Icon name="arrow_drop_down" />
         </button>
       }>
         {LINE_SPACINGS.map((ls) => (
@@ -220,13 +215,13 @@ export function Toolbar({ editor, disabled, zoom, onZoom }: ToolbarProps) {
       <span className="ss-sep" />
 
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.outdent())} disabled={(s?.indent ?? 0) === 0} title={`Decrease indent (${mod}[)`} aria-label="Decrease indent">
-        <IndentDecrease className="h-[18px] w-[18px]" />
+        <Icon name="format_indent_decrease" />
       </button>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.indent())} disabled={(s?.indent ?? 0) >= MAX_INDENT} title={`Increase indent (${mod}])`} aria-label="Increase indent">
-        <IndentIncrease className="h-[18px] w-[18px]" />
+        <Icon name="format_indent_increase" />
       </button>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.clearFormatting())} title={`Clear formatting (${mod}\\)`} aria-label="Clear formatting">
-        <RemoveFormatting className="h-[18px] w-[18px]" />
+        <Icon name="format_clear" />
       </button>
     </div>
   );
