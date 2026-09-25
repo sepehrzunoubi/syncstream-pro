@@ -6,12 +6,12 @@ import {
   MAX_TARGET_MINUTES,
   MIN_TARGET_MINUTES,
 } from "@/lib/drip-engine";
-import { createJobId, getStore, hasRedis, toPublicJob, type JobAnchor, type SyncContext, type SyncJob, type SyncPlan } from "@/lib/sync-store";
+import { createJobId, getStore, hasRedis, toPublicJob, type PlanSegment, type SpotState, type SyncContext, type SyncJob, type SyncPlan } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
 import { getDocument, snapshotOf } from "@/lib/google";
-import { anchorPosition } from "@/lib/doc-import";
 import { applyAuthCookies, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
-import { normalizeText, parseFormat, type DocListState } from "@/lib/rich-text";
+import { normalizeText, parseFormat, type DocListState, type ListType, type RichFormat } from "@/lib/rich-text";
+import { planSpots } from "@/lib/spots";
 
 export const dynamic = "force-dynamic";
 
@@ -28,17 +28,19 @@ interface StartBody {
   typoFrequency?: unknown;
   seed?: unknown;
   startInMinutes?: unknown;
-  /** Where to type inside an existing document: { mode: "before" | "after", at } */
-  anchor?: unknown;
-  /** Revision of the document the anchor was chosen in */
+  /** Additions to an existing document: [{ at, mode, text, format }] in document order */
+  segments?: unknown;
+  /** Revision of the document the segments' indices refer to */
   revisionId?: unknown;
-  /** Paragraphs shown around the sync in the running view */
+  /** What the running view shows */
   context?: unknown;
 }
 
-const ANCHOR_CONTEXT_CHARS = 40;
+interface SegmentBody { at: number; mode: "inline" | "before"; text: string; format: RichFormat }
+
 const MAX_CONTEXT_JSON = 400_000;
-const DOC_CHANGED = "This document changed since it was loaded. It has been reloaded: check where your text goes, then start again.";
+const MAX_SEGMENTS = 300;
+const DOC_CHANGED = "This document changed in Google Docs. SyncStream reloaded it with your additions in place. Check them, then start again.";
 
 export async function POST(req: NextRequest) {
   const user = await resolveUser(req);
@@ -56,6 +58,31 @@ export async function POST(req: NextRequest) {
     body = (await req.json()) as StartBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  // Additions to an existing document come as segments; their text is the source, back to back
+  let segments: SegmentBody[] | null = null;
+  if (body.segments != null) {
+    if (!Array.isArray(body.segments) || body.segments.length === 0 || body.segments.length > MAX_SEGMENTS) {
+      return NextResponse.json({ error: "Invalid additions" }, { status: 400 });
+    }
+    segments = [];
+    let lastAt = 0;
+    for (const raw of body.segments as Record<string, unknown>[]) {
+      const at = raw?.at;
+      const mode = raw?.mode;
+      const segText = raw?.text;
+      if (typeof at !== "number" || !Number.isInteger(at) || at < 1 || at < lastAt || (mode !== "inline" && mode !== "before") || typeof segText !== "string" || !segText) {
+        return NextResponse.json({ error: "Invalid additions" }, { status: 400 });
+      }
+      if (normalizeText(segText) !== segText) return NextResponse.json({ error: "Text contains characters Google Docs would remove" }, { status: 400 });
+      const parsed = parseFormat(segText, raw.format);
+      if (!parsed.ok) return NextResponse.json({ error: `Invalid formatting: ${parsed.error}` }, { status: 400 });
+      segments.push({ at, mode, text: segText, format: parsed.format });
+      lastAt = at;
+    }
+    body.text = segments.map((x) => x.text).join("");
+    body.format = null;
   }
 
   const rawText = typeof body.text === "string" ? body.text : "";
@@ -112,39 +139,41 @@ export async function POST(req: NextRequest) {
     startInMinutes = body.startInMinutes;
   }
 
-  const plan = buildDripPlan(text, { targetMinutes, breaks, typoFrequency, seed });
+  const boundaries: number[] = [];
+  if (segments) {
+    let acc = 0;
+    for (const x of segments) { if (acc) boundaries.push(acc); acc += x.text.length; }
+  }
+  const plan = buildDripPlan(text, { targetMinutes, breaks, typoFrequency, seed, ...(boundaries.length ? { boundaries } : {}) });
   if (plan.actions.length === 0) {
     return NextResponse.json({ error: "Nothing to type" }, { status: 400 });
   }
 
-  let requested: { mode: "before" | "after"; at: number } | null = null;
-  if (body.anchor != null) {
-    const a = body.anchor as { mode?: unknown; at?: unknown };
-    if ((a.mode !== "before" && a.mode !== "after") || typeof a.at !== "number" || !Number.isInteger(a.at)) {
-      return NextResponse.json({ error: "Invalid anchor" }, { status: 400 });
-    }
-    requested = { mode: a.mode, at: a.at };
-  }
-
-  // Read the target doc: baseline word count, proof we can open it, and the anchor's surroundings
+  // Read the target doc: baseline word count, proof we can open it, and where additions go
   let baselineWordCount = 0;
-  let anchor: JobAnchor | undefined;
-  let docList: DocListState | undefined;
+  let spots: SpotState[] | undefined;
   try {
     const doc = await withGoogleToken(user, (t) => getDocument(t, documentId));
     const snap = snapshotOf(doc);
     baselineWordCount = snap.wordCount;
-    if (requested) {
+    if (segments) {
       if (typeof body.revisionId === "string" && body.revisionId && body.revisionId !== snap.revisionId) {
         return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });
       }
-      const pos = anchorPosition(snap.chars, requested);
-      if (pos == null) return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });
-      anchor = { mode: requested.mode, ctx: snap.chars.slice(Math.max(0, pos - ANCHOR_CONTEXT_CHARS), pos), cursor: pos, opened: false };
-      // The new paragraph copies the style of the one it is opened from, bullets included
-      const from = requested.mode === "after" ? pos - 1 : pos;
-      const source = (doc.body?.content ?? []).find((el) => el.paragraph && (el.startIndex ?? 0) <= from && from < (el.endIndex ?? 0));
-      if (source?.paragraph?.bullet) docList = { type: "bullet", start: -1 };
+      const paragraphs = (doc.body?.content ?? []).filter((el) => el.paragraph).map((el) => ({ start: el.startIndex ?? 0, end: el.endIndex ?? 0, bullet: el.paragraph!.bullet }));
+      const paragraphFor = (at: number, mode: SegmentBody["mode"]) =>
+        paragraphs.find((p) => (mode === "before" ? p.start === at : p.start <= at && at < p.end));
+      if (segments.some((x) => !paragraphFor(x.at, x.mode))) return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });
+      const listType = (bullet: NonNullable<(typeof paragraphs)[number]["bullet"]>): ListType => {
+        const level = doc.lists?.[bullet.listId ?? ""]?.listProperties?.nestingLevels?.[bullet.nestingLevel ?? 0];
+        if (level?.glyphSymbol) return "bullet";
+        return level?.glyphType && level.glyphType !== "GLYPH_TYPE_UNSPECIFIED" && level.glyphType !== "NONE" ? "ordered" : "check";
+      };
+      spots = planSpots(snap.chars, segments, (at, mode): DocListState => {
+        const bullet = paragraphFor(at, mode)?.bullet;
+        // A negative start marks a list that is not ours: new lines continue it
+        return bullet ? { type: listType(bullet), start: -1 } : null;
+      });
     }
   } catch (err) {
     const code = (err as { code?: number })?.code;
@@ -155,15 +184,25 @@ export async function POST(req: NextRequest) {
       );
     }
     // Typing inside a document needs its current text
-    if (requested) return NextResponse.json({ error: "Couldn't read the document. Try again." }, { status: 502 });
+    if (segments) return NextResponse.json({ error: "Couldn't read the document. Try again." }, { status: 502 });
   }
 
   let context: SyncContext | null = null;
-  if (requested && body.context && typeof body.context === "object") {
-    const c = body.context as { before?: unknown; after?: unknown };
-    if (Array.isArray(c.before) && Array.isArray(c.after) && JSON.stringify(c).length <= MAX_CONTEXT_JSON) {
-      context = { before: c.before, after: c.after };
+  if (segments && body.context && typeof body.context === "object") {
+    const c = body.context as { doc?: unknown; ranges?: unknown };
+    const okRanges = Array.isArray(c.ranges) && c.ranges.length === segments.length && c.ranges.every((r) => Array.isArray(r) && r.length === 2 && r.every(Number.isInteger));
+    if (c.doc && typeof c.doc === "object" && okRanges && JSON.stringify(c).length <= MAX_CONTEXT_JSON) {
+      context = { doc: c.doc, ranges: c.ranges as [number, number][] };
     }
+  }
+  let planSegments: PlanSegment[] | undefined;
+  if (segments) {
+    let acc = 0;
+    planSegments = segments.map((x) => {
+      const seg: PlanSegment = { start: acc, end: acc + x.text.length, mode: x.mode, format: x.format };
+      acc += x.text.length;
+      return seg;
+    });
   }
 
   const now = Date.now();
@@ -179,7 +218,7 @@ export async function POST(req: NextRequest) {
     breaks: plan.breaks,
     seed: plan.seed,
     createdAt: now,
-    format: parsedFormat.format,
+    ...(planSegments ? { segments: planSegments } : { format: parsedFormat.format }),
   };
   const job: SyncJob = {
     id,
@@ -203,8 +242,7 @@ export async function POST(req: NextRequest) {
     etaTargetAt: startAt + plan.totalMs,
     wpm: 0,
     baselineWordCount,
-    ...(anchor ? { anchor } : {}),
-    ...(docList ? { docList } : {}),
+    ...(spots ? { spots } : {}),
     breaks: plan.breaks,
     completedBreaks: [],
     lastUpdate: now,

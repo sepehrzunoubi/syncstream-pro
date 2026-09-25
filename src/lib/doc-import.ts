@@ -1,9 +1,11 @@
 /**
- * Read an existing Google Doc for display in the editor.
+ * Read an existing Google Doc into the editor.
  *
- * The document's paragraphs become locked editor paragraphs: they look like
- * the doc but cannot be edited from SyncStream. Each one carries the anchors
- * a sync can be typed at: just before it or just after it.
+ * Paragraphs become ordinary editor paragraphs that keep the document's
+ * look. What the editor can't change faithfully (tables, section breaks,
+ * paragraphs with smart chips or drawings) becomes locked paragraphs that
+ * are shown but can't be edited; each carries how many Docs indices it
+ * covers (`span`) so indices of everything after it stay right.
  */
 
 import type { docs_v1 } from "googleapis";
@@ -24,16 +26,11 @@ export interface Anchor {
   at: number;
 }
 
-export interface LockedAnchors {
-  before: Anchor | null;
-  after: Anchor | null;
-}
-
 export interface ImportedDoc {
   revisionId: string;
-  /** True when the doc has no text, images or tables: the whole page is editable */
+  /** True when the doc has no text, images or tables */
   empty: boolean;
-  /** Locked paragraphs, in order */
+  /** The document's paragraphs, in order */
   nodes: EditorNode[];
 }
 
@@ -95,58 +92,20 @@ function hex(c: docs_v1.Schema$OptionalColor | undefined | null): string | undef
   return `#${h(rgb.red)}${h(rgb.green)}${h(rgb.blue)}`;
 }
 
-function roman(n: number): string {
-  const table: [number, string][] = [[1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]];
-  let out = "";
-  for (const [v, s] of table) while (n >= v) { out += s; n -= v; }
-  return out;
-}
-
-function alpha(n: number): string {
-  let out = "";
-  while (n > 0) { n--; out = String.fromCharCode(97 + (n % 26)) + out; n = Math.floor(n / 26); }
-  return out;
-}
-
-function glyphNumber(n: number, type: string | null | undefined): string {
-  switch (type) {
-    case "ZERO_DECIMAL": return n < 10 ? `0${n}` : String(n);
-    case "ALPHA": return alpha(n);
-    case "UPPER_ALPHA": return alpha(n).toUpperCase();
-    case "ROMAN": return roman(n);
-    case "UPPER_ROMAN": return roman(n).toUpperCase();
-    default: return String(n);
-  }
-}
-
-/** Numbering state of every list, so labels continue across interrupted items like in Docs */
-class ListCounters {
-  private counts = new Map<string, number[]>();
-  constructor(private readonly lists: Doc["lists"]) {}
-
-  label(bullet: docs_v1.Schema$Bullet): { type: ListType; label: string | null; level: docs_v1.Schema$NestingLevel | undefined } {
-    const listId = bullet.listId ?? "";
-    const levelIdx = bullet.nestingLevel ?? 0;
-    const levels = this.lists?.[listId]?.listProperties?.nestingLevels ?? [];
-    const level = levels[levelIdx];
-    const counts = this.counts.get(listId) ?? [];
-    counts[levelIdx] = (counts[levelIdx] ?? (levels[levelIdx]?.startNumber ?? 1) - 1) + 1;
-    counts.length = levelIdx + 1; // deeper levels restart
-    this.counts.set(listId, counts);
-
-    if (level?.glyphSymbol) return { type: "bullet", label: level.glyphSymbol, level };
-    if (level?.glyphType && ORDERED.has(level.glyphType)) {
-      const format = level.glyphFormat || `%${levelIdx}.`;
-      const label = format.replace(/%(\d)/g, (_, d: string) => {
-        const k = Number(d);
-        return glyphNumber(counts[k] ?? levels[k]?.startNumber ?? 1, levels[k]?.glyphType);
-      });
-      return { type: "ordered", label, level };
-    }
-    if (level?.glyphType === "NONE") return { type: "bullet", label: "", level };
-    // Checklists report no glyph; our checklist style draws the box
-    return { type: "check", label: null, level };
-  }
+/** The kind of list a bullet belongs to, and what Docs draws for its level */
+function listInfo(lists: Doc["lists"], bullet: docs_v1.Schema$Bullet) {
+  const levelIdx = bullet.nestingLevel ?? 0;
+  const level = lists?.[bullet.listId ?? ""]?.listProperties?.nestingLevels?.[levelIdx];
+  const type: ListType = level?.glyphSymbol ? "bullet" : level?.glyphType && ORDERED.has(level.glyphType) ? "ordered" : level?.glyphType === "NONE" ? "bullet" : "check";
+  return {
+    type,
+    level,
+    attrs: {
+      listId: bullet.listId ?? null,
+      level: levelIdx,
+      glyph: { type: level?.glyphType ?? null, format: level?.glyphFormat ?? null, symbol: level?.glyphSymbol ?? null, start: level?.startNumber ?? null },
+    },
+  };
 }
 
 function textMarks(ts: TextStyle, style: NamedStyle): NonNullable<EditorNode["marks"]> {
@@ -174,11 +133,15 @@ function textNode(text: string, marks: NonNullable<EditorNode["marks"]>): Editor
   return marks.length ? { type: "text", text, marks } : { type: "text", text };
 }
 
-/** Read a documents.get response into locked editor paragraphs. */
+/** Read a documents.get response into editor paragraphs. */
 export function importDoc(doc: Doc): ImportedDoc {
+  let blockId = 0;
+  const lock = (node: EditorNode, span: number) => {
+    node.attrs = { ...node.attrs, locked: true, span, bid: `b${++blockId}` };
+    return node;
+  };
   const namedStyles = new Map<string, docs_v1.Schema$NamedStyle>();
   for (const s of doc.namedStyles?.styles ?? []) if (s.namedStyleType) namedStyles.set(s.namedStyleType, s);
-  const counters = new ListCounters(doc.lists);
   let hasContent = false;
 
   const paragraphNode = (p: docs_v1.Schema$Paragraph): EditorNode => {
@@ -190,18 +153,19 @@ export function importDoc(doc: Doc): ImportedDoc {
     const baseText: TextStyle = named?.textStyle ?? {};
 
     let list: ListType | null = null;
-    let label: string | null = null;
+    let listAttrs: Record<string, unknown> = {};
     let start = pt(ps.indentStart) ?? 0;
     let first = pt(ps.indentFirstLine) ?? start;
     if (p.bullet) {
-      const info = counters.label(p.bullet);
+      const info = listInfo(doc.lists, p.bullet);
       list = info.type;
-      label = info.label;
+      listAttrs = info.attrs;
       if (own.indentStart == null && info.level?.indentStart) start = pt(info.level.indentStart) ?? start;
       if (own.indentFirstLine == null && info.level?.indentFirstLine) first = pt(info.level.indentFirstLine) ?? first;
     }
 
     const content: EditorNode[] = [];
+    let unsupported = false;
     for (const pe of p.elements ?? []) {
       if (pe.textRun?.content != null) {
         const ts = { ...baseText, ...stripNull(pe.textRun.textStyle ?? {}) };
@@ -220,15 +184,20 @@ export function importDoc(doc: Doc): ImportedDoc {
           const h = pt(obj?.size?.height);
           content.push({ type: "image", attrs: { src, width: w ? Math.round(w / 0.75) : null, height: h ? Math.round(h / 0.75) : null } });
           hasContent = true;
-        }
+        } else unsupported = true;
       } else if (pe.person?.personProperties) {
         const who = pe.person.personProperties;
         content.push(textNode(who.name || who.email || "", [{ type: "textStyle", attrs: { fontFamily: null, fontSize: null, color: "#1155cc" } }]));
         hasContent = true;
+        unsupported = true;
       } else if (pe.richLink?.richLinkProperties) {
         const rl = pe.richLink.richLinkProperties;
         content.push(textNode(rl.title || rl.uri || "link", rl.uri ? [{ type: "link", attrs: { href: rl.uri } }] : []));
         hasContent = true;
+        unsupported = true;
+      } else if (!pe.textRun) {
+        // Page breaks, footnote references, equations and the like: shown, not editable
+        unsupported = true;
       }
     }
 
@@ -246,17 +215,14 @@ export function importDoc(doc: Doc): ImportedDoc {
         firstLine: false,
         lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : 115,
         list,
-        locked: true,
-        label,
+        ...listAttrs,
         box: { ...box, above: above ?? null, below: below ?? null },
-        anchors: null,
+        ...(unsupported ? { locked: true } : {}),
       },
       content,
     };
   };
 
-  type Unit = { kind: "p"; start: number; end: number; node: EditorNode } | { kind: "block"; nodes: EditorNode[] };
-  const units: Unit[] = [];
   const cellParagraphs = (elements: Element[], out: EditorNode[]) => {
     for (const el of elements) {
       if (el.paragraph) out.push(paragraphNode(el.paragraph));
@@ -264,38 +230,27 @@ export function importDoc(doc: Doc): ImportedDoc {
       else if (el.tableOfContents) cellParagraphs(el.tableOfContents.content ?? [], out);
     }
   };
-  for (const el of doc.body?.content ?? []) {
-    if (el.paragraph) {
-      units.push({ kind: "p", start: el.startIndex ?? 0, end: el.endIndex ?? 0, node: paragraphNode(el.paragraph) });
-    } else if (el.table || el.tableOfContents) {
-      const nodes: EditorNode[] = [];
-      cellParagraphs([el], nodes);
-      if (el.table) hasContent = true;
-      units.push({ kind: "block", nodes });
-    }
-  }
-
   const nodes: EditorNode[] = [];
-  units.forEach((u, i) => {
-    if (u.kind === "p") {
-      u.node.attrs!.anchors = { before: { mode: "before", at: u.start }, after: { mode: "after", at: u.end } } satisfies LockedAnchors;
-      nodes.push(u.node);
-      return;
-    }
-    // Inside a table or table of contents a sync can only go around it
-    const prev = units[i - 1];
-    const next = units[i + 1];
-    const anchors: LockedAnchors = {
-      before: prev?.kind === "p" ? { mode: "after", at: prev.end } : null,
-      after: next?.kind === "p" ? { mode: "before", at: next.start } : null,
-    };
-    for (const n of u.nodes) {
-      n.attrs!.anchors = anchors;
-      nodes.push(n);
+  const content = doc.body?.content ?? [];
+  content.forEach((el, i) => {
+    const size = (el.endIndex ?? 0) - (el.startIndex ?? 0);
+    if (el.paragraph) {
+      const node = paragraphNode(el.paragraph);
+      nodes.push(node.attrs?.locked ? lock(node, size) : node);
+    } else if (el.table || el.tableOfContents) {
+      // Shown cell by cell; the first carries the whole table's size
+      const cells: EditorNode[] = [];
+      cellParagraphs([el], cells);
+      if (el.table) hasContent = true;
+      if (!cells.length) cells.push({ type: "paragraph", attrs: {}, content: [] });
+      cells.forEach((c, k) => nodes.push(lock(c, k === 0 ? size : 0)));
+    } else if (el.sectionBreak && i > 0) {
+      nodes.push(lock({ type: "paragraph", attrs: { kind: "section" }, content: [] }, size));
     }
   });
 
-  return { revisionId: doc.revisionId ?? "", empty: !hasContent, nodes: hasContent ? nodes : [] };
+  if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
+  return { revisionId: doc.revisionId ?? "", empty: !hasContent, nodes };
 }
 
 function stripNull<T extends object>(o: T): Partial<T> {

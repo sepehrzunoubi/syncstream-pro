@@ -234,22 +234,24 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
 
 // ── Progress marks for the read-only view of a running sync ────────────────
 
-export const progressKey = new PluginKey<{ typed: number }>("ssProgress");
+export const progressKey = new PluginKey<Progress>("ssProgress");
+
+/** How far a sync has typed; `ranges` are the editor tokens each segment came from */
+export interface Progress {
+  typed: number;
+  ranges?: [number, number][] | null;
+}
 
 /**
  * Source offset (text with "\n" between paragraphs, 1 per image) → document
- * position. Locked paragraphs (the document around a sync) are not source.
+ * position, for a document that is all source text.
  */
 export function offsetToPos(doc: Parameters<typeof DecorationSet.create>[0], offset: number): number {
   let chars = 0;
   let result = -1;
-  let seen = 0;
-  let regionEnd = -1;
-  doc.forEach((para, paraPos) => {
-    if (para.attrs.locked) return;
-    regionEnd = paraPos + para.nodeSize - 1;
+  doc.forEach((para, paraPos, idx) => {
     if (result >= 0) return;
-    if (seen++ > 0) chars += 1; // the newline before this paragraph
+    if (idx > 0) chars += 1; // the newline before this paragraph
     let len = 0;
     para.forEach((c) => { len += c.isText ? c.text!.length : 1; });
     if (offset > chars + len) { chars += len; return; }
@@ -270,44 +272,80 @@ export function offsetToPos(doc: Parameters<typeof DecorationSet.create>[0], off
     });
     if (result < 0) result = pos;
   });
-  return result < 0 ? (regionEnd >= 0 ? regionEnd : doc.content.size) : result;
+  return result < 0 ? doc.content.size : result;
 }
 
-/** Position just inside the end of the last paragraph that is not locked */
-function sourceEnd(doc: Parameters<typeof DecorationSet.create>[0]): number {
-  let end = doc.content.size;
-  doc.forEach((para, pos) => { if (!para.attrs.locked) end = pos + para.nodeSize - 1; });
-  return end;
+/** Position of each token, in the same order as doc-model's tokenize */
+export function tokenPositions(doc: Parameters<typeof DecorationSet.create>[0]): number[] {
+  const out: number[] = [];
+  doc.forEach((node, pos) => {
+    if (node.attrs.locked) { out.push(pos); return; }
+    let p = pos + 1;
+    node.forEach((child) => {
+      if (child.isText) for (let i = 0; i < child.text!.length; i++) out.push(p + i);
+      else if (child.type.name === "image" || child.type.name === "hardBreak") out.push(p);
+      p += child.nodeSize;
+    });
+    out.push(pos + node.nodeSize - 1); // the paragraph's end
+  });
+  return out;
+}
+
+function caretWidget() {
+  const el = document.createElement("span");
+  el.className = "ss-caret";
+  return el;
 }
 
 export const ProgressMarks = Extension.create({
   name: "progressMarks",
   addProseMirrorPlugins() {
     return [
-      new Plugin<{ typed: number }>({
+      new Plugin<Progress>({
         key: progressKey,
         state: {
           init: () => ({ typed: 0 }),
-          apply: (tr, value) => {
-            const meta = tr.getMeta(progressKey) as number | undefined;
-            return meta != null ? { typed: meta } : value;
-          },
+          apply: (tr, value) => (tr.getMeta(progressKey) as Progress | undefined) ?? value,
         },
         props: {
           decorations(state) {
-            const typed = progressKey.getState(state)?.typed ?? 0;
-            const pos = offsetToPos(state.doc, typed);
-            const end = sourceEnd(state.doc);
-            if (pos >= end) return DecorationSet.empty;
-            const caret = () => {
-              const el = document.createElement("span");
-              el.className = "ss-caret";
-              return el;
-            };
-            return DecorationSet.create(state.doc, [
-              Decoration.inline(pos, end, { class: "ss-untyped" }),
-              Decoration.widget(pos, caret, { side: -1, key: "caret" }),
-            ]);
+            const progress = progressKey.getState(state) ?? { typed: 0 };
+            const { doc } = state;
+            if (!progress.ranges?.length) {
+              // The whole document is the text being typed
+              const pos = offsetToPos(doc, progress.typed);
+              const end = doc.content.size - 1;
+              if (pos >= end) return DecorationSet.empty;
+              return DecorationSet.create(doc, [
+                Decoration.inline(pos, doc.content.size, { class: "ss-untyped" }),
+                Decoration.widget(pos, caretWidget, { side: -1, key: "caret" }),
+              ]);
+            }
+            // Additions spread through the document: grey out what is still to come
+            const positions = tokenPositions(doc);
+            const decos: Decoration[] = [];
+            const spans: [number, number][] = [];
+            let left = progress.typed;
+            let caretAt: number | null = null;
+            for (const [ts, te] of progress.ranges) {
+              const len = te - ts;
+              const from = Math.max(0, Math.min(len, left));
+              left -= len;
+              if (from >= len) continue;
+              if (caretAt == null && positions[ts + from] != null) caretAt = positions[ts + from];
+              for (let q = ts + from; q < te; q++) {
+                const p = positions[q];
+                if (p == null) continue;
+                const node = doc.nodeAt(p);
+                if (!node || !(node.isText || node.isInline)) continue;
+                const last = spans[spans.length - 1];
+                if (last && last[1] === p) last[1] = p + 1;
+                else spans.push([p, p + 1]);
+              }
+            }
+            for (const [from, to] of spans) decos.push(Decoration.inline(from, to, { class: "ss-untyped" }));
+            if (caretAt != null) decos.push(Decoration.widget(caretAt, caretWidget, { side: -1, key: "caret" }));
+            return DecorationSet.create(doc, decos);
           },
         },
       }),

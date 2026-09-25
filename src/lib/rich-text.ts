@@ -15,7 +15,7 @@ export type ListType = "bullet" | "ordered" | "check";
 /** Placeholder character for an inline image in the source text (one Docs index, like the image) */
 export const OBJ = "\uFFFC";
 
-const LIST_PRESETS: Record<ListType, string> = {
+export const LIST_PRESETS: Record<ListType, string> = {
   bullet: "BULLET_DISC_CIRCLE_SQUARE",
   ordered: "NUMBERED_DECIMAL_ALPHA_ROMAN",
   check: "BULLET_CHECKBOX",
@@ -34,7 +34,7 @@ export const NAMED_STYLES: Record<NamedStyle, { label: string; size: number; doc
 };
 export const NAMED_STYLE_ORDER: NamedStyle[] = ["normal", "title", "subtitle", "h1", "h2", "h3"];
 
-const DOCS_ALIGN: Record<Align, string> = { left: "START", center: "CENTER", right: "END", justify: "JUSTIFIED" };
+export const DOCS_ALIGN: Record<Align, string> = { left: "START", center: "CENTER", right: "END", justify: "JUSTIFIED" };
 
 export const DEFAULT_FONT = "Arial";
 
@@ -96,6 +96,8 @@ export interface ParagraphFormat {
   spacing: number;
   /** Bulleted, numbered or checklist paragraph */
   list?: ListType;
+  /** Exact indents in points, from a paragraph of an existing Google Doc (overrides indent/firstLine) */
+  exact?: { start: number; first: number };
 }
 
 export interface RunFormat {
@@ -228,19 +230,34 @@ export interface EditorNode {
   content?: EditorNode[];
 }
 
-type RunStyle = Omit<RunFormat, "len">;
+export type RunStyle = Omit<RunFormat, "len">;
 
-function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): ParagraphFormat {
+export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): ParagraphFormat {
   const a = attrs ?? {};
   const style = typeof a.styleName === "string" && a.styleName in NAMED_STYLES ? (a.styleName as NamedStyle) : "normal";
   const align = a.textAlign === "center" || a.textAlign === "right" || a.textAlign === "justify" ? a.textAlign : "left";
   const indent = typeof a.indent === "number" ? Math.max(0, Math.min(MAX_INDENT, Math.round(a.indent))) : 0;
   const spacing = typeof a.lineSpacing === "number" && Number.isFinite(a.lineSpacing) ? Math.max(50, Math.min(500, Math.round(a.lineSpacing))) : 115;
   const list = typeof a.list === "string" && LIST_TYPES.has(a.list) ? (a.list as ListType) : undefined;
-  return list ? { style, align, indent: 0, firstLine: false, spacing, list } : { style, align, indent, firstLine: a.firstLine === true, spacing };
+  if (list) return { style, align, indent: 0, firstLine: false, spacing, list };
+  const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing };
+  // Paragraphs read from Google Docs keep their exact indents
+  const box = a.box as { start?: unknown; first?: unknown } | null | undefined;
+  const exact = a.exact as { start?: unknown; first?: unknown } | null | undefined;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(-1000, Math.min(1000, v)) : 0);
+  if (box && typeof box === "object") p.exact = { start: num(box.start), first: num(box.start) + num(box.first) };
+  else if (exact && typeof exact === "object") p.exact = { start: num(exact.start), first: num(exact.first) };
+  return p;
 }
 
-function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
+/** Indent start and first line of a paragraph, in points */
+export function effectiveIndent(p: ParagraphFormat): { start: number; first: number } {
+  if (p.exact) return p.exact;
+  const start = p.indent * INDENT_PT;
+  return { start, first: start + (p.firstLine ? INDENT_PT : 0) };
+}
+
+export function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
   const s: RunStyle = {};
   for (const m of marks ?? []) {
     if (m.type === "bold") s.b = 1;
@@ -266,7 +283,7 @@ function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
   return s;
 }
 
-const sameStyle = (a: RunStyle, b: RunStyle) =>
+export const sameStyle = (a: RunStyle, b: RunStyle) =>
   a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.font === b.font && a.size === b.size &&
   a.color === b.color && a.bg === b.bg && a.link === b.link;
 
@@ -378,6 +395,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           firstLine: (p as ParagraphFormat).firstLine,
           lineSpacing: (p as ParagraphFormat).spacing,
           list: (p as ParagraphFormat).list,
+          exact: (p as ParagraphFormat).exact,
         }
       : undefined
   ));
@@ -521,7 +539,22 @@ export class FormatIndex {
       }
     }
 
-    // Character styles, split at run and paragraph boundaries, merged when equal.
+    requests.push(...this.textRequests(start, end, docIndex));
+
+    // The paragraph the next write appends to: created by this write (it
+    // inherited the old state), or the last paragraph this write styled.
+    let next = docList;
+    if (end > 0 && this.text[end - 1] !== "\n") {
+      const pl = this.paragraphIndexAt(end - 1);
+      if (processed.has(pl)) next = processed.get(pl) ?? null;
+    }
+    return { requests, docList: next };
+  }
+
+  /** Character styles for source range [start, end) at docIndex, split at run and paragraph boundaries, merged when equal */
+  textRequests(start: number, end: number, docIndex: number): DocsRequest[] {
+    const requests: DocsRequest[] = [];
+    const at = (offset: number) => docIndex + offset - start;
     let pending: { from: number; to: number; key: string; style: DocsRequest } | null = null;
     const flush = () => {
       if (pending) requests.push(textRequest(pending.style, at(pending.from), at(pending.to)));
@@ -546,15 +579,7 @@ export class FormatIndex {
       pos = segEnd;
     }
     flush();
-
-    // The paragraph the next write appends to: created by this write (it
-    // inherited the old state), or the last paragraph this write styled.
-    let next = docList;
-    if (end > 0 && this.text[end - 1] !== "\n") {
-      const pl = this.paragraphIndexAt(end - 1);
-      if (processed.has(pl)) next = processed.get(pl) ?? null;
-    }
-    return { requests, docList: next };
+    return requests;
   }
 
   /** Source offset of the first paragraph of the list that paragraph p belongs to */
@@ -580,6 +605,66 @@ export class FormatIndex {
   }
 }
 
+/**
+ * Formatting for text typed at one spot inside an existing document.
+ *
+ * Line k of the text belongs to paragraph k of the format. Line 0 continues
+ * the paragraph the text is typed into, and every typed newline opens a
+ * paragraph that copies the style of the one it was typed in (bullets
+ * included), as in Docs. So after each write, every paragraph the write
+ * touched is set to its paragraph format, and bullets are added or removed
+ * only where the copied list state is wrong.
+ */
+export class SegmentFormat {
+  private readonly index: FormatIndex;
+  private readonly lineStarts: number[];
+
+  constructor(private readonly text: string, private readonly format: RichFormat) {
+    this.index = new FormatIndex(text, format);
+    this.lineStarts = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === "\n") this.lineStarts.push(i + 1);
+  }
+
+  imageAt(at: number): ImageRef | undefined {
+    return this.index.imageAt(at);
+  }
+
+  uniformStyleRequests(offset: number, length: number, docIndex: number): DocsRequest[] {
+    return this.index.uniformStyleRequests(offset, length, docIndex);
+  }
+
+  /** `list` is the list state of the paragraph being typed into before this write */
+  writeRequests(start: number, end: number, docIndex: number, list: DocListState): { requests: DocsRequest[]; docList: DocListState } {
+    if (end <= start) return { requests: [], docList: list };
+    const requests: DocsRequest[] = [];
+    const at = (offset: number) => docIndex + offset - start;
+    const first = lastLE(this.lineStarts, start);
+    let last = lastLE(this.lineStarts, end - 1);
+    // A newline typed last opens the next paragraph: style that one too
+    if (this.text[end - 1] === "\n") last += 1;
+    let cur = list;
+    for (let l = first; l <= last; l++) {
+      const lineStart = this.lineStarts[l] ?? this.text.length;
+      const lineEnd = (this.lineStarts[l + 1] ?? this.text.length + 1) - 1; // offset of its newline
+      const from = Math.max(lineStart, start);
+      let to = Math.min(lineEnd + 1, end);
+      if (to <= from) to = from + 1; // one index inside the paragraph after a typed newline
+      const range = { startIndex: at(from), endIndex: at(to) };
+      const para = this.format.paragraphs[l] ?? DEFAULT_PARAGRAPH;
+      requests.push(paragraphRequest(para, range.startIndex, range.endIndex));
+      const want = para.list ?? null;
+      if ((cur?.type ?? null) !== want) {
+        if (cur) requests.push({ deleteParagraphBullets: { range } });
+        if (want) requests.push({ createParagraphBullets: { range, bulletPreset: LIST_PRESETS[want] } });
+        cur = want ? { type: want, start: lineStart } : null;
+        if (!want) requests.push(paragraphRequest(para, range.startIndex, range.endIndex)); // indents Docs kept from the bullets
+      }
+    }
+    requests.push(...this.index.textRequests(start, end, docIndex));
+    return { requests, docList: cur };
+  }
+}
+
 function lastLE(sorted: number[], value: number): number {
   let lo = 0;
   let hi = sorted.length - 1;
@@ -594,12 +679,12 @@ function lastLE(sorted: number[], value: number): number {
   return ans;
 }
 
-function rgb(hex: string) {
+export function rgb(hex: string) {
   const n = parseInt(hex.slice(1), 16);
   return { color: { rgbColor: { red: ((n >> 16) & 255) / 255, green: ((n >> 8) & 255) / 255, blue: (n & 255) / 255 } } };
 }
 
-function resolveTextStyle(run: RunFormat, para: ParagraphFormat): DocsRequest {
+export function resolveTextStyle(run: RunStyle, para: ParagraphFormat): DocsRequest {
   const style: DocsRequest = {
     bold: !!run.b,
     italic: !!run.i,
@@ -616,7 +701,7 @@ function resolveTextStyle(run: RunFormat, para: ParagraphFormat): DocsRequest {
   return style;
 }
 
-function textRequest(textStyle: DocsRequest, startIndex: number, endIndex: number): DocsRequest {
+export function textRequest(textStyle: DocsRequest, startIndex: number, endIndex: number): DocsRequest {
   return {
     updateTextStyle: {
       range: { startIndex, endIndex },
@@ -626,7 +711,7 @@ function textRequest(textStyle: DocsRequest, startIndex: number, endIndex: numbe
   };
 }
 
-function paragraphRequest(p: ParagraphFormat, startIndex: number, endIndex: number): DocsRequest {
+export function paragraphRequest(p: ParagraphFormat, startIndex: number, endIndex: number): DocsRequest {
   if (p.list) {
     // Bullets own the indentation of list items
     return {
@@ -637,15 +722,15 @@ function paragraphRequest(p: ParagraphFormat, startIndex: number, endIndex: numb
       },
     };
   }
-  const indentStart = p.indent * INDENT_PT;
+  const indent = effectiveIndent(p);
   return {
     updateParagraphStyle: {
       range: { startIndex, endIndex },
       paragraphStyle: {
         namedStyleType: NAMED_STYLES[p.style].docs,
         alignment: DOCS_ALIGN[p.align],
-        indentStart: { magnitude: indentStart, unit: "PT" },
-        indentFirstLine: { magnitude: indentStart + (p.firstLine ? INDENT_PT : 0), unit: "PT" },
+        indentStart: { magnitude: indent.start, unit: "PT" },
+        indentFirstLine: { magnitude: indent.first, unit: "PT" },
         lineSpacing: p.spacing,
       },
       fields: "namedStyleType,alignment,indentStart,indentFirstLine,lineSpacing",

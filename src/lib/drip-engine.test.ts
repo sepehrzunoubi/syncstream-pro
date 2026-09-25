@@ -122,3 +122,20 @@ test("custom breaks are never extended with extra gaps", () => {
   assert.deepEqual(short.breaks, [10, 20]);
   assert.equal(short.fitsTarget, true);
 });
+
+test("boundaries: no action crosses a jump to another spot", async () => {
+  const { buildDripPlan } = await import("./drip-engine");
+  const text = "first answer here" + "second one" + " and a third bit";
+  const boundaries = [17, 27];
+  for (let seed = 1; seed < 30; seed++) {
+    const plan = buildDripPlan(text, { seed, boundaries, typoFrequency: 1, breaks: [] });
+    let pos = 0;
+    for (const a of plan.actions) {
+      if (a.kind === "pause") continue;
+      const end = pos + a.text.length;
+      for (const b of boundaries) assert.ok(!(pos < b && b < end), `action "${a.text}" crosses ${b}`);
+      pos = end;
+    }
+    assert.equal(pos, text.length);
+  }
+});

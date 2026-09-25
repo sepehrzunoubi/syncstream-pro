@@ -41,6 +41,11 @@ export interface PlanOptions {
   typoFrequency?: number;
   /** Seed for reproducible plans. Random when omitted. */
   seed?: number;
+  /**
+   * Offsets where the text jumps to another spot in the document. No chunk
+   * or typo crosses one, and each is a paragraph-length pause.
+   */
+  boundaries?: number[];
 }
 
 export interface DripPlan {
@@ -146,6 +151,21 @@ interface Chunk {
   endsParagraph: boolean;
 }
 
+/** Chunks for each stretch between boundaries, in order */
+function chunkParts(text: string, rng: Rng, boundaries: number[] | undefined): Chunk[] {
+  const cuts = (boundaries ?? []).filter((b, i, all) => Number.isInteger(b) && b > 0 && b < text.length && (i === 0 || b > all[i - 1]));
+  if (!cuts.length) return chunkText(text, rng);
+  const chunks: Chunk[] = [];
+  let from = 0;
+  for (const to of [...cuts, text.length]) {
+    const part = chunkText(text.slice(from, to), rng);
+    if (to < text.length && part.length) part[part.length - 1] = { ...part[part.length - 1], endsParagraph: true };
+    chunks.push(...part);
+    from = to;
+  }
+  return chunks;
+}
+
 /** Split text into 1–3 word chunks whose concatenation is exactly the input. */
 function chunkText(text: string, rng: Rng): Chunk[] {
   const tokens = text.match(/\s*\S+\s*/g) ?? [];
@@ -241,7 +261,7 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
   const rng = createRng(seed);
   const typoFrequency = clamp(options.typoFrequency ?? 0.5, 0, 1);
   const totalChars = text.length;
-  const chunks = chunkText(text, rng);
+  const chunks = chunkParts(text, rng, options.boundaries);
   const wordCount = chunks.reduce((s, c) => s + c.words, 0);
 
   // Typo cadence in characters

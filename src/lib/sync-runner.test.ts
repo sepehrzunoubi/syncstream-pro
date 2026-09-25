@@ -566,3 +566,71 @@ test("a paragraph opened from a bulleted one leaves that list", async () => {
   assert.ok(del, "bullets inherited from the list item are removed");
   assert.equal(del!.deleteParagraphBullets.range.startIndex, 26);
 });
+
+// ── Additions in several places ───────────────────────────────────────────
+
+import { additions, PENDING_MARK } from "./doc-model";
+import { planSpots } from "./spots";
+import type { EditorNode } from "./rich-text";
+
+const plainOf = (d: EditorNode) => (d.content ?? []).map((n) => (n.content ?? []).map((c) => c.text ?? "").join("")).join("\n");
+
+async function additionsHarness(base: EditorNode, target: EditorNode, seed: number) {
+  const { segments, text, boundaries } = additions(base, target);
+  const plan = buildDripPlan(text, { seed, boundaries, breaks: [], typoFrequency: 1 });
+  const existing = plainOf(base);
+  const h = await makeHarness(text, { actions: plan.actions, existing });
+  const stored = (await h.store.getPlan(h.jobId))!;
+  let start = 0;
+  const planSegments = segments.map((s) => {
+    const seg = { start, end: start + s.text.length, mode: s.mode, format: s.format };
+    start += s.text.length;
+    return seg;
+  });
+  await h.store.setPlan({ ...stored, segments: planSegments });
+  const job = (await h.store.getJob(h.jobId))!;
+  await h.store.setJob({ ...job, spots: planSpots("\0" + existing + "\n", segments) });
+  return h;
+}
+
+const para = (...pieces: (string | { add: string })[]): EditorNode => ({
+  type: "paragraph",
+  content: pieces.map((x) => (typeof x === "string" ? { type: "text", text: x } : { type: "text", text: x.add, marks: [{ type: PENDING_MARK }] })),
+});
+
+test("additions in several places are typed at each spot, top to bottom, typos and all", async () => {
+  const base: EditorNode = { type: "doc", content: [para("Logistics:"), para("What is your phone number?"), para("Where will you be?"), para("Why join?"), para("")] };
+  const target: EditorNode = {
+    type: "doc",
+    content: [
+      para({ add: "Application" }),
+      para("Logistics:"),
+      para("What is your phone number?"),
+      para({ add: "845-555-0100" }),
+      para("Where will you be", { add: " this fall" }, "?"),
+      para({ add: "In New York City, near campus." }),
+      para("Why join?"),
+      para({ add: "Because I love building things with other people." }),
+      para({ add: "And learning from them." }),
+      para(""),
+    ],
+  };
+  for (const seed of [1, 2, 3]) {
+    const h = await additionsHarness(base, target, seed);
+    await runJobWindow(h.jobId, 0, h.deps);
+    await drain(h);
+    assert.equal(h.doc.text, plainOf(target), `seed ${seed}`);
+    assert.equal((await h.store.getJob(h.jobId))!.status, "done");
+  }
+});
+
+test("additions keep their places when the document is edited above them mid-sync", async () => {
+  const base: EditorNode = { type: "doc", content: [para("Question one?"), para("Question two?")] };
+  const target: EditorNode = { type: "doc", content: [para("Question one?"), para({ add: "Answer one." }), para("Question two?"), para({ add: "Answer two." })] };
+  const h = await additionsHarness(base, target, 4);
+  let n = 0;
+  h.doc.onBatch = () => { if (n++ % 2 === 0) h.doc.text = "Hi. " + h.doc.text; };
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text.replace(/^(Hi\. )+/, ""), plainOf(target));
+});

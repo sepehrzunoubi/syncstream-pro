@@ -53,7 +53,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
     dom.classList.add("ss-painting");
     const applyPaint = () => setTimeout(() => {
       if (editor.state.selection.empty) return;
-      let chain = editor.chain().focus().unsetAllMarks();
+      let chain = editor.chain().focus().unsetFormattingMarks();
       for (const m of painter.marks) chain = chain.setMark(m.type, m.attrs);
       const { styleName, textAlign, lineSpacing, indent, firstLine, list } = painter.para;
       chain.updateAttributes("paragraph", { styleName, textAlign, lineSpacing, indent, firstLine, list }).run();
@@ -73,7 +73,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
     if (!editor) return;
     if (painter) { setPainter(null); return; }
     const { state } = editor;
-    const marks = (state.storedMarks ?? state.selection.$from.marks()).map((m) => ({ type: m.type.name, attrs: { ...m.attrs } }));
+    // Paint format copies formatting, never whether text is an addition
+    const marks = (state.storedMarks ?? state.selection.$from.marks()).filter((m) => m.type.name !== "syncAdd").map((m) => ({ type: m.type.name, attrs: { ...m.attrs } }));
     setPainter({ marks, para: { ...editor.getAttributes("paragraph") } });
   };
   const s = useEditorState({

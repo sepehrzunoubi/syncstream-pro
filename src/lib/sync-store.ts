@@ -19,6 +19,32 @@ export interface SyncPlan {
   createdAt: number;
   /** Character and paragraph formatting of the source text (absent on older plans) */
   format?: RichFormat;
+  /**
+   * Additions to an existing document: the source text is these segments
+   * back to back, each typed at its own spot, top to bottom.
+   */
+  segments?: PlanSegment[];
+}
+
+export interface PlanSegment {
+  /** Source offsets [start, end) */
+  start: number;
+  end: number;
+  /** "inline": typed where it goes. "before": a new paragraph is opened there first. */
+  mode: "inline" | "before";
+  /** Formatting of this segment's text: line k is paragraph k */
+  format: RichFormat;
+}
+
+/** Where a segment is being typed: found again from the text before it on every write */
+export interface SpotState {
+  /** Document text just before the spot, as it will be once earlier segments are typed */
+  ctx: string;
+  /** Expected index of the next character */
+  cursor: number;
+  opened: boolean;
+  /** List state of the paragraph being typed into */
+  docList?: DocListState;
 }
 
 /** Small mutable state, rewritten as the job progresses. */
@@ -53,6 +79,8 @@ export interface SyncJob {
   docList?: DocListState;
   /** Where a sync into an existing document types. Absent: it appends at the end. */
   anchor?: JobAnchor;
+  /** Per-segment typing positions, for plans with segments */
+  spots?: SpotState[];
   failures: number;
 
   // Credentials for the Docs API
@@ -93,15 +121,20 @@ export interface JobAnchor {
 
 /** What the running view shows around the sync: the document's paragraphs before and after it */
 export interface SyncContext {
-  before: unknown[];
-  after: unknown[];
+  /** The editor document at start, additions marked */
+  doc?: unknown;
+  /** For each segment, the editor tokens its text came from */
+  ranges?: [number, number][];
+  /** Older syncs: the document's paragraphs before and after the text */
+  before?: unknown[];
+  after?: unknown[];
 }
 
-export type PublicJob = Omit<SyncJob, "accessToken" | "refreshToken" | "inFlight" | "docList" | "anchor">;
+export type PublicJob = Omit<SyncJob, "accessToken" | "refreshToken" | "inFlight" | "docList" | "anchor" | "spots">;
 
 export function toPublicJob(job: SyncJob): PublicJob {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { accessToken, refreshToken, inFlight, docList, anchor, ...rest } = job;
+  const { accessToken, refreshToken, inFlight, docList, anchor, spots, ...rest } = job;
   return rest;
 }
 

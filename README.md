@@ -88,7 +88,7 @@ src/
 │   ├── api/
 │   │   ├── auth/        # OAuth login, callback, logout, me
 │   │   ├── cron/        # sync-watchdog (daily safety net for lost queue messages)
-│   │   ├── docs/        # List recent Google Docs, create a doc, read a doc's content
+│   │   ├── docs/        # List recent Google Docs, create a doc, read a doc, save edits to it
 │   │   ├── health/      # Live check of every configured service (signed-in users)
 │   │   ├── images/      # Upload pasted images and serve them so Google Docs can fetch them
 │   │   └── sync/        # start / list / status / pause / resume / cancel / dismiss / source / process
@@ -107,7 +107,7 @@ src/
 │   │   ├── ruler.tsx            # Ruler with draggable indent markers
 │   │   ├── extensions.ts        # Editor (TipTap) setup: paragraph styles, indents, fonts, lists, images, paste
 │   │   ├── pagination.ts        # Splits the document into US Letter pages; marks typing progress
-│   │   ├── sync-region.ts       # Locked document content around the highlighted text to sync
+│   │   ├── doc-sync.ts          # New text glows as an addition; list numbers; locked tables
 │   │   ├── paged-surface.tsx    # Draws the page sheets behind the editor
 │   │   ├── sync-panel.tsx       # Total time, breaks, typos, start time, plan
 │   │   ├── job-panel.tsx        # Status and controls of a running sync
@@ -118,7 +118,8 @@ src/
 │   ├── drip-engine.ts   # Seeded planner: chunks, pauses, typos, breaks, target duration
 │   ├── rich-text.ts     # Formatting model and the Docs formatting requests for any text range
 │   ├── image-store.ts   # Redis storage for uploaded images (14 days)
-│   ├── doc-import.ts    # Reads an existing Google Doc for display, with the spots a sync can go
+│   ├── doc-import.ts    # Reads an existing Google Doc into the editor
+│   ├── doc-model.ts     # Compares the editor with the saved doc: direct edits to save, additions to sync
 │   ├── sync-runner.ts   # Queue-driven worker: bounded windows, lock, idempotent writes, retries
 │   ├── sync-store.ts    # Redis-backed plans, jobs, per-user index, locks, control intents
 │   ├── sync-api.ts      # Ownership checks and lock-aware job mutations for the routes
@@ -152,7 +153,7 @@ Each hand-off is one QStash message. A typical 300-word sync uses roughly 60 to 
 
 The dashboard is laid out like Google Docs: a File, Edit, View, Insert and Format menu bar, the formatting toolbar, a ruler with draggable indent markers, the page in the middle, your syncs on the left and the sync settings on the right. Animations use Framer Motion and turn off when the system asks for reduced motion.
 
-- **Documents that already have text.** Pick a document and its current content appears on the page, locked. You can't change it from SyncStream; edit it in Google Docs instead. Esc switches between two modes. While placing, your text is dimmed and a line follows your pointer to show where it will go; click to drop it there. While locked, the document is just a page to read, and a blue bar marks your text. A document opens in placing mode, and typing or clicking a spot locks your text in place. Select all selects only your text. When the sync runs, your text is typed at that spot as new paragraphs. The worker finds its place again before every edit, so changes made elsewhere in the document while it runs don't throw it off. If the document changed between opening it and starting, SyncStream reloads it and asks you to check the spot again.
+- **Documents that already have text.** Pick a document and it opens on the page, fully editable. Formatting, deleting and restructuring existing text saves straight to Google Docs, like Docs autosave. Anything you type or paste is new text: it glows until a sync types it in, and you can add it in as many places as you like. Start sync types every glowing addition, top to bottom, each at its own spot. While it runs, the worker finds each spot again before every edit, so changes elsewhere in the document don't throw it off. Tables, smart chips and section breaks are shown but can't be edited here. Additions are kept on this device per document until they are synced. If the document changes in Google Docs, SyncStream reloads it and puts your additions back where they were.
 - **Pages.** The editor splits your text into US Letter pages with one-inch margins, like Docs. File > Page setup switches to Pageless. Narrow screens always use pageless. While a sync runs, the same paginated page shows what has been typed so far, with a caret at the current position.
 - **Formatting.** Paragraph styles (Normal text, Title, Subtitle, Headings 1 to 3), fonts, sizes in points, bold, italic, underline, strikethrough, text colour, highlight, links, alignment, line spacing, indents and first-line indent (Tab at the start of a paragraph). The toolbar also has undo, redo, print, spell check and paint format. The same shortcuts as Docs work. Pasting from Google Docs or Word keeps this formatting. Every chunk is typed into the Google Doc together with its formatting in a single API call.
 - **Lists.** Bulleted, numbered and checklists, from the toolbar, the Format menu, or by typing "- ", "1. " or "[] ". They become real Docs lists. Nested lists are flattened to one level, and checklist items are created unchecked because the Docs API cannot tick them.

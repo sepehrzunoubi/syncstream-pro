@@ -164,6 +164,23 @@ export async function deleteRange(
   );
 }
 
+/**
+ * Apply edits made against revision `revisionId`. Docs merges them with
+ * anything collaborators changed since. Returns the revision afterwards.
+ */
+export async function editDocument(accessToken: string, documentId: string, requests: object[], revisionId?: string): Promise<string> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const docs = google.docs({ version: "v1", auth: client });
+  const res = await withRetry(() =>
+    docs.documents.batchUpdate({
+      documentId,
+      requestBody: { requests, ...(revisionId ? { writeControl: { targetRevisionId: revisionId } } : {}) },
+    })
+  );
+  return res.data.writeControl?.requiredRevisionId ?? "";
+}
+
 /** Apply Docs requests in one atomic batchUpdate */
 export async function batchUpdate(accessToken: string, documentId: string, requests: object[]) {
   if (requests.length === 0) return;

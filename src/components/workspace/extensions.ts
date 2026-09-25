@@ -5,7 +5,7 @@ import { TextStyle, Color } from "@tiptap/extension-text-style";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
-import { SyncRegion } from "./sync-region";
+import { DocSync, SyncAdd } from "./doc-sync";
 import TextAlign from "@tiptap/extension-text-align";
 import {
   cssFontToFamily,
@@ -80,21 +80,28 @@ const DocParagraph = Paragraph.extend({
         },
         renderHTML: (a: { list?: string | null }) => (a.list ? { "data-list": a.list } : {}),
       },
-      // A paragraph of the Google Doc being synced into: shown as it is there, not editable
+      // Part of the Google Doc the editor can't change (a table, a smart chip): shown, not editable
       locked: {
         default: false,
+        keepOnSplit: false,
         parseHTML: () => false,
         renderHTML: (a: { locked?: boolean }) => (a.locked ? { "data-locked": "" } : {}),
       },
-      /** Where a sync can go around a locked paragraph (not rendered) */
-      anchors: { default: null, parseHTML: () => null, rendered: false },
-      /** The list label a locked paragraph shows in Docs ("2.", "a.", "●") */
-      label: {
+      /** Docs indices a locked paragraph covers, and its identity (not rendered) */
+      span: { default: null, keepOnSplit: false, parseHTML: () => null, rendered: false },
+      bid: { default: null, keepOnSplit: false, parseHTML: () => null, rendered: false },
+      /** "section" for a section break */
+      kind: {
         default: null,
+        keepOnSplit: false,
         parseHTML: () => null,
-        renderHTML: (a: { label?: string | null }) => (a.label != null ? { "data-label": a.label } : {}),
+        renderHTML: (a: { kind?: string | null }) => (a.kind ? { "data-kind": a.kind } : {}),
       },
-      /** Exact indents and spacing of a locked paragraph, in points */
+      /** Which Docs list a paragraph belongs to, its level, and what Docs draws for it (labels are decorations) */
+      listId: { default: null, parseHTML: () => null, rendered: false },
+      level: { default: null, parseHTML: () => null, rendered: false },
+      glyph: { default: null, parseHTML: () => null, rendered: false },
+      /** Exact indents and spacing of a paragraph read from Docs, in points */
       box: {
         default: null,
         parseHTML: () => null,
@@ -104,6 +111,7 @@ const DocParagraph = Paragraph.extend({
           const css: string[] = [];
           if (a.list) {
             css.push(`--ss-li-start: ${b.start ?? 36}pt`, `--ss-li-marker: ${b.marker ?? -18}pt`);
+            return { style: css.concat(b.above != null ? [`margin-top: ${b.above}pt`] : [], b.below != null ? [`margin-bottom: ${b.below}pt`] : []).join("; "), "data-box": "" };
           } else {
             if (b.start) css.push(`margin-left: ${b.start}pt`);
             if (b.first) css.push(`text-indent: ${b.first}pt`);
@@ -168,6 +176,16 @@ function paragraphsInSelection(editor: { state: Editor["state"] }, from: number,
   return found;
 }
 
+/** Leaving a list, or starting a new one: Docs makes a new list, with default indents */
+const NO_LIST = { list: null, listId: null, level: null, glyph: null, box: null };
+
+/** Indent steps of a paragraph, counting exact indents read from Docs */
+function stepsOf(a: Record<string, unknown>): number {
+  const box = a.box as { start?: number } | null;
+  if (box && typeof box.start === "number") return Math.max(0, Math.min(MAX_INDENT, Math.round(box.start / INDENT_PT)));
+  return typeof a.indent === "number" ? a.indent : 0;
+}
+
 const DocFormat = Extension.create({
   name: "docFormat",
   addCommands() {
@@ -208,9 +226,9 @@ const DocFormat = Extension.create({
           .updateAttributes("paragraph", { styleName: style })
           .run();
       },
-      indent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.min(MAX_INDENT, ((a.indent as number) ?? 0) + 1) })),
-      outdent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.max(0, ((a.indent as number) ?? 0) - 1) })),
-      setFirstLine: (on) => updateParagraphs((a) => (a.list ? {} : { firstLine: on })),
+      indent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.min(MAX_INDENT, stepsOf(a) + 1), box: null })),
+      outdent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.max(0, stepsOf(a) - 1), box: null })),
+      setFirstLine: (on) => updateParagraphs((a) => (a.list ? {} : { indent: stepsOf(a), firstLine: on, box: null })),
       toggleList: (type) => ({ tr, state, dispatch }) => {
         const { from, to } = state.selection;
         const paras: { pos: number; attrs: Record<string, unknown> }[] = [];
@@ -219,7 +237,7 @@ const DocFormat = Extension.create({
         });
         const allOn = paras.length > 0 && paras.every((p) => p.attrs.list === type);
         for (const p of paras) {
-          tr.setNodeMarkup(p.pos, undefined, allOn ? { ...p.attrs, list: null } : { ...p.attrs, list: type, indent: 0, firstLine: false });
+          tr.setNodeMarkup(p.pos, undefined, allOn ? { ...p.attrs, ...NO_LIST } : { ...p.attrs, ...NO_LIST, list: type, indent: 0, firstLine: false });
         }
         if (dispatch) dispatch(tr);
         return true;
@@ -227,8 +245,8 @@ const DocFormat = Extension.create({
       setLineSpacing: (spacing) => updateParagraphs(() => ({ lineSpacing: spacing })),
       clearFormatting: () => ({ chain }) =>
         chain()
-          .unsetAllMarks()
-          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, list: null })))
+          .unsetFormattingMarks()
+          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null })))
           .run(),
     };
   },
@@ -256,14 +274,14 @@ const DocFormat = Extension.create({
     return {
       Enter: ({ editor }) => {
         // Enter on an empty list item ends the list, as in Docs
-        if (inEmptyListItem(editor)) return editor.commands.updateAttributes("paragraph", { list: null });
+        if (inEmptyListItem(editor)) return editor.commands.updateAttributes("paragraph", NO_LIST);
         return false;
       },
       Backspace: ({ editor }) => {
         const { selection } = editor.state;
         const parent = selection.$from.parent;
         if (selection.empty && selection.$from.parentOffset === 0 && parent.attrs.list) {
-          return editor.commands.updateAttributes("paragraph", { list: null });
+          return editor.commands.updateAttributes("paragraph", NO_LIST);
         }
         return false;
       },
@@ -384,5 +402,6 @@ export const editorExtensions = [
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
   Pagination,
-  SyncRegion,
+  SyncAdd,
+  DocSync,
 ];

@@ -17,7 +17,7 @@
 
 import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
-import { FormatIndex, OBJ, type DocsRequest } from "./rich-text";
+import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef } from "./rich-text";
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 
 export interface DocsApi {
@@ -219,9 +219,32 @@ export async function runJobWindow(
   }
 }
 
+/** Formatting lookups used while typing */
+interface Formats {
+  writeRequests(start: number, end: number, docIndex: number, list: DocListState): { requests: DocsRequest[]; docList: DocListState };
+  uniformStyleRequests(offset: number, length: number, docIndex: number): DocsRequest[];
+  imageAt(at: number): ImageRef | undefined;
+}
+
+/** A typing position inside the document, and what goes with it */
+interface Place {
+  state: { ctx: string; cursor: number; opened: boolean };
+  /** Source text already typed at this place */
+  typed: string;
+  /** Index for the newline that opens the paragraph to type into, or null when nothing needs opening */
+  openAt: ((at: number) => number) | null;
+  fx: Formats | null;
+  /** Offset of the next character in fx's terms */
+  offset: number;
+  list: DocListState;
+  setList(list: DocListState): void;
+}
+
 /** Per-invocation working state around a job. */
 class Context {
   private formatIndex: FormatIndex | null | undefined;
+  private sourceText: string | undefined;
+  private segmentFormats = new Map<number, SegmentFormat>();
 
   constructor(
     public job: SyncJob,
@@ -312,9 +335,51 @@ class Context {
     return s.slice(-CONTEXT_CHARS);
   }
 
-  /** Text just before the typing position of an anchored job: the doc text it started after, then what it typed */
-  private anchoredContext(anchor: JobAnchor): string {
-    return (anchor.ctx + this.sentContext()).slice(-CONTEXT_CHARS);
+  private source(): string {
+    if (this.sourceText !== undefined) return this.sourceText;
+    let source = "";
+    for (const a of this.plan.actions) if (a.kind !== "pause") source += a.text;
+    return (this.sourceText = source);
+  }
+
+  /** Where the next character goes, for jobs typing inside the document (null: append at the end) */
+  private place(): Place | null {
+    const segments = this.plan.segments;
+    const spots = this.job.spots;
+    const offset = this.job.charsSent;
+    if (segments?.length && spots?.length === segments.length) {
+      let j = segments.findIndex((s) => offset >= s.start && offset < s.end);
+      if (j < 0) j = segments.length - 1;
+      const seg = segments[j];
+      const spot = spots[j];
+      let fx = this.segmentFormats.get(j);
+      if (!fx) {
+        fx = new SegmentFormat(this.source().slice(seg.start, seg.end), seg.format);
+        this.segmentFormats.set(j, fx);
+      }
+      return {
+        state: spot,
+        typed: this.source().slice(seg.start, offset),
+        openAt: seg.mode === "before" ? (at) => at : null,
+        fx,
+        offset: offset - seg.start,
+        list: spot.docList ?? null,
+        setList: (list) => { spot.docList = list; },
+      };
+    }
+    const anchor: JobAnchor | undefined = this.job.anchor;
+    if (anchor) {
+      return {
+        state: anchor,
+        typed: this.sentContext(),
+        openAt: (at) => (anchor.mode === "after" ? at - 1 : at),
+        fx: this.formats(),
+        offset,
+        list: this.job.docList ?? null,
+        setList: (list) => { this.job.docList = list; },
+      };
+    }
+    return null;
   }
 
   /** Formatting lookups for this plan, or null for plans without formatting. */
@@ -322,9 +387,7 @@ class Context {
     if (this.formatIndex !== undefined) return this.formatIndex;
     const format = this.plan.format;
     if (!format) return (this.formatIndex = null);
-    let source = "";
-    for (const a of this.plan.actions) if (a.kind !== "pause") source += a.text;
-    return (this.formatIndex = new FormatIndex(source, format));
+    return (this.formatIndex = new FormatIndex(this.source(), format));
   }
 
   /**
@@ -342,25 +405,25 @@ class Context {
       marker.action === this.job.currentAction &&
       marker.step === step &&
       marker.text === text;
-    const anchor = this.job.anchor;
+    const place = this.place();
     let alreadyLanded: boolean;
     let index: number;
-    /** Opens the new paragraph at the anchor, in the same batch as the first text */
+    /** Opens the new paragraph at the place, in the same batch as the first text */
     const open: DocsRequest[] = [];
-    if (!anchor) {
+    if (!place) {
       alreadyLanded = markerMatches && snap.tail.endsWith(this.sentContext() + text);
       index = snap.endIndex - 1;
     } else {
-      const before = this.anchoredContext(anchor);
-      const landedAt = markerMatches ? locate(snap.chars, before + text, anchor.cursor + text.length) : null;
+      const before = (place.state.ctx + place.typed).slice(-CONTEXT_CHARS);
+      const landedAt = markerMatches ? locate(snap.chars, before + text, place.state.cursor + text.length) : null;
       alreadyLanded = landedAt != null;
       if (landedAt != null) {
         index = landedAt - text.length;
       } else {
-        const at = relocate(snap.chars, before, anchor.cursor);
+        const at = relocate(snap.chars, before, place.state.cursor);
         if (at == null) throw new Error(LOST_PLACE);
         index = at;
-        if (!anchor.opened) open.push({ insertText: { location: { index: anchor.mode === "after" ? at - 1 : at }, text: "\n" } });
+        if (!place.state.opened && place.openAt) open.push({ insertText: { location: { index: place.openAt(at) }, text: "\n" } });
       }
     }
     if (alreadyLanded) {
@@ -370,14 +433,15 @@ class Context {
       this.job.inFlight = { action: this.job.currentAction, step, text };
       await this.persist();
     }
-    const fx = this.formats();
-    const offset = this.job.charsSent;
-    let nextList = this.job.docList ?? null;
+    const fx: Formats | null = place ? place.fx : this.formats();
+    const offset = place ? place.offset : this.job.charsSent;
+    const list = place ? place.list : this.job.docList ?? null;
+    let nextList = list;
     if (!alreadyLanded) {
-      const requests: DocsRequest[] = [...open, ...this.contentRequests(text, index, isSource ? offset : null)];
+      const requests: DocsRequest[] = [...open, ...this.contentRequests(text, index, isSource ? offset : null, fx)];
       if (fx) {
         if (isSource) {
-          const r = fx.writeRequests(offset, offset + text.length, index, this.job.docList ?? null);
+          const r = fx.writeRequests(offset, offset + text.length, index, list);
           requests.push(...r.requests);
           nextList = r.docList;
         } else {
@@ -385,24 +449,26 @@ class Context {
         }
       }
       await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests));
-      this.job.liveWordCount = snap.wordCount + countWords(text, anchor ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
+      this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
     } else if (fx && isSource) {
       // The earlier attempt's requests landed with the text, so its list state did too
-      nextList = fx.writeRequests(offset, offset + text.length, index, this.job.docList ?? null).docList;
+      nextList = fx.writeRequests(offset, offset + text.length, index, list).docList;
     }
-    if (isSource && fx) this.job.docList = nextList;
-    if (anchor) {
-      anchor.opened = true;
-      anchor.cursor = index + text.length;
+    if (isSource && fx) {
+      if (place) place.setList(nextList);
+      else this.job.docList = nextList;
+    }
+    if (place) {
+      place.state.opened = true;
+      place.state.cursor = index + text.length;
     }
     this.job.inFlight = undefined;
     if (isSource) this.job.charsSent += text.length;
   }
 
   /** insertText for text, insertInlineImage for each image placeholder, in order */
-  private contentRequests(text: string, index: number, sourceOffset: number | null): DocsRequest[] {
+  private contentRequests(text: string, index: number, sourceOffset: number | null, fx: Formats | null): DocsRequest[] {
     const requests: DocsRequest[] = [];
-    const fx = this.formats();
     let pos = index;
     let buf = "";
     const flush = () => {
@@ -428,19 +494,19 @@ class Context {
   private async erase(wrong: string): Promise<void> {
     if (wrong.length === 0) return;
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
-    const anchor = this.job.anchor;
-    if (anchor) {
-      const before = this.anchoredContext(anchor);
-      const end = relocate(snap.chars, before + wrong, anchor.cursor, wrong.length);
+    const place = this.place();
+    if (place) {
+      const before = (place.state.ctx + place.typed).slice(-CONTEXT_CHARS);
+      const end = relocate(snap.chars, before + wrong, place.state.cursor, wrong.length);
       if (end == null) {
         // Already deleted by an earlier attempt?
-        const at = relocate(snap.chars, before, anchor.cursor - wrong.length);
+        const at = relocate(snap.chars, before, place.state.cursor - wrong.length);
         if (at == null) throw new Error(LOST_PLACE);
-        anchor.cursor = at;
+        place.state.cursor = at;
         return;
       }
       await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end));
-      anchor.cursor = end - wrong.length;
+      place.state.cursor = end - wrong.length;
       return;
     }
     if (!snap.tail.endsWith(wrong)) return; // already deleted by an earlier attempt
@@ -556,9 +622,9 @@ export function locate(chars: string, context: string, hint: number): number | n
 export function relocate(chars: string, context: string, hint: number, keep = 0): number | null {
   for (const extra of [Infinity, 24, 10]) {
     const len = Math.min(context.length, keep + extra);
+    if (extra !== Infinity && len === context.length) continue; // already tried in full
     const found = locate(chars, context.slice(context.length - len), hint);
     if (found != null) return found;
-    if (len === context.length && extra !== Infinity) break;
   }
   return null;
 }

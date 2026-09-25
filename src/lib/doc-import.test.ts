@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { docs_v1 } from "googleapis";
 import { anchorPosition, importDoc, indexedText } from "./doc-import";
+import { additions, PENDING_MARK } from "./doc-model";
+import { listLabels } from "./list-labels";
 
 /** Build a documents.get body from paragraphs, assigning indices like Docs does */
 function makeDoc(paras: { text: string; bullet?: { listId: string; nestingLevel?: number }; style?: docs_v1.Schema$TextStyle; image?: boolean }[], extra: Partial<docs_v1.Schema$Document> = {}): docs_v1.Schema$Document {
@@ -27,7 +29,7 @@ const lists = {
   b: { listProperties: { nestingLevels: [{ glyphSymbol: "●" }] } },
 };
 
-test("imports paragraphs as locked nodes, numbering questions across the answers between them", () => {
+test("imports paragraphs as editable nodes, numbering questions across the answers between them", () => {
   const doc = makeDoc(
     [
       { text: "Logistics:", style: { underline: true } },
@@ -45,19 +47,17 @@ test("imports paragraphs as locked nodes, numbering questions across the answers
   assert.equal(out.empty, false);
   assert.equal(out.revisionId, "rev1");
   assert.equal(out.nodes.length, 8);
-  assert.ok(out.nodes.every((n) => n.attrs?.locked === true));
-  const labels = out.nodes.map((n) => n.attrs?.label ?? null);
+  assert.ok(out.nodes.every((n) => !n.attrs?.locked));
+  const labels = listLabels(out.nodes.map((n) => n.attrs ?? {}));
   assert.deepEqual(labels, [null, "1.", null, "2.", "a.", null, "3.", "●"]);
   assert.deepEqual(out.nodes.map((n) => n.attrs?.list ?? null), [null, "ordered", null, "ordered", "ordered", null, "ordered", "bullet"]);
   assert.deepEqual(out.nodes[0].content, [{ type: "text", text: "Logistics:", marks: [{ type: "underline" }] }]);
-  // Anchors are the Docs indices around each paragraph
-  assert.deepEqual(out.nodes[0].attrs?.anchors, { before: { mode: "before", at: 1 }, after: { mode: "after", at: 12 } });
 });
 
 test("an empty document imports as empty", () => {
   const out = importDoc(makeDoc([{ text: "" }, { text: "  " }]));
   assert.equal(out.empty, true);
-  assert.deepEqual(out.nodes, []);
+  assert.equal(out.nodes.length, 2);
 });
 
 test("images show with their Google address and size", () => {
@@ -81,7 +81,7 @@ test("index-aligned text and anchor validation", () => {
   assert.equal(anchorPosition(chars, { mode: "before", at: 7 }), null, "past the last paragraph");
 });
 
-test("paragraphs inside a table anchor around the table", () => {
+test("tables are locked and keep the indices after them right", () => {
   const doc: docs_v1.Schema$Document = {
     revisionId: "r",
     body: {
@@ -89,11 +89,24 @@ test("paragraphs inside a table anchor around the table", () => {
         { endIndex: 1, sectionBreak: {} },
         { startIndex: 1, endIndex: 4, paragraph: { elements: [{ startIndex: 1, endIndex: 4, textRun: { content: "Hi\n" } }] } },
         { startIndex: 4, endIndex: 12, table: { tableRows: [{ tableCells: [{ content: [{ startIndex: 6, endIndex: 10, paragraph: { elements: [{ startIndex: 6, endIndex: 10, textRun: { content: "Cel\n" } }] } }] }] }] } },
-        { startIndex: 12, endIndex: 15, paragraph: { elements: [{ startIndex: 12, endIndex: 15, textRun: { content: "Bye\n" } }] } },
+        { startIndex: 12, endIndex: 16, paragraph: { elements: [{ startIndex: 12, endIndex: 16, textRun: { content: "Bye\n" } }] } },
       ],
     },
   };
   const out = importDoc(doc);
   assert.equal(out.nodes.length, 3);
-  assert.deepEqual(out.nodes[1].attrs?.anchors, { before: { mode: "after", at: 4 }, after: { mode: "before", at: 12 } });
+  assert.equal(out.nodes[1].attrs?.locked, true);
+  assert.equal(out.nodes[1].attrs?.span, 8);
+  // Text added at the end of "Bye" goes before its newline at index 15
+  const base = { type: "doc", content: out.nodes };
+  const target = { type: "doc", content: [out.nodes[0], out.nodes[1], { ...out.nodes[2], content: [...(out.nodes[2].content ?? []), { type: "text", text: "!", marks: [{ type: PENDING_MARK }] }] }] };
+  assert.deepEqual(additions(base, target).segments.map((x) => x.at), [15]);
+});
+
+test("a list item added after a Docs item continues its numbering; a new list starts at 1", () => {
+  const q = { list: "ordered", listId: "q", level: 0, glyph: { type: "DECIMAL", format: "%0." } };
+  assert.deepEqual(
+    listLabels([q, { list: null }, q, { ...q }, { list: null }, { list: "ordered" }, { list: "ordered" }, { list: "bullet" }]),
+    ["1.", null, "2.", "3.", null, "1.", "2.", "\u25CF"]
+  );
 });
