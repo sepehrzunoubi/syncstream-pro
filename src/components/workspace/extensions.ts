@@ -405,3 +405,65 @@ export const editorExtensions = [
   SyncAdd,
   DocSync,
 ];
+
+type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string };
+
+/** What an element says about each inherited text property, from its tag and its own style */
+function ownStyle(el: HTMLElement): InlineStyle {
+  const out: InlineStyle = {};
+  const tag = el.tagName;
+  if (tag === "B" || tag === "STRONG") out.fontWeight = "700";
+  if (tag === "I" || tag === "EM") out.fontStyle = "italic";
+  if (tag === "U") out.textDecoration = "underline";
+  if (tag === "S" || tag === "STRIKE" || tag === "DEL") out.textDecoration = "line-through";
+  const s = el.style;
+  if (s.fontFamily) out.fontFamily = s.fontFamily;
+  if (s.fontSize) out.fontSize = s.fontSize;
+  if (s.color) out.color = s.color;
+  if (s.fontWeight) out.fontWeight = s.fontWeight;
+  if (s.fontStyle) out.fontStyle = s.fontStyle;
+  const deco = s.textDecorationLine || s.textDecoration;
+  if (deco) out.textDecoration = deco;
+  return out;
+}
+
+/**
+ * Give every piece of pasted text its full formatting, inherited from all
+ * of its ancestors the way a browser works it out. The editor only reads a
+ * run's own element, so without this a run whose font or size comes from a
+ * paragraph or wrapper (common when copying from Google Docs and web pages)
+ * would fall back to the default font.
+ */
+export function inlinePastedStyles(html: string): string {
+  if (typeof DOMParser === "undefined") return html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  while (walker.nextNode()) texts.push(walker.currentNode as Text);
+  const keys: (keyof InlineStyle)[] = ["fontFamily", "fontSize", "color", "fontWeight", "fontStyle", "textDecoration"];
+  const css: Record<keyof InlineStyle, string> = {
+    fontFamily: "font-family",
+    fontSize: "font-size",
+    color: "color",
+    fontWeight: "font-weight",
+    fontStyle: "font-style",
+    textDecoration: "text-decoration",
+  };
+  for (const text of texts) {
+    if (!text.data || !text.parentElement) continue;
+    // Whitespace between blocks isn't text anyone sees
+    if (!text.data.trim() && /^(BODY|DIV|UL|OL|TABLE|TBODY|TR)$/.test(text.parentElement.tagName)) continue;
+    const style: InlineStyle = {};
+    for (let el: HTMLElement | null = text.parentElement; el && el !== doc.body; el = el.parentElement) {
+      const own = ownStyle(el);
+      for (const k of keys) if (style[k] == null && own[k] != null) style[k] = own[k];
+    }
+    const decl = keys.filter((k) => style[k] != null).map((k) => `${css[k]}: ${style[k]}`).join("; ");
+    if (!decl) continue;
+    const span = doc.createElement("span");
+    span.setAttribute("style", decl);
+    text.replaceWith(span);
+    span.appendChild(text);
+  }
+  return doc.body.innerHTML;
+}

@@ -3,7 +3,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
-import { editorExtensions, flattenPastedLists } from "./extensions";
+import { editorExtensions, flattenPastedLists, inlinePastedStyles } from "./extensions";
 import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
@@ -189,7 +189,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     autofocus: "end",
     editorProps: {
       attributes: { class: "ss-doc", spellcheck: "true", "aria-label": "Text to sync" },
-      transformPastedHTML: flattenPastedLists,
+      transformPastedHTML: (html) => inlinePastedStyles(flattenPastedLists(html)),
       handlePaste: (_view, event) => {
         const files = imageFilesOf(event.clipboardData?.files);
         if (!files.length) return false;
