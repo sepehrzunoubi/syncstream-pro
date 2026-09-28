@@ -99,6 +99,9 @@ function labelDecorations(doc: PMNode): DecorationSet {
 
 const listLabelKey = new PluginKey<DecorationSet>("ssListLabels");
 
+/** True while text dragged from inside the editor is being dropped (a move, not an addition) */
+let draggingInside = false;
+
 export const DocSync = Extension.create({
   name: "docSync",
   priority: 1000,
@@ -143,13 +146,14 @@ export const DocSync = Extension.create({
           if (!tr.docChanged || tr.getMeta(LOAD_META)) return true;
           return !touchesLocked(tr);
         },
-        // Whatever is typed or pasted becomes an addition
+        // Whatever is typed or pasted becomes an addition; text dragged within the document keeps what it was
         appendTransaction(transactions, _old, newState) {
           const type = pendingType(newState);
           if (!type) return null;
           const ranges: [number, number][] = [];
           transactions.forEach((tr, t) => {
             if (!tr.docChanged || tr.getMeta(LOAD_META) || tr.getMeta("history$") || tr.getMeta("ssAddMarked")) return;
+            if (tr.getMeta("uiEvent") === "drop" && draggingInside) return;
             tr.steps.forEach((step, i) => {
               if (!(step instanceof ReplaceStep) || step.slice.size === 0) return;
               step.getMap().forEach((_os, _oe, newStart, newEnd) => {
@@ -180,6 +184,10 @@ export const DocSync = Extension.create({
           return tr.setMeta("ssAddMarked", true);
         },
         props: {
+          handleDOMEvents: {
+            dragstart: () => { draggingInside = true; return false; },
+            dragend: () => { draggingInside = false; return false; },
+          },
           attributes: (state: EditorState): Record<string, string> => (docSyncKey.getState(state)?.glow ? { class: "ss-glow" } : {}),
         },
       }),

@@ -423,15 +423,46 @@
   background: #fff;
   box-shadow: 0 1px 3px 1px rgba(60,64,67,.15);
 }
-.ss-sheet-content { position: relative; padding: 1in 1in 0; cursor: text; }
-.ss-sheet-content .ss-doc { min-height: 9in; }
+/* The side margins belong to the editor, so a click or drag anywhere across the line reaches the text, as in Docs */
+.ss-sheet-content { position: relative; padding: 1in 0 0; cursor: text; }
+.ss-sheet-content .ss-doc { min-height: 9in; padding: 0 1in; }
 .ss-page-gap { display: block; pointer-events: none; user-select: none; }
 .ss-pageless .ss-sheet { height: auto; bottom: 0; }
 .ss-pageless .ss-sheet-content { padding-bottom: 1in; }
 @media (max-width: 720px) {
   .ss-pages { width: auto; margin: 8px 8px 32px; }
-  .ss-sheet-content { padding: 32px 24px; }
+  .ss-sheet-content { padding: 32px 0; }
+  .ss-sheet-content .ss-doc { padding: 0 24px; }
 }
+
+/* Word count, where Docs shows its word count box */
+.ss-wordcount-row {
+  position: sticky;
+  bottom: 16px;
+  z-index: 6;
+  height: 0;
+  padding-left: 16px;
+  pointer-events: none;
+}
+.ss-wordcount {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateY(-100%);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--ss-surface);
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ss-text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: auto;
+  user-select: none;
+}
+.ss-wordcount-sep { width: 1px; height: 12px; background: var(--ss-divider); }
+.ss-wordcount-new { color: var(--ss-sync-bar); font-weight: 500; }
 
 /* Colour palette */
 .ss-palette { display: grid; grid-template-columns: repeat(10, 18px); gap: 3px; padding: 4px 12px 8px; }
@@ -482,7 +513,7 @@
   .ss-canvas { overflow: visible !important; height: auto !important; }
   .ss-pages { zoom: 1 !important; width: auto !important; min-height: 0 !important; margin: 0 !important; }
   .ss-sheet, .ss-page-gap, .ss-caret { display: none !important; }
-  .ss-sheet-content { padding: 0 !important; }
+  .ss-sheet-content, .ss-sheet-content .ss-doc { padding: 0 !important; }
   .ss-untyped { color: inherit !important; }
   .ss-doc .ss-add { background: none !important; box-shadow: none !important; }
   .ss-doc p[data-locked] { box-shadow: none !important; }

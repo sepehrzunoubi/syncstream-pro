@@ -1,174 +1,157 @@
-"use client";
+import type { Metadata } from "next";
+import { ContactLine, LegalPage, type LegalSection } from "@/components/legal/legal-page";
 
-import React from "react";
-import { motion } from "framer-motion";
-import { ArrowLeft, Shield } from "lucide-react";
-import Link from "next/link";
+export const metadata: Metadata = {
+  title: "Privacy Policy · SyncStream",
+  description: "What SyncStream accesses in your Google account, what it stores, and for how long.",
+};
+
+const UPDATED = "September 28, 2026";
+
+const summary = (
+  <ul>
+    <li>SyncStream only opens the Google Docs you pick, to show them, save the edits you make, and type the text you add.</li>
+    <li>A sync&apos;s text and a copy of your Google sign-in are stored while it runs, and deleted a week after its last activity, or as soon as you remove it.</li>
+    <li>Drafts and unsynced text stay in your browser. No ads, no analytics, no selling data.</li>
+  </ul>
+);
+
+const sections: LegalSection[] = [
+  {
+    id: "what-it-does",
+    title: "What SyncStream does",
+    body: (
+      <p>
+        SyncStream opens a Google Doc you choose so you can edit it, and types the text you add into it at a natural,
+        human pace, with pauses and corrected typos. Syncs run on our server, so they keep going after you close the tab.
+      </p>
+    ),
+  },
+  {
+    id: "google-access",
+    title: "What we access in your Google account",
+    body: (
+      <>
+        <p>When you sign in with Google, you grant SyncStream these permissions:</p>
+        <ul>
+          <li><strong>Your name, email address and profile photo,</strong> to show which account is signed in.</li>
+          <li><strong>Google Docs,</strong> to read the document you pick, save your edits to it, and type your syncs into it.</li>
+          <li><strong>Google Drive, read-only,</strong> to list your recent documents so you can pick one.</li>
+          <li><strong>Files created with SyncStream,</strong> to create a new document when you ask for one.</li>
+        </ul>
+        <p>SyncStream only opens documents you pick. It never deletes files and never shares them.</p>
+      </>
+    ),
+  },
+  {
+    id: "what-we-store",
+    title: "What we store, and for how long",
+    body: (
+      <ul>
+        <li>
+          <strong>Your sign-in.</strong> Google&apos;s access token and refresh token are kept in secure, HTTP-only cookies in
+          your browser. The refresh token cookie lasts up to 30 days. Signing out deletes them.
+        </li>
+        <li>
+          <strong>Syncs.</strong> When you start a sync, we store the text to type and its formatting, its schedule, the
+          document&apos;s ID and name, a copy of the document as it was for the progress view, and a copy of your Google tokens
+          so the sync can run without your browser. All of it is deleted automatically 7 days after the sync&apos;s last activity,
+          or right away when you remove the sync from your list.
+        </li>
+        <li>
+          <strong>Images you add.</strong> Images you paste or upload are stored for 14 days at a private, hard-to-guess
+          address, so Google Docs can fetch them when the sync reaches them.
+        </li>
+        <li>
+          <strong>Your documents.</strong> When you open a document, its content passes through our server to your browser.
+          We don&apos;t keep it, except the copy stored with a sync you start.
+        </li>
+        <li>
+          <strong>On your device.</strong> Drafts, settings and text you haven&apos;t synced yet are kept in your
+          browser&apos;s storage. They leave your device only when you start a sync.
+        </li>
+      </ul>
+    ),
+  },
+  {
+    id: "how-we-use",
+    title: "How we use it",
+    body: (
+      <>
+        <p>
+          We use this information only to run SyncStream for you. We don&apos;t sell it, use it for advertising, share it
+          with anyone who isn&apos;t running the service, or use it to train AI models.
+        </p>
+        <p>
+          SyncStream&apos;s use and transfer of information received from Google APIs adheres to the{" "}
+          <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">
+            Google API Services User Data Policy
+          </a>
+          , including the Limited Use requirements.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "providers",
+    title: "Services we rely on",
+    body: (
+      <ul>
+        <li><strong>Google</strong> for sign-in and the Docs and Drive APIs.</li>
+        <li><strong>Vercel</strong> hosts the app and its server.</li>
+        <li><strong>Upstash</strong> stores syncs (Redis) and schedules their next steps (QStash). Scheduled messages carry only a sync&apos;s ID.</li>
+      </ul>
+    ),
+  },
+  {
+    id: "cookies",
+    title: "Cookies",
+    body: <p>SyncStream uses only the sign-in cookies above. There are no analytics, tracking or advertising cookies.</p>,
+  },
+  {
+    id: "choices",
+    title: "Your choices",
+    body: (
+      <ul>
+        <li>Remove a sync from your list to delete everything stored for it.</li>
+        <li>Sign out from the account menu to delete the sign-in cookies.</li>
+        <li>
+          Revoke SyncStream&apos;s access at any time in your{" "}
+          <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer">Google Account permissions</a>.
+          Running syncs then stop.
+        </li>
+        <li>Clear this site&apos;s data in your browser to delete drafts and unsynced text.</li>
+      </ul>
+    ),
+  },
+  {
+    id: "security",
+    title: "Security",
+    body: (
+      <p>
+        Everything travels over HTTPS. Tokens are kept in HTTP-only cookies your browser&apos;s scripts can&apos;t read, and on
+        the server only while a sync needs them. Every sync is tied to your Google account, and only you can see or
+        control it.
+      </p>
+    ),
+  },
+  {
+    id: "children",
+    title: "Children",
+    body: <p>SyncStream isn&apos;t meant for children under 13, and we don&apos;t knowingly collect their information.</p>,
+  },
+  {
+    id: "changes",
+    title: "Changes to this policy",
+    body: <p>If this policy changes, we&apos;ll update it here and change the date at the top.</p>,
+  },
+  {
+    id: "contact",
+    title: "Contact",
+    body: <ContactLine />,
+  },
+];
 
 export default function PrivacyPolicyPage() {
-  return (
-    <div className="min-h-screen bg-[#09090b] relative">
-      {/* Top bar */}
-      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.04] bg-[#09090b]/80 backdrop-blur-md">
-        <div className="container mx-auto flex items-center justify-between px-6 py-4">
-          <Link
-            href="/"
-            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-          >
-            <img
-              src="/sync-icon.png"
-              alt="Sync"
-              className="h-7 w-7 object-contain"
-            />
-            <span className="text-sm font-semibold text-white tracking-tight">
-              SyncStream
-            </span>
-          </Link>
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Back
-          </Link>
-        </div>
-      </nav>
-
-      {/* Content */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, ease: "easeOut" }}
-        className="container mx-auto px-6 pt-28 pb-20 max-w-3xl"
-      >
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-2">
-          <div className="p-2 rounded-xl bg-blue-500/10 border border-blue-500/20">
-            <Shield className="w-5 h-5 text-blue-400" />
-          </div>
-          <h1 className="text-2xl md:text-3xl font-semibold text-white tracking-tight">
-            Privacy Policy
-          </h1>
-        </div>
-        <p className="text-sm text-zinc-600 mb-10">
-          Last updated: {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
-        </p>
-
-        {/* Sections */}
-        <div className="space-y-8 text-[14px] leading-relaxed text-zinc-400">
-          <Section title="1. Introduction">
-            <p>
-              SyncStream (&quot;we,&quot; &quot;our,&quot; or &quot;us&quot;) respects your privacy and is committed to
-              protecting the personal information you share with us. This Privacy Policy describes how
-              we collect, use, and safeguard your data when you use our service.
-            </p>
-          </Section>
-
-          <Section title="2. Information We Collect">
-            <p className="mb-3">When you use SyncStream, we may collect the following information:</p>
-            <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
-              <li><strong className="text-zinc-300">Google Account Information</strong> — your name, email address, profile picture, and unique Google account identifier, obtained through Google OAuth 2.0.</li>
-              <li><strong className="text-zinc-300">Usage Data</strong> — basic interaction data such as sync session metadata (document IDs, timestamps). We do not store the content of your documents.</li>
-            </ul>
-          </Section>
-
-          <Section title="3. How We Use Your Information">
-            <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
-              <li>To authenticate you via Google OAuth 2.0 and maintain your session.</li>
-              <li>To provide the core SyncStream functionality (document synchronization).</li>
-              <li>To enforce rate limits and prevent abuse of our service.</li>
-            </ul>
-          </Section>
-
-          <Section title="4. Data Storage & Security">
-            <p>
-              Sync job state is stored securely using industry-standard encrypted storage (Upstash
-              Redis with TLS encryption). We do not store your Google
-              password — authentication is handled entirely by Google&apos;s OAuth 2.0 protocol. Access
-              tokens are stored as httpOnly, secure cookies and are never exposed to client-side JavaScript.
-            </p>
-          </Section>
-
-          <Section title="5. Third-Party Services">
-            <p className="mb-3">SyncStream integrates with the following third-party services:</p>
-            <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
-              <li><strong className="text-zinc-300">Google APIs</strong> — for authentication, Google Docs access, and Google Drive file listing. Subject to <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline underline-offset-2">Google&apos;s Privacy Policy</a>.</li>
-              <li><strong className="text-zinc-300">Upstash Redis</strong> — for secure, encrypted storage of in-progress sync job state.</li>
-            </ul>
-          </Section>
-
-          <Section title="6. Data Retention">
-            <p>
-              Sync job state is retained only while a sync is in progress and expires automatically
-              within 24 hours of completion. Session cookies expire automatically. You may request
-              full data deletion by contacting us.
-            </p>
-          </Section>
-
-          <Section title="7. Your Rights">
-            <p className="mb-3">You have the right to:</p>
-            <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
-              <li>Revoke SyncStream&apos;s access to your Google account at any time via your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline underline-offset-2">Google Account settings</a>.</li>
-              <li>Request deletion of your data by contacting us.</li>
-              <li>Access information about what data we store about you.</li>
-            </ul>
-          </Section>
-
-          <Section title="8. Cookies">
-            <p>
-              SyncStream uses essential httpOnly cookies for authentication (<code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_access_token</code>,{" "}
-              <code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">google_refresh_token</code>) and to remember which Google account owns your syncs (<code className="text-zinc-300 bg-white/[0.04] px-1.5 py-0.5 rounded text-[12px]">ss_uid</code>).
-              We do not use tracking cookies, analytics cookies, or any third-party advertising cookies.
-            </p>
-          </Section>
-
-          <Section title="9. Children's Privacy">
-            <p>
-              SyncStream is not directed at children under 13. We do not knowingly collect personal
-              information from children under 13. If you believe we have collected such information,
-              please contact us so we can delete it.
-            </p>
-          </Section>
-
-          <Section title="10. Changes to This Policy">
-            <p>
-              We may update this Privacy Policy from time to time. Any changes will be reflected on
-              this page with an updated &quot;Last updated&quot; date. Continued use of SyncStream after
-              changes constitutes acceptance of the revised policy.
-            </p>
-          </Section>
-
-          <Section title="11. Contact">
-            <p>
-              If you have questions about this Privacy Policy or your data, please reach out to us
-              through our official communication channels.
-            </p>
-          </Section>
-        </div>
-      </motion.div>
-
-      {/* Footer */}
-      <footer className="border-t border-white/[0.04] py-8 relative z-10">
-        <div className="container mx-auto px-6 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <img src="/sync-icon.png" alt="Sync" className="h-5 w-5 object-contain" />
-            <span className="text-xs text-zinc-600">SyncStream</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link href="/privacy" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Privacy</Link>
-            <Link href="/tos" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Terms</Link>
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <h2 className="text-[15px] font-semibold text-zinc-200 mb-3">{title}</h2>
-      {children}
-    </div>
-  );
+  return <LegalPage kind="privacy" title="Privacy Policy" updated={UPDATED} summary={summary} sections={sections} />;
 }

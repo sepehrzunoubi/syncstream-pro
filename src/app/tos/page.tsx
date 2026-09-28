@@ -1,192 +1,138 @@
-"use client";
+import type { Metadata } from "next";
+import { ContactLine, LegalPage, type LegalSection } from "@/components/legal/legal-page";
 
-import React from "react";
-import { motion } from "framer-motion";
-import { ArrowLeft, FileText } from "lucide-react";
-import Link from "next/link";
+export const metadata: Metadata = {
+  title: "Terms of Service · SyncStream",
+  description: "The terms for using SyncStream.",
+};
 
-export default function TermsOfServicePage() {
-  return (
-    <div className="min-h-screen bg-[#09090b] relative">
-      {/* Top bar */}
-      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.04] bg-[#09090b]/80 backdrop-blur-md">
-        <div className="container mx-auto flex items-center justify-between px-6 py-4">
-          <Link
-            href="/"
-            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-          >
-            <img
-              src="/sync-icon.png"
-              alt="Sync"
-              className="h-7 w-7 object-contain"
-            />
-            <span className="text-sm font-semibold text-white tracking-tight">
-              SyncStream
-            </span>
-          </Link>
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Back
-          </Link>
-        </div>
-      </nav>
+const UPDATED = "September 28, 2026";
 
-      {/* Content */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, ease: "easeOut" }}
-        className="container mx-auto px-6 pt-28 pb-20 max-w-3xl"
-      >
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-2">
-          <div className="p-2 rounded-xl bg-blue-500/10 border border-blue-500/20">
-            <FileText className="w-5 h-5 text-blue-400" />
-          </div>
-          <h1 className="text-2xl md:text-3xl font-semibold text-white tracking-tight">
-            Terms of Service
-          </h1>
-        </div>
-        <p className="text-sm text-zinc-600 mb-10">
-          Last updated: {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
-        </p>
+const summary = (
+  <ul>
+    <li>Edits you make in SyncStream are saved to your real Google Doc right away; syncs type into it over time.</li>
+    <li>You&apos;re responsible for how you use it, including the rules of your school, employer or anyone whose document it is.</li>
+    <li>SyncStream is provided as is. Keep your own copies of anything important.</li>
+  </ul>
+);
 
-        {/* Sections */}
-        <div className="space-y-8 text-[14px] leading-relaxed text-zinc-400">
-          <Section title="1. Acceptance of Terms">
-            <p>
-              By accessing or using SyncStream (&quot;the Service&quot;), you agree to be bound by these
-              Terms of Service. If you do not agree to these terms, you may not use the Service.
-              These terms constitute a legally binding agreement between you and SyncStream.
-            </p>
-          </Section>
+const sections: LegalSection[] = [
+  {
+    id: "agreement",
+    title: "Agreeing to these terms",
+    body: (
+      <p>
+        By signing in to or using SyncStream, you agree to these terms and to the <a href="/privacy">Privacy Policy</a>.
+        If you don&apos;t agree, don&apos;t use SyncStream.
+      </p>
+    ),
+  },
+  {
+    id: "service",
+    title: "What SyncStream does",
+    body: (
+      <>
+        <p>SyncStream connects to your Google account so you can:</p>
+        <ul>
+          <li><strong>Edit a Google Doc.</strong> Formatting, deleting and restructuring existing text are saved to the document right away.</li>
+          <li><strong>Add text with a sync.</strong> Text you add is typed into the document at a human pace, with pauses, breaks and corrected typos, on a schedule you choose.</li>
+        </ul>
+        <p>Syncs run on our server and continue after you close the tab, until they finish, you pause or cancel them, or they fail.</p>
+      </>
+    ),
+  },
+  {
+    id: "account",
+    title: "Your Google account and documents",
+    body: (
+      <ul>
+        <li>You need a Google account, and your use of Google is governed by Google&apos;s own terms.</li>
+        <li>Only use SyncStream with documents you&apos;re allowed to edit.</li>
+        <li>
+          Changes made through SyncStream happen in your real document. Google Docs keeps a version history (File &gt;
+          Version history) you can use to restore earlier versions.
+        </li>
+        <li>You can revoke SyncStream&apos;s access at any time in your Google Account permissions.</li>
+      </ul>
+    ),
+  },
+  {
+    id: "use",
+    title: "Acceptable use",
+    body: (
+      <>
+        <p>You&apos;re responsible for how you use SyncStream and the text it types. In particular, you agree to:</p>
+        <ul>
+          <li>Follow the law, and the rules of your school, employer or anyone else whose document or work it is, including rules about disclosing how work was produced.</li>
+          <li>Only type content you have the right to use.</li>
+          <li>Not try to access other people&apos;s syncs or data, get around limits, or overload or disrupt the service.</li>
+        </ul>
+      </>
+    ),
+  },
+  {
+    id: "limits",
+    title: "How reliable it is",
+    body: (
+      <p>
+        SyncStream depends on Google, Vercel and Upstash. Syncs can be delayed, retried or stopped when one of them has a
+        problem, when a document is changed in ways that make SyncStream lose its place, or when usage limits are reached.
+        Finish times are estimates. We may pause or stop syncs that put the service at risk.
+      </p>
+    ),
+  },
+  {
+    id: "content",
+    title: "Your content",
+    body: (
+      <p>
+        Your documents and text stay yours. You let SyncStream process them only as needed to run the service for you, as
+        described in the <a href="/privacy">Privacy Policy</a>.
+      </p>
+    ),
+  },
+  {
+    id: "warranty",
+    title: "No warranty",
+    body: (
+      <p>
+        SyncStream is provided &quot;as is&quot; and &quot;as available&quot;, without warranties of any kind, including that it
+        will be uninterrupted, error-free, or that it will type or edit exactly as intended.
+      </p>
+    ),
+  },
+  {
+    id: "liability",
+    title: "Limitation of liability",
+    body: (
+      <p>
+        To the extent the law allows, the people who run SyncStream aren&apos;t liable for indirect or consequential losses,
+        or for lost data, grades, work or profits, arising from your use of SyncStream.
+      </p>
+    ),
+  },
+  {
+    id: "ending",
+    title: "Stopping",
+    body: (
+      <p>
+        You can stop using SyncStream at any time by signing out and revoking its access. We may suspend access that breaks
+        these terms.
+      </p>
+    ),
+  },
+  {
+    id: "changes",
+    title: "Changes to these terms",
+    body: <p>If these terms change, we&apos;ll update them here and change the date at the top. Using SyncStream after that means you accept them.</p>,
+  },
+  {
+    id: "contact",
+    title: "Contact",
+    body: <ContactLine />,
+  },
+];
 
-          <Section title="2. Description of Service">
-            <p>
-              SyncStream is a document synchronization tool that enables human-cadence text input
-              into Google Docs via the Google Docs API. The Service requires a valid Google account
-              to operate.
-            </p>
-          </Section>
-
-          <Section title="3. Acceptable Use">
-            <p className="mb-3">You agree not to:</p>
-            <ul className="list-disc list-inside space-y-1.5 text-zinc-500">
-              <li>Attempt to reverse-engineer, decompile, or tamper with the Service.</li>
-              <li>Circumvent or bypass authentication or any security measures.</li>
-              <li>Use the Service for any illegal or unauthorized purpose.</li>
-              <li>Interfere with or disrupt the integrity or performance of the Service.</li>
-              <li>Share your account credentials with unauthorized third parties.</li>
-              <li>Automate access to the Service beyond its intended functionality.</li>
-            </ul>
-          </Section>
-
-          <Section title="4. Google Account & API Usage">
-            <p>
-              SyncStream accesses your Google account through OAuth 2.0 with the minimum required
-              scopes. By using the Service, you authorize SyncStream to read and write to Google Docs
-              and access Google Drive file listings on your behalf. You may revoke this access at any
-              time through your{" "}
-              <a
-                href="https://myaccount.google.com/permissions"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-400 hover:text-blue-300 underline underline-offset-2"
-              >
-                Google Account settings
-              </a>
-              . Revoking access will prevent SyncStream from functioning until re-authorized.
-            </p>
-          </Section>
-
-          <Section title="5. Intellectual Property">
-            <p>
-              The Service, including its design, code, and branding, is the intellectual property of
-              SyncStream. You are granted a limited, non-exclusive, non-transferable license to use
-              the Service in accordance with these terms. You do not acquire any ownership rights by
-              using the Service.
-            </p>
-          </Section>
-
-          <Section title="6. Disclaimer of Warranties">
-            <p>
-              The Service is provided <strong className="text-zinc-300">&quot;as is&quot;</strong> and{" "}
-              <strong className="text-zinc-300">&quot;as available&quot;</strong> without warranties of any kind,
-              whether express or implied, including but not limited to warranties of merchantability,
-              fitness for a particular purpose, or non-infringement. We do not guarantee uninterrupted
-              or error-free operation of the Service.
-            </p>
-          </Section>
-
-          <Section title="7. Limitation of Liability">
-            <p>
-              To the maximum extent permitted by law, SyncStream and its operators shall not be liable
-              for any indirect, incidental, special, consequential, or punitive damages, or any loss
-              of profits or revenues, whether incurred directly or indirectly, arising from your use
-              of the Service. Our total liability shall not exceed the amount, if any, paid by you
-              for the Service.
-            </p>
-          </Section>
-
-          <Section title="8. Termination">
-            <p>
-              We reserve the right to suspend or terminate your access to the Service at any time,
-              with or without notice, for conduct that we believe violates these terms or is harmful
-              to the Service, other users, or third parties. Upon termination, any data associated
-              with your account may be deleted.
-            </p>
-          </Section>
-
-          <Section title="9. Modifications">
-            <p>
-              We may revise these Terms of Service at any time. Changes will be posted on this page
-              with an updated date. Your continued use of the Service after any changes constitutes
-              acceptance of the new terms.
-            </p>
-          </Section>
-
-          <Section title="10. Governing Law">
-            <p>
-              These terms shall be governed by and construed in accordance with applicable laws,
-              without regard to conflict of law principles. Any disputes arising from these terms
-              shall be resolved through good-faith negotiation before pursuing formal legal action.
-            </p>
-          </Section>
-
-          <Section title="11. Contact">
-            <p>
-              If you have questions about these Terms of Service, please reach out to us through
-              our official communication channels.
-            </p>
-          </Section>
-        </div>
-      </motion.div>
-
-      {/* Footer */}
-      <footer className="border-t border-white/[0.04] py-8 relative z-10">
-        <div className="container mx-auto px-6 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <img src="/sync-icon.png" alt="Sync" className="h-5 w-5 object-contain" />
-            <span className="text-xs text-zinc-600">SyncStream</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link href="/privacy" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Privacy</Link>
-            <Link href="/tos" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Terms</Link>
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <h2 className="text-[15px] font-semibold text-zinc-200 mb-3">{title}</h2>
-      {children}
-    </div>
-  );
+export default function TermsPage() {
+  return <LegalPage kind="terms" title="Terms of Service" updated={UPDATED} summary={summary} sections={sections} />;
 }

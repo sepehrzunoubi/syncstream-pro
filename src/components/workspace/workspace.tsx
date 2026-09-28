@@ -12,6 +12,7 @@ import { SyncRail } from "./sync-rail";
 import { SyncPanel, type BreaksMode } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
+import { WordCount } from "./word-count";
 import { ProgressMarks, progressKey } from "./pagination";
 import { measureRemoteImage, uploadImage } from "./image-upload";
 import { isActive, statusLine } from "./job-status";
@@ -805,7 +806,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const onPageMouseDown = (e: React.MouseEvent) => {
     if (!editor || (e.target as HTMLElement).closest(".ProseMirror")) return;
     e.preventDefault();
-    editor.commands.focus("end");
+    // Clicking above or below the text puts the caret on the nearest line, like Docs
+    const r = editor.view.dom.getBoundingClientRect();
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    const hit = editor.view.posAtCoords({ left: clamp(e.clientX, r.left + 1, r.right - 1), top: clamp(e.clientY, r.top + 1, r.bottom - 1) });
+    if (hit) editor.chain().focus().setTextSelection(hit.pos).run();
+    else editor.commands.focus("end");
   };
 
   return (
@@ -917,6 +923,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           >
             <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} onMouseDown={onPageMouseDown} />
           </motion.div>
+          <WordCount editor={focusedJob ? viewer : editor} />
         </main>
 
         <aside className="flex-none bg-[var(--ss-surface)] lg:m-2 lg:mt-0 lg:h-[calc(100%-8px)] lg:w-[360px] lg:overflow-y-auto lg:overflow-x-hidden lg:rounded-2xl" aria-label={focusedJob ? "This sync" : "Sync settings"}>
