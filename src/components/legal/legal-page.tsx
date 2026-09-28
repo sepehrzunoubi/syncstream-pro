@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import "./legal.css";
 
@@ -28,26 +28,54 @@ export function LegalPage({
 }) {
   const [active, setActive] = useState(sections[0]?.id);
 
-  // Highlight the section being read in the outline
+  // The section being read: the last one whose heading has passed the top of the window.
+  // At the very bottom that's the last section, and a section picked in the outline
+  // stays picked even when the page can't scroll it all the way up.
+  const picked = useRef<string | null>(null);
   useEffect(() => {
-    const els = sections.map((s) => document.getElementById(s.id)).filter((e): e is HTMLElement => !!e);
-    const io = new IntersectionObserver(
-      (entries) => {
-        const visible = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible[0]) setActive(visible[0].target.id);
-      },
-      { rootMargin: "-88px 0px -60% 0px" }
-    );
-    els.forEach((e) => io.observe(e));
-    return () => io.disconnect();
+    const TOP = 120;
+    const update = () => {
+      const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+      if (picked.current) return setActive(picked.current);
+      if (atBottom) return setActive(sections[sections.length - 1]?.id);
+      let current = sections[0]?.id;
+      for (const s of sections) {
+        const el = document.getElementById(s.id);
+        if (el && el.getBoundingClientRect().top <= TOP) current = s.id;
+      }
+      setActive(current);
+    };
+    // Scrolling by hand lets the position decide again
+    const release = () => { picked.current = null; };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    window.addEventListener("wheel", release, { passive: true });
+    window.addEventListener("touchmove", release, { passive: true });
+    window.addEventListener("keydown", release);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("wheel", release);
+      window.removeEventListener("touchmove", release);
+      window.removeEventListener("keydown", release);
+    };
   }, [sections]);
+  const pick = (id: string) => { picked.current = id; setActive(id); };
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const on = () => setScrolled(window.scrollY > 4);
+    on();
+    window.addEventListener("scroll", on, { passive: true });
+    return () => window.removeEventListener("scroll", on);
+  }, []);
 
   return (
     <div className="lg-root">
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       {/* eslint-disable-next-line @next/next/no-page-custom-font */}
       <link rel="stylesheet" href={FONTS} />
-      <header className="lg-bar">
+      <header className="lg-bar" data-scrolled={scrolled ? "" : undefined}>
         <a href="/" className="lg-brand" aria-label="SyncStream home">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/sync-icon.png" alt="" />
@@ -64,7 +92,7 @@ export function LegalPage({
         <nav className="lg-outline" aria-label="On this page">
           <h2>Outline</h2>
           {sections.map((s) => (
-            <a key={s.id} href={`#${s.id}`} aria-current={active === s.id ? "true" : undefined}>{s.title}</a>
+            <a key={s.id} href={`#${s.id}`} onClick={() => pick(s.id)} aria-current={active === s.id ? "true" : undefined}>{s.title}</a>
           ))}
         </nav>
         <motion.article
