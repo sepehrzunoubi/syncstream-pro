@@ -556,3 +556,121 @@
 }
 .ss-snackbar button { color: #a8c7fa; font-weight: 500; padding: 0 8px; height: 36px; border-radius: 4px; }
 .ss-snackbar button:hover { background: rgba(168, 199, 250, 0.08); }
+
+/* ── Style engine ────────────────────────────────────────────────────── */
+
+/* Sync / Style engine switch in the header */
+.ss-tabs { display: flex; flex: none; gap: 2px; padding: 3px; border-radius: 9999px; background: var(--ss-soft); }
+.ss-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ss-text-2);
+  white-space: nowrap;
+  transition: background-color 120ms, color 120ms;
+}
+.ss-tab:hover:not([aria-current]) { background: var(--ss-hover); }
+.ss-tab[aria-current="page"] { background: var(--ss-tonal); color: var(--ss-on-tonal); }
+@media (max-width: 639px) { .ss-tab { padding: 0 10px; } }
+
+/* The three steps, where the formatting toolbar sits in the sync editor */
+.ss-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px 0 6px;
+  border-radius: 14px;
+  font-size: 14px;
+  color: var(--ss-text);
+  white-space: nowrap;
+  transition: background-color 120ms;
+}
+.ss-stage:hover { background: var(--ss-hover); }
+.ss-stage[data-on="true"] { background: var(--ss-pressed); color: var(--ss-on-pressed); }
+.ss-stage-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ss-outline);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+}
+.ss-stage[data-on="true"] .ss-stage-num { background: var(--ss-blue); }
+
+.ss-card { border-radius: 16px; background: var(--ss-surface); box-shadow: 0 1px 2px rgba(60,64,67,.12); }
+.ss-title-input {
+  min-width: 0;
+  width: 100%;
+  max-width: 480px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 18px;
+  line-height: 24px;
+  color: var(--ss-text);
+  outline: none;
+}
+.ss-title-input:hover { background: var(--ss-hover); }
+.ss-title-input:focus { box-shadow: inset 0 0 0 2px var(--ss-blue); }
+.ss-textarea {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--ss-outline);
+  border-radius: 8px;
+  background: var(--ss-surface);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ss-text);
+  resize: vertical;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ss-textarea:hover:not(:disabled) { border-color: var(--ss-text); }
+.ss-textarea:focus { outline: none; border-color: var(--ss-blue); box-shadow: inset 0 0 0 1px var(--ss-blue); }
+.ss-textarea:disabled { opacity: 0.6; }
+.ss-textarea::placeholder { color: #80868b; }
+
+/* Result and diff text */
+.ss-result {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--ss-text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ss-diff { white-space: pre-wrap; word-wrap: break-word; font-size: 14px; line-height: 22px; user-select: text; -webkit-user-select: text; }
+.ss-diff-del { background: #fce8e6; color: #8c1d18; text-decoration: line-through; border-radius: 2px; }
+.ss-diff-ins { background: #e6f4ea; color: #0d652d; text-decoration: none; border-radius: 2px; }
+
+/* The profile the engine writes */
+.ss-prose { font-size: 14px; line-height: 22px; color: var(--ss-text); user-select: text; -webkit-user-select: text; }
+.ss-prose h2, .ss-prose h3, .ss-prose h4, .ss-prose h5 { margin: 18px 0 6px; font-weight: 500; line-height: 24px; }
+.ss-prose h2 { font-size: 18px; }
+.ss-prose h3 { font-size: 16px; }
+.ss-prose h4, .ss-prose h5 { font-size: 14px; }
+.ss-prose > :first-child { margin-top: 0; }
+.ss-prose p { margin: 0 0 8px; }
+.ss-prose ul, .ss-prose ol { margin: 0 0 8px; padding-left: 24px; }
+.ss-prose ul { list-style: disc; }
+.ss-prose ol { list-style: decimal; }
+.ss-prose li { margin: 2px 0; }
+.ss-prose li::marker { color: var(--ss-text-2); }
+.ss-prose code { padding: 0 4px; border-radius: 4px; background: var(--ss-soft); font-family: "Roboto Mono", Cousine, monospace; font-size: 13px; }
+.ss-prose pre { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--ss-soft); font-family: "Roboto Mono", Cousine, monospace; font-size: 12px; line-height: 18px; overflow-x: auto; white-space: pre; }
+.ss-prose strong { font-weight: 500; }

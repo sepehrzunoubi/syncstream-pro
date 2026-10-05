@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { editorExtensions, flattenPastedLists, inlinePastedStyles } from "./extensions";
@@ -8,6 +9,8 @@ import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
 import { Header, type HeaderUser } from "./header";
+import { WorkspaceTabs } from "./workspace-tabs";
+import { takeStyleHandoff } from "@/components/style/style-store";
 import { SyncRail } from "./sync-rail";
 import { SyncPanel, type BreaksMode } from "./sync-panel";
 import { JobPanel } from "./job-panel";
@@ -137,6 +140,7 @@ function sanitize(node: EditorNode): EditorNode | null {
 }
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
+  const router = useRouter();
   // Documents
   const [docs, setDocs] = useState<Doc[]>([]);
   const [selectedDocId, setSelectedDocId] = useState("");
@@ -282,6 +286,16 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (typeof d.zoom === "number" || d.zoom === "fit") setZoom(d.zoom);
     if (typeof d.pageless === "boolean") setPageless(d.pageless);
     setDraftLoaded(true);
+  }, [editor, draftLoaded]);
+
+  // Text handed over from the Style engine tab goes in at the end, as new text to sync
+  useEffect(() => {
+    if (!editor || !draftLoaded) return;
+    const text = takeStyleHandoff();
+    if (!text) return;
+    editor.chain().focus("end").insertContent(plainToDoc(text).content ?? []).run();
+    setDocJSON(editor.getJSON());
+    setSnack("The text from the Style engine was added. It glows until a sync types it in.");
   }, [editor, draftLoaded]);
 
   useEffect(() => {
@@ -833,6 +847,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         onToggleRail={() => setRailOpen((o) => !o)}
         onReauth={onReauth}
         onSignOut={onSignOut}
+        tabs={<WorkspaceTabs active="sync" />}
         menubar={
           <DocsMenubar
             editor={editor}
@@ -844,6 +859,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onNewSync={() => setComposing(true)}
             onCreateDoc={createDoc}
             onRefreshDocs={refreshDocs}
+            onOpenStyle={() => router.push("/dashboard/style")}
             docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
             onSignOut={onSignOut}
             pageless={pageless}

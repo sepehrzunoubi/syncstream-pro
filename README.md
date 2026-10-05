@@ -1,6 +1,6 @@
 # SyncStream Pro
 
-A utility for **human-cadence text synchronization into Google Docs**, featuring an obsidian-dark dashboard UI built with the Aceternity Sidebar pattern.
+A utility for **human-cadence text synchronization into Google Docs**, featuring an obsidian-dark dashboard UI built with the Aceternity Sidebar pattern. A second tab, the **Style engine**, learns a stylistic transformation from input/output pairs and applies it to new text.
 
 Sign in with any Google account and start syncing. There is no license key or allow-list.
 
@@ -14,6 +14,7 @@ Sign in with any Google account and start syncing. There is no license key or al
 - **Google APIs:** `googleapis` (OAuth2, Docs, Drive)
 - **Job state:** Upstash Redis (in-memory fallback for local dev)
 - **Background delivery:** Upstash QStash (direct HTTP fallback for local dev)
+- **Style engine:** Claude via `@anthropic-ai/sdk` (optional)
 
 ## Setup
 
@@ -51,6 +52,8 @@ cp .env.example .env.local
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | production | Persistent job state across serverless instances |
 | `QSTASH_URL` / `QSTASH_TOKEN` / `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY` | production | Guaranteed background delivery of sync steps. Copy all four from the QStash console; `QSTASH_URL` selects your account's region |
 | `CRON_SECRET` | production | Protects `/api/cron/sync-watchdog` |
+| `ANTHROPIC_API_KEY` | Style engine | Claude API key for the Style engine tab. Without it the tab shows a setup notice and syncing is unaffected |
+| `STYLE_MODEL` | optional | Claude model for the Style engine (default `claude-opus-5-5`) |
 
 Locally, the Upstash and QStash variables are optional: the app falls back to an in-memory store and a direct HTTP self-call.
 
@@ -78,7 +81,7 @@ Once deployed, sign in and open `/api/health` to verify every service is reachab
 
 `vercel.json` schedules the sync watchdog cron once a day (`0 0 * * *`). Hobby plans only allow daily crons, and a more frequent schedule makes the whole deployment fail. On a Pro plan you can tighten it (for example `*/2 * * * *`) for faster recovery of stalled jobs. QStash retries already cover normal delivery, so the cron is only a safety net.
 
-`/api/sync/process` declares `maxDuration = 300`. If your Vercel plan caps function duration lower, reduce that value; the route chains itself well before the limit.
+`/api/sync/process` declares `maxDuration = 300`. If your Vercel plan caps function duration lower, reduce that value; the route chains itself well before the limit. The Style engine routes (`/api/style/analyze` and `/api/style/transform`) declare the same `maxDuration`, because analyzing a dozen long pairs at full effort can take minutes; they stream their reply, so the browser sees text as soon as it is written.
 
 ## Architecture
 
@@ -91,8 +94,10 @@ src/
 │   │   ├── docs/        # List recent Google Docs, create a doc, read a doc, save edits to it
 │   │   ├── health/      # Live check of every configured service (signed-in users)
 │   │   ├── images/      # Upload pasted images and serve them so Google Docs can fetch them
+│   │   ├── style/       # Style engine: status, analyze (pairs → profile), transform (profile + text → text), streamed
 │   │   └── sync/        # start / list / status / pause / resume / cancel / dismiss / source / process
 │   ├── dashboard/       # Authenticated workspace (layout loads fonts, docs.css holds the Docs styles)
+│   │   └── style/       # The Style engine tab
 │   ├── privacy/, tos/   # Legal pages
 │   └── page.tsx         # Landing page with Google sign-in
 ├── components/
@@ -111,7 +116,17 @@ src/
 │   │   ├── paged-surface.tsx    # Draws the page sheets behind the editor
 │   │   ├── sync-panel.tsx       # Total time, breaks, typos, start time, plan
 │   │   ├── job-panel.tsx        # Status and controls of a running sync
-│   │   └── sync-rail.tsx        # List of syncs
+│   │   ├── sync-rail.tsx        # List of syncs
+│   │   └── workspace-tabs.tsx   # Sync / Style engine switch in the header
+│   ├── style/
+│   │   ├── style-workspace.tsx  # State and layout of the Style engine tab: pairs, profile, transform
+│   │   ├── pair-card.tsx        # One training pair with its measurements and a word-level diff
+│   │   ├── style-rail.tsx       # List of saved styles
+│   │   ├── style-panel.tsx      # Effort, notes, and the measured shift of the current style
+│   │   ├── diff-view.tsx        # Removed text struck through, added text highlighted
+│   │   ├── simple-markdown.tsx  # Renders the profile the engine writes
+│   │   ├── style-api.ts         # Reads the streamed replies of the style routes
+│   │   └── style-store.ts       # Styles kept on this device; hand-off of text to the sync editor
 │   ├── dashboard/login-screen.tsx  # Landing page
 │   └── ui/                      # Button, particles
 ├── lib/
@@ -123,6 +138,9 @@ src/
 │   ├── sync-runner.ts   # Queue-driven worker: bounded windows, lock, idempotent writes, retries
 │   ├── sync-store.ts    # Redis-backed plans, jobs, per-user index, locks, control intents
 │   ├── sync-api.ts      # Ownership checks and lock-aware job mutations for the routes
+│   ├── style-metrics.ts # Sentence, clause, pacing, transition and punctuation measurements; word-level diff
+│   ├── style-engine.ts  # Style engine types, limits, and the prompts of both stages
+│   ├── anthropic.ts     # Claude client and the streamed single-turn reply
 │   ├── auth.ts          # Cookie helpers and user resolution
 │   ├── google.ts        # OAuth2, Drive, Docs helpers
 │   ├── qstash.ts        # QStash client / receiver / enqueue helper
@@ -166,11 +184,21 @@ The dashboard is laid out like Google Docs: a File, Edit, View, Insert and Forma
 - **Start.** Now, or in 5 minutes to 12 hours. Scheduled syncs run on the server.
 - **Several at once.** Start as many syncs as you like, each to its own document. The strip above the editor lets you switch between them.
 
+## Style engine
+
+The second tab (the switch sits in the header, next to the Start sync button; File > Style engine also opens it) is a text-transformation engine for stylistic adaptation and register shifting. It needs `ANTHROPIC_API_KEY`; everything else about the app works without it.
+
+1. **Training pairs.** Give it examples: a source text and the same text in the target style. Each pair is measured on the spot (words per sentence and per clause, the spread of sentence lengths, the ratio of short to long sentences, transition phrases and where they sit, punctuation habits, how much of the source survives verbatim) and Show changes draws a word-level diff. Up to 12 pairs are used; anything with a blank half is ignored.
+2. **Transformation Profile.** Analyze pairs sends the pairs and their measurements to Claude, which compares each pair token by token and writes the profile: the modifications it found, what the statistics show, a numbered list of rules with examples and confidence, what to always preserve, and execution notes. The profile streams in as it is written and can be edited by hand before it is used.
+3. **Transform.** Paste new text and the engine applies the profile with the pairs as worked examples, preserving every fact, name and number. The result streams in; Show changes diffs it against the source, Copy copies it, and Use in Sync drops it into the sync editor as new text to type into a Google Doc. A note under the result flags any name or number from the source that the result does not repeat.
+
+Effort (Quick, Careful, Exhaustive) sets how long the model thinks. Notes for the engine (audience, register, hard constraints) are sent with every request. Styles are kept on this device, like the sync draft. The dataset and profile are sent with a cache breakpoint, so repeated transformations with the same style reuse the cached prefix. A request that Claude's safety classifiers decline is retried server-side on a fallback model.
+
 ## Development
 
 ```bash
 npm run dev        # local server (in-memory store, direct self-calls instead of QStash)
-npm test           # planner and runner unit tests
+npm test           # planner, runner and style-metrics unit tests
 npm run typecheck
 npm run lint
 ```

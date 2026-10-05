@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@radix-ui/react-dropdown-menu": "^2.1.24",
     "@radix-ui/react-menubar": "^1.1.24",
     "@radix-ui/react-popover": "^1.1.23",

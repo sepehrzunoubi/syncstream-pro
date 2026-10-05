@@ -10,8 +10,8 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL("/dashboard", req.url));
   }
 
-  // Unauthenticated user visiting /dashboard → redirect to /
-  if (pathname === "/dashboard" && !hasToken) {
+  // Unauthenticated user visiting /dashboard (or a tool under it) → redirect to /
+  if (pathname.startsWith("/dashboard") && !hasToken) {
     return NextResponse.redirect(new URL("/", req.url));
   }
 
@@ -19,5 +19,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/dashboard"],
+  matcher: ["/", "/dashboard/:path*"],
 };

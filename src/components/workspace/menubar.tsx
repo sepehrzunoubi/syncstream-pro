@@ -65,6 +65,8 @@ interface DocsMenubarProps {
   onNewSync: () => void;
   onCreateDoc: () => void;
   onRefreshDocs: () => void;
+  /** Open the Style engine tab */
+  onOpenStyle?: () => void;
   docUrl: string | null;
   onSignOut: () => void;
   pageless: boolean;
@@ -105,6 +107,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item onSelect={p.onCreateDoc}>Create a new Google Doc</Item>
         <Item onSelect={p.onRefreshDocs}>Refresh document list</Item>
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
+        {p.onOpenStyle && <Item onSelect={p.onOpenStyle}>Style engine</Item>}
         <Sep />
         <Sub label="Page setup">
           <Item checkable checked={!p.pageless} onSelect={() => p.onPageless(false)}>Pages</Item>

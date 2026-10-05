@@ -28,6 +28,8 @@ interface HeaderProps {
   onSignOut: () => void;
   /** The File / Edit / View / Format menu bar */
   menubar: React.ReactNode;
+  /** The Sync / Style engine switch */
+  tabs?: React.ReactNode;
 }
 
 export function Header(props: HeaderProps) {
@@ -88,6 +90,7 @@ export function Header(props: HeaderProps) {
         </div>
       </div>
 
+      {props.tabs}
       <button
         className={`ss-btn ${primary.kind === "start" ? "ss-btn-tonal" : "ss-btn-outlined"} max-sm:w-10 max-sm:px-0`}
         onClick={primary.onClick}
@@ -99,30 +102,37 @@ export function Header(props: HeaderProps) {
         <span className="max-sm:hidden">{primary.label}</span>
       </button>
 
-      <Menu align="end" label="Account" trigger={
-        <button className="ml-2 h-8 w-8 flex-none overflow-hidden rounded-full ring-offset-2 hover:ring-4 hover:ring-[var(--ss-hover)]" aria-label="Account">
-          {user?.picture ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={user.picture} alt="" className="h-8 w-8" referrerPolicy="no-referrer" />
-          ) : (
-            <span className="flex h-8 w-8 items-center justify-center bg-[#0b57d0] text-sm font-medium text-white">
-              {(user?.name || "?").charAt(0).toUpperCase()}
-            </span>
-          )}
-        </button>
-      }>
-        <div className="px-4 pb-2 pt-2">
-          <div className="text-sm font-medium">{user?.name}</div>
-          <div className="text-xs text-[var(--ss-text-3)]">{user?.email}</div>
-        </div>
-        <MenuSeparator />
-        <MenuItem onSelect={props.onReauth}>Reconnect Google account</MenuItem>
-        <MenuItem onSelect={() => window.open("/privacy", "_blank")}>Privacy policy</MenuItem>
-        <MenuItem onSelect={() => window.open("/tos", "_blank")}>Terms of service</MenuItem>
-        <MenuSeparator />
-        <MenuItem onSelect={props.onSignOut}>Sign out</MenuItem>
-      </Menu>
+      <AccountMenu user={user} onReauth={props.onReauth} onSignOut={props.onSignOut} />
     </header>
+  );
+}
+
+/** The account picture with the sign-in menu, shared by the Sync and Style engine headers */
+export function AccountMenu({ user, onReauth, onSignOut }: { user: HeaderUser | null; onReauth: () => void; onSignOut: () => void }) {
+  return (
+    <Menu align="end" label="Account" trigger={
+      <button className="ml-2 h-8 w-8 flex-none overflow-hidden rounded-full ring-offset-2 hover:ring-4 hover:ring-[var(--ss-hover)]" aria-label="Account">
+        {user?.picture ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={user.picture} alt="" className="h-8 w-8" referrerPolicy="no-referrer" />
+        ) : (
+          <span className="flex h-8 w-8 items-center justify-center bg-[#0b57d0] text-sm font-medium text-white">
+            {(user?.name || "?").charAt(0).toUpperCase()}
+          </span>
+        )}
+      </button>
+    }>
+      <div className="px-4 pb-2 pt-2">
+        <div className="text-sm font-medium">{user?.name}</div>
+        <div className="text-xs text-[var(--ss-text-3)]">{user?.email}</div>
+      </div>
+      <MenuSeparator />
+      <MenuItem onSelect={onReauth}>Reconnect Google account</MenuItem>
+      <MenuItem onSelect={() => window.open("/privacy", "_blank")}>Privacy policy</MenuItem>
+      <MenuItem onSelect={() => window.open("/tos", "_blank")}>Terms of service</MenuItem>
+      <MenuSeparator />
+      <MenuItem onSelect={onSignOut}>Sign out</MenuItem>
+    </Menu>
   );
 }
 

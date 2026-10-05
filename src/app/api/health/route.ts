@@ -3,6 +3,7 @@ import { Redis } from "@upstash/redis";
 import { Client } from "@upstash/qstash";
 import { getBaseUrl } from "@/lib/base-url";
 import { getQStashBaseUrl } from "@/lib/qstash";
+import { anthropicConfigured, styleModel } from "@/lib/anthropic";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +41,7 @@ export async function GET(req: NextRequest) {
     QSTASH_CURRENT_SIGNING_KEY: describe("QSTASH_CURRENT_SIGNING_KEY"),
     QSTASH_NEXT_SIGNING_KEY: describe("QSTASH_NEXT_SIGNING_KEY"),
     CRON_SECRET: describe("CRON_SECRET"),
+    ANTHROPIC_API_KEY: describe("ANTHROPIC_API_KEY"),
   };
 
   const checks: Record<string, Check> = {};
@@ -99,6 +101,12 @@ export async function GET(req: NextRequest) {
     detail: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET ? "client id + secret set" : "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing",
   };
 
-  const allOk = Object.values(checks).every((c) => c.ok);
+  // The Style engine is optional: syncing works without it
+  checks.styleEngine = {
+    ok: anthropicConfigured(),
+    detail: anthropicConfigured() ? `ANTHROPIC_API_KEY set, model ${styleModel()}` : "ANTHROPIC_API_KEY not set (the Style engine tab is unavailable)",
+  };
+
+  const allOk = Object.entries(checks).every(([name, c]) => c.ok || name === "styleEngine");
   return NextResponse.json({ ok: allOk, deployment: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local", checks, env });
 }
