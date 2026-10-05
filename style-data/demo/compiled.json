@@ -1,0 +1,443 @@
+{
+  "version": 1,
+  "name": "Demo (not Solvely)",
+  "builtAt": "2026-10-05T23:08:00.486Z",
+  "candidateId": "rules-fewshot",
+  "evaluation": null,
+  "notes": "",
+  "fingerprint": {
+    "samples": 12,
+    "input": {
+      "words": 366,
+      "sentences": 12,
+      "paragraphs": 12,
+      "meanSentenceWords": 30.5,
+      "stdSentenceWords": 2.6,
+      "medianSentenceWords": 30,
+      "histogram": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "shortShare": 0,
+      "longShare": 1,
+      "alternation": 0,
+      "sentencesPerParagraph": 1,
+      "wordsPerClause": 6.9,
+      "clausesPerSentence": 4.4,
+      "commasPerSentence": 2.17,
+      "subordinators": 1.67,
+      "coordinators": 0.5,
+      "contractions": 0,
+      "firstPerson": 0,
+      "secondPerson": 0,
+      "hedges": 1.37,
+      "intensifiers": 0,
+      "passive": 1.08,
+      "questions": 0,
+      "exclamations": 0,
+      "semicolons": 0.82,
+      "colons": 0,
+      "dashes": 0,
+      "parentheses": 0,
+      "quotes": 0,
+      "meanWordLength": 5.4,
+      "typeTokenRatio": 0.64,
+      "transitionsPerSentence": 0.17,
+      "transitionInitialShare": 0,
+      "bullets": 0,
+      "headings": 0
+    },
+    "output": {
+      "words": 256,
+      "sentences": 35,
+      "paragraphs": 12,
+      "meanSentenceWords": 7.3,
+      "stdSentenceWords": 2.8,
+      "medianSentenceWords": 7,
+      "histogram": [
+        0.66,
+        0.34,
+        0,
+        0
+      ],
+      "shortShare": 0.94,
+      "longShare": 0,
+      "alternation": 0.52,
+      "sentencesPerParagraph": 2.9,
+      "wordsPerClause": 6,
+      "clausesPerSentence": 1.2,
+      "commasPerSentence": 0.14,
+      "subordinators": 0.06,
+      "coordinators": 0.17,
+      "contractions": 1.95,
+      "firstPerson": 0,
+      "secondPerson": 1.17,
+      "hedges": 0.78,
+      "intensifiers": 0,
+      "passive": 0.09,
+      "questions": 0,
+      "exclamations": 0,
+      "semicolons": 0,
+      "colons": 0,
+      "dashes": 0,
+      "parentheses": 0,
+      "quotes": 0,
+      "meanWordLength": 4.7,
+      "typeTokenRatio": 0.74,
+      "transitionsPerSentence": 0,
+      "transitionInitialShare": 0,
+      "bullets": 0,
+      "headings": 0
+    },
+    "lengthRatio": 0.7,
+    "sentenceRatio": 2.92,
+    "paragraphRatio": 1,
+    "vocabulary": {
+      "preferred": [
+        {
+          "word": "people",
+          "outputPer1k": 7.8,
+          "inputPer1k": 0,
+          "outputCount": 2,
+          "inputCount": 0
+        },
+        {
+          "word": "new",
+          "outputPer1k": 11.7,
+          "inputPer1k": 2.7,
+          "outputCount": 3,
+          "inputCount": 1
+        }
+      ],
+      "avoided": [
+        {
+          "word": "although",
+          "outputPer1k": 0,
+          "inputPer1k": 5.5,
+          "outputCount": 0,
+          "inputCount": 2
+        },
+        {
+          "word": "increased",
+          "outputPer1k": 0,
+          "inputPer1k": 5.5,
+          "outputCount": 0,
+          "inputCount": 2
+        },
+        {
+          "word": "primary",
+          "outputPer1k": 0,
+          "inputPer1k": 5.5,
+          "outputCount": 0,
+          "inputCount": 2
+        },
+        {
+          "word": "number",
+          "outputPer1k": 0,
+          "inputPer1k": 5.5,
+          "outputCount": 0,
+          "inputCount": 2
+        },
+        {
+          "word": "reduce",
+          "outputPer1k": 0,
+          "inputPer1k": 5.5,
+          "outputCount": 0,
+          "inputCount": 2
+        }
+      ],
+      "substitutions": [
+        {
+          "from": "acted on them",
+          "to": "did anything",
+          "count": 1
+        },
+        {
+          "from": "although the",
+          "to": "the",
+          "count": 1
+        },
+        {
+          "from": "and",
+          "to": "or",
+          "count": 1
+        },
+        {
+          "from": "attendees",
+          "to": "could fit",
+          "count": 1
+        },
+        {
+          "from": "complete",
+          "to": "total",
+          "count": 1
+        },
+        {
+          "from": "completed",
+          "to": "finished",
+          "count": 1
+        },
+        {
+          "from": "displayed",
+          "to": "shown",
+          "count": 1
+        },
+        {
+          "from": "had been",
+          "to": "was",
+          "count": 1
+        },
+        {
+          "from": "have identified",
+          "to": "found",
+          "count": 1
+        },
+        {
+          "from": "intended",
+          "to": "meant",
+          "count": 1
+        },
+        {
+          "from": "participants",
+          "to": "most people",
+          "count": 1
+        },
+        {
+          "from": "primary",
+          "to": "main",
+          "count": 1
+        },
+        {
+          "from": "redesigned",
+          "to": "new",
+          "count": 1
+        },
+        {
+          "from": "reduce",
+          "to": "cut",
+          "count": 1
+        },
+        {
+          "from": "relocate",
+          "to": "move",
+          "count": 1
+        },
+        {
+          "from": "remained essentially",
+          "to": "stayed",
+          "count": 1
+        },
+        {
+          "from": "reviewed",
+          "to": "read",
+          "count": 1
+        },
+        {
+          "from": "were compelled",
+          "to": "had",
+          "count": 1
+        },
+        {
+          "from": "while",
+          "to": "and",
+          "count": 1
+        }
+      ],
+      "openers": [],
+      "phrases": [],
+      "transitions": []
+    },
+    "preservation": {
+      "retention": 0.32,
+      "namesKept": 1,
+      "numbersKept": 1
+    }
+  },
+  "rules": [
+    {
+      "id": "length-shorter",
+      "category": "length",
+      "text": "Make the result about 70% of the source's length. Cut words, not facts.",
+      "evidence": "Outputs average 70% of the input word count across 12 samples.",
+      "confidence": "high"
+    },
+    {
+      "id": "pacing-mean",
+      "category": "pacing",
+      "text": "Average 7.3 words per sentence (most sentences 5 to 10 words).",
+      "evidence": "Output sentences: mean 7.3, median 7, spread ±2.8; inputs average 30.5.",
+      "confidence": "high"
+    },
+    {
+      "id": "pacing-split",
+      "category": "pacing",
+      "text": "Split long sentences into two or three shorter ones.",
+      "evidence": "Outputs have 2.92× as many sentences as inputs; mean length drops from 30.5 to 7.3 words.",
+      "confidence": "high"
+    },
+    {
+      "id": "pacing-short",
+      "category": "pacing",
+      "text": "Use short, punchy sentences (12 words or fewer) for about 94% of sentences.",
+      "evidence": "94% of output sentences are 12 words or fewer (inputs: 0%).",
+      "confidence": "high"
+    },
+    {
+      "id": "pacing-no-long",
+      "category": "pacing",
+      "text": "Avoid sentences over 25 words.",
+      "evidence": "0% of output sentences are 25+ words, against 100% of input sentences.",
+      "confidence": "high"
+    },
+    {
+      "id": "pacing-paragraphs",
+      "category": "structure",
+      "text": "Use paragraphs of about 3 sentences.",
+      "evidence": "Outputs average 2.9 sentences per paragraph; inputs 1.",
+      "confidence": "high"
+    },
+    {
+      "id": "clauses-density",
+      "category": "clauses",
+      "text": "Keep about 6 words per clause and 1.2 clauses per sentence.",
+      "evidence": "Outputs: 6 words/clause, 1.2 clauses/sentence; inputs: 6.9 and 4.4.",
+      "confidence": "high"
+    },
+    {
+      "id": "clauses-flat",
+      "category": "clauses",
+      "text": "Prefer simple and coordinated sentences over subordinate clauses (because, although, which).",
+      "evidence": "Subordinators per sentence fall from 1.67 to 0.06.",
+      "confidence": "high"
+    },
+    {
+      "id": "clauses-commas-fewer",
+      "category": "punctuation",
+      "text": "Use few commas: about 0.14 per sentence.",
+      "evidence": "Commas per sentence fall from 2.17 to 0.14.",
+      "confidence": "high"
+    },
+    {
+      "id": "vocab-preferred",
+      "category": "vocabulary",
+      "text": "Favour these words: people, new.",
+      "evidence": "Each appears at least twice as often per 1,000 words in outputs as in inputs.",
+      "confidence": "high"
+    },
+    {
+      "id": "vocab-avoided",
+      "category": "vocabulary",
+      "text": "Avoid these words: although, increased, primary, number, reduce.",
+      "evidence": "Each appears at least twice as often per 1,000 words in inputs as in outputs.",
+      "confidence": "high"
+    },
+    {
+      "id": "vocab-short-words",
+      "category": "vocabulary",
+      "text": "Prefer short, plain words.",
+      "evidence": "Mean word length falls from 5.4 to 4.7 letters.",
+      "confidence": "high"
+    },
+    {
+      "id": "voice-contractions",
+      "category": "voice",
+      "text": "Use contractions (it's, don't, we're).",
+      "evidence": "1.95 contractions per 100 words in outputs, 0 in inputs.",
+      "confidence": "high"
+    },
+    {
+      "id": "voice-second",
+      "category": "voice",
+      "text": "Address the reader directly (you, your).",
+      "evidence": "Second-person words per 100: 1.17 in outputs, 0 in inputs.",
+      "confidence": "high"
+    },
+    {
+      "id": "voice-active",
+      "category": "voice",
+      "text": "Use the active voice.",
+      "evidence": "Passive constructions per sentence fall from 1.08 to 0.09.",
+      "confidence": "high"
+    },
+    {
+      "id": "trans-fewer",
+      "category": "vocabulary",
+      "text": "Drop transitional phrases (however, moreover, in addition). Let sentences stand on their own.",
+      "evidence": "Transitions per sentence fall from 0.17 to 0.",
+      "confidence": "high"
+    },
+    {
+      "id": "punct-no-semicolons",
+      "category": "punctuation",
+      "text": "No semicolons.",
+      "evidence": "Inputs use 0.82 per 100 words; outputs none.",
+      "confidence": "high"
+    },
+    {
+      "id": "preserve-facts",
+      "category": "preservation",
+      "text": "Keep every fact, name, number, date, quotation and citation from the source. Do not add information.",
+      "evidence": "Samples keep 100% of names and 100% of numbers; 32% of source words survive verbatim.",
+      "confidence": "high"
+    },
+    {
+      "id": "preserve-rewrite",
+      "category": "preservation",
+      "text": "Rewrite freely in your own words while keeping the meaning; do not copy the source phrasing.",
+      "evidence": "Only 32% of source words survive verbatim.",
+      "confidence": "high"
+    }
+  ],
+  "exemplars": [
+    {
+      "input": "The committee reviewed the proposal in detail; however, it was ultimately rejected because the budget was considered too large and the timeline was deemed unrealistic by several members.",
+      "output": "The committee read the proposal closely. They rejected it. The budget was too big, and several members thought the timeline couldn't work."
+    },
+    {
+      "input": "In 2019, Maria Chen filed the report with the regional office; although the findings were clear, nobody in Lisbon acted on them for a period of several months.",
+      "output": "Maria Chen filed the report with the regional office in 2019. The findings were clear. Nobody in Lisbon did anything for months."
+    },
+    {
+      "input": "It is generally recommended that users update their passwords on a regular basis, utilizing a combination of letters, numbers and symbols, in order to minimize the likelihood of unauthorized access.",
+      "output": "Change your password often. Use letters, numbers and symbols. That makes it harder for someone to break in."
+    },
+    {
+      "input": "The quarterly results, which were announced on Tuesday, exceeded analysts' expectations; revenue increased by 12 percent, while operating costs remained essentially flat compared with the previous quarter.",
+      "output": "The quarterly results came out on Tuesday. They beat what analysts expected. Revenue rose 12 percent, and operating costs stayed flat."
+    },
+    {
+      "input": "Participants who completed the survey indicated that, in the majority of cases, the primary obstacle to adoption was not cost but rather a lack of adequate training and support.",
+      "output": "Most people who finished the survey said the same thing. Cost wasn't the problem. They didn't get enough training or support."
+    },
+    {
+      "input": "Despite extensive efforts to facilitate communication between the two departments, misunderstandings continued to arise, largely as a consequence of inconsistent terminology and the absence of a shared documentation system.",
+      "output": "The two departments kept misunderstanding each other. People tried hard to fix it. The real causes were mixed-up terms and no shared documentation."
+    },
+    {
+      "input": "The museum, which was founded in 1884 by a group of local merchants, houses approximately 40,000 objects, a considerable number of which have never been displayed to the public.",
+      "output": "A group of local merchants founded the museum in 1884. It holds about 40,000 objects. Many have never been shown to the public."
+    },
+    {
+      "input": "Prior to initiating the installation procedure, it is essential that all existing data be backed up, since the process will overwrite the contents of the primary drive without further confirmation.",
+      "output": "Back up your data before you install. The process wipes the main drive. It won't ask again."
+    },
+    {
+      "input": "Although the new policy was intended to reduce waiting times, preliminary data from the first three months suggest that it has had a negligible effect, and in some clinics waiting times have actually increased.",
+      "output": "The new policy was meant to cut waiting times. Three months in, it hasn't. Some clinics are now slower."
+    },
+    {
+      "input": "Researchers at the University of Oslo have identified a previously unknown species of moss in the Svalbard archipelago, which they believe may be capable of surviving extended periods of complete darkness.",
+      "output": "Researchers at the University of Oslo found a new moss in Svalbard. They think it can survive long stretches of total darkness."
+    },
+    {
+      "input": "Owing to the fact that the venue had been double-booked, the organizers were compelled to relocate the event at short notice to a smaller hall, which unfortunately could not accommodate all of the registered attendees.",
+      "output": "The venue was double-booked. The organizers had to move the event to a smaller hall at the last minute. Not everyone who registered could fit."
+    },
+    {
+      "input": "The software update, which is scheduled for release on 3 March, introduces a redesigned settings menu as well as a number of performance improvements that are expected to reduce start-up time by roughly 30 percent.",
+      "output": "The update ships on 3 March. It has a new settings menu and runs faster. Start-up should be about 30 percent quicker."
+    }
+  ]
+}

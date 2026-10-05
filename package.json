@@ -7,8 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test src/**/*.test.ts src/components/**/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "test": "tsx --test src/**/*.test.ts src/components/**/*.test.ts scripts/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "style:eval": "tsx scripts/style-lab/run.ts",
+    "style:compile": "tsx scripts/style-lab/compile.ts",
+    "style:fingerprint": "tsx scripts/style-lab/compile.ts --print",
+    "style:mock": "tsx scripts/style-lab/mock-ollama.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

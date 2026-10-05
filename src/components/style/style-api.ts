@@ -3,9 +3,9 @@
  * JSON: {text} chunks, then {done} with usage, or {error}.
  */
 
-import type { StreamEvent } from "@/lib/anthropic";
+import type { StreamEvent } from "@/lib/llm";
 
-export interface StreamUsage { model: string; inputTokens: number; outputTokens: number; cachedTokens: number }
+export interface StreamUsage { model: string; inputTokens: number; outputTokens: number }
 
 export class StyleApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
@@ -34,7 +34,7 @@ export async function streamStyle(url: string, body: unknown, onText: (chunk: st
     try { event = JSON.parse(line) as StreamEvent; } catch { return; }
     if ("text" in event) onText(event.text);
     else if ("error" in event) failure = event.error;
-    else if ("done" in event) usage = { model: event.model, inputTokens: event.inputTokens, outputTokens: event.outputTokens, cachedTokens: event.cachedTokens };
+    else if ("done" in event) usage = { model: event.model, inputTokens: event.inputTokens, outputTokens: event.outputTokens };
   };
   for (;;) {
     const { value, done } = await reader.read();
@@ -53,9 +53,14 @@ export async function streamStyle(url: string, body: unknown, onText: (chunk: st
   return usage;
 }
 
-export async function fetchStyleStatus(): Promise<{ configured: boolean; model: string } | null> {
+export interface StyleStatus {
+  llm: { provider: string; model: string; configured: boolean; reachable: boolean | null; detail: string };
+  style: { ready: boolean; name: string; samples: number; candidateId: string; builtAt: string | null; evaluation: { run: string; score: number; samples: number; model: string } | null };
+}
+
+export async function fetchStyleStatus(): Promise<StyleStatus | null> {
   try {
     const res = await fetch("/api/style/status");
-    return res.ok ? ((await res.json()) as { configured: boolean; model: string }) : null;
+    return res.ok ? ((await res.json()) as StyleStatus) : null;
   } catch { return null; }
 }

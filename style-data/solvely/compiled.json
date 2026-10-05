@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "name": "Solvely",
+  "builtAt": null,
+  "candidateId": "rules-fewshot",
+  "evaluation": null,
+  "notes": "",
+  "fingerprint": null,
+  "rules": [],
+  "exemplars": []
+}

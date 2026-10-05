@@ -1,0 +1,59 @@
+Samples: 12. Length ratio 0.7×, sentence ratio 2.92×, paragraph ratio 1×.
+
+Metric                                inputs   outputs
+Mean words per sentence                 30.5       7.3
+Spread (std) of sentence length          2.6       2.8
+Sentences 1–8 words                       0%       66%
+Sentences 9–15 words                      0%       34%
+Sentences 16–25 words                     0%        0%
+Sentences 26+ words                     100%        0%
+Rhythm (length class changes)             0%       52%
+Sentences per paragraph                    1       2.9
+Words per clause                         6.9         6
+Clauses per sentence                     4.4       1.2
+Commas per sentence                     2.17      0.14
+Subordinators per sentence              1.67      0.06
+Coordinators per sentence                0.5      0.17
+Transitions per sentence                0.17         0
+Contractions per 100 words                 0      1.95
+First person per 100 words                 0         0
+Second person per 100 words                0      1.17
+Hedges per 100 words                    1.37      0.78
+Intensifiers per 100 words                 0         0
+Passive per sentence                    1.08      0.09
+Questions per sentence                     0         0
+Semicolons per 100 words                0.82         0
+Colons per 100 words                       0         0
+Dashes per 100 words                       0         0
+Parentheses per 100 words                  0         0
+Mean word length                         5.4       4.7
+Type/token ratio                        0.64      0.74
+List paragraphs                           0%        0%
+
+Preferred words: people, new
+Avoided words: although, increased, primary, number, reduce
+Substitutions: acted on them → did anything (1); although the → the (1); and → or (1); attendees → could fit (1); complete → total (1); completed → finished (1); displayed → shown (1); had been → was (1); have identified → found (1); intended → meant (1); participants → most people (1); primary → main (1); redesigned → new (1); reduce → cut (1); relocate → move (1); remained essentially → stayed (1); reviewed → read (1); were compelled → had (1); while → and (1)
+Signature phrases: none found
+Sentence openers: none found
+Preservation: 32% of source words kept verbatim; names kept 100%, numbers kept 100%.
+
+Rules:
+1. Make the result about 70% of the source's length. Cut words, not facts. [high: Outputs average 70% of the input word count across 12 samples.]
+2. Average 7.3 words per sentence (most sentences 5 to 10 words). [high: Output sentences: mean 7.3, median 7, spread ±2.8; inputs average 30.5.]
+3. Split long sentences into two or three shorter ones. [high: Outputs have 2.92× as many sentences as inputs; mean length drops from 30.5 to 7.3 words.]
+4. Use short, punchy sentences (12 words or fewer) for about 94% of sentences. [high: 94% of output sentences are 12 words or fewer (inputs: 0%).]
+5. Avoid sentences over 25 words. [high: 0% of output sentences are 25+ words, against 100% of input sentences.]
+6. Use paragraphs of about 3 sentences. [high: Outputs average 2.9 sentences per paragraph; inputs 1.]
+7. Keep about 6 words per clause and 1.2 clauses per sentence. [high: Outputs: 6 words/clause, 1.2 clauses/sentence; inputs: 6.9 and 4.4.]
+8. Prefer simple and coordinated sentences over subordinate clauses (because, although, which). [high: Subordinators per sentence fall from 1.67 to 0.06.]
+9. Use few commas: about 0.14 per sentence. [high: Commas per sentence fall from 2.17 to 0.14.]
+10. Favour these words: people, new. [high: Each appears at least twice as often per 1,000 words in outputs as in inputs.]
+11. Avoid these words: although, increased, primary, number, reduce. [high: Each appears at least twice as often per 1,000 words in inputs as in outputs.]
+12. Prefer short, plain words. [high: Mean word length falls from 5.4 to 4.7 letters.]
+13. Use contractions (it's, don't, we're). [high: 1.95 contractions per 100 words in outputs, 0 in inputs.]
+14. Address the reader directly (you, your). [high: Second-person words per 100: 1.17 in outputs, 0 in inputs.]
+15. Use the active voice. [high: Passive constructions per sentence fall from 1.08 to 0.09.]
+16. Drop transitional phrases (however, moreover, in addition). Let sentences stand on their own. [high: Transitions per sentence fall from 0.17 to 0.]
+17. No semicolons. [high: Inputs use 0.82 per 100 words; outputs none.]
+18. Keep every fact, name, number, date, quotation and citation from the source. Do not add information. [high: Samples keep 100% of names and 100% of numbers; 32% of source words survive verbatim.]
+19. Rewrite freely in your own words while keeping the meaning; do not copy the source phrasing. [high: Only 32% of source words survive verbatim.]

@@ -3,7 +3,8 @@ import { Redis } from "@upstash/redis";
 import { Client } from "@upstash/qstash";
 import { getBaseUrl } from "@/lib/base-url";
 import { getQStashBaseUrl } from "@/lib/qstash";
-import { anthropicConfigured, styleModel } from "@/lib/anthropic";
+import { llmConfig } from "@/lib/llm";
+import { styleReady } from "@/lib/style-spec";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,9 @@ export async function GET(req: NextRequest) {
     QSTASH_CURRENT_SIGNING_KEY: describe("QSTASH_CURRENT_SIGNING_KEY"),
     QSTASH_NEXT_SIGNING_KEY: describe("QSTASH_NEXT_SIGNING_KEY"),
     CRON_SECRET: describe("CRON_SECRET"),
+    LLM_PROVIDER: describe("LLM_PROVIDER"),
+    LLM_BASE_URL: describe("LLM_BASE_URL"),
+    LLM_MODEL: describe("LLM_MODEL"),
     ANTHROPIC_API_KEY: describe("ANTHROPIC_API_KEY"),
   };
 
@@ -102,9 +106,10 @@ export async function GET(req: NextRequest) {
   };
 
   // The Style engine is optional: syncing works without it
+  const llm = llmConfig();
   checks.styleEngine = {
-    ok: anthropicConfigured(),
-    detail: anthropicConfigured() ? `ANTHROPIC_API_KEY set, model ${styleModel()}` : "ANTHROPIC_API_KEY not set (the Style engine tab is unavailable)",
+    ok: llm.configured && styleReady(),
+    detail: !styleReady() ? "no compiled style yet (run the style lab)" : llm.configured ? llm.detail : `${llm.detail} (the Style engine tab is unavailable)`,
   };
 
   const allOk = Object.entries(checks).every(([name, c]) => c.ok || name === "styleEngine");
