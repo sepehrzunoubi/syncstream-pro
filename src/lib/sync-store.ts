@@ -45,6 +45,8 @@ export interface SpotState {
   opened: boolean;
   /** List state of the paragraph being typed into */
   docList?: DocListState;
+  /** Character styles of the text already typed here have been checked (see the runner) */
+  restyled?: boolean;
 }
 
 /** Small mutable state, rewritten as the job progresses. */

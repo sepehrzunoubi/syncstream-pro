@@ -634,3 +634,64 @@ test("additions keep their places when the document is edited above them mid-syn
   await drain(h);
   assert.equal(h.doc.text.replace(/^(Hi\. )+/, ""), plainOf(target));
 });
+
+test("every typed character ends up in its font, typos and all", async () => {
+  const ts = { type: "textStyle", attrs: { fontFamily: "Times New Roman", fontSize: 12, color: "#000000" } };
+  const addMark = { type: PENDING_MARK };
+  const words = "Before I read the Vox article for this week, I thought maintaining relationships was mostly about the strength of the relationship itself. If two people genuinely cared about each other, I assumed that changing schedules or time apart would not really affect their connection.";
+  const base: EditorNode = { type: "doc", content: [{ type: "paragraph", content: [] }] };
+  const target: EditorNode = { type: "doc", content: [
+    { type: "paragraph", attrs: { firstLine: true }, content: [{ type: "text", text: words, marks: [ts, addMark] }] },
+    { type: "paragraph", attrs: { firstLine: true }, content: [
+      { type: "text", text: "Volpe explains that ", marks: [ts, addMark] },
+      { type: "text", text: "being intentional matters", marks: [ts, { type: "italic" }, addMark] },
+      { type: "text", text: " a lot.", marks: [ts, addMark] },
+    ] },
+  ] };
+  for (const seed of [1, 2, 3]) {
+    const h = await additionsHarness(base, target, seed);
+    // Track each character's font like Docs: inserted text takes the font of the character before it
+    const fonts: string[] = [];
+    const orig = h.doc.batch.bind(h.doc);
+    h.doc.batch = async (tok, d, requests) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pending = [...(requests as Record<string, any>[])];
+      // Apply the content first so paragraph lookups see the text this batch inserts
+      await orig(tok, d, requests);
+      for (const r of pending) {
+        if (r.insertText || r.insertInlineImage) {
+          const ins = r.insertText ?? r.insertInlineImage;
+          const i = ins.location.index - 1;
+          const n = r.insertText ? ins.text.length : 1;
+          fonts.splice(i, 0, ...Array(n).fill(fonts[i - 1] ?? "Arial"));
+        } else if (r.updateParagraphStyle && r.updateParagraphStyle.fields.includes("namedStyleType")) {
+          // Like Docs: setting a paragraph's named style resets its text to that style's font
+          const { startIndex, endIndex } = r.updateParagraphStyle.range;
+          const text = h.doc.text;
+          let from = startIndex - 1;
+          while (from > 0 && text[from - 1] !== "\n") from--;
+          let to = endIndex - 1;
+          while (to < text.length && text[to] !== "\n") to++;
+          for (let k = from; k < to; k++) fonts[k] = "Arial";
+        } else if (r.updateTextStyle && r.updateTextStyle.fields.includes("weightedFontFamily")) {
+          const { startIndex, endIndex } = r.updateTextStyle.range;
+          for (let k = startIndex - 1; k < endIndex - 1; k++) fonts[k] = r.updateTextStyle.textStyle.weightedFontFamily?.fontFamily ?? "Arial";
+        }
+      }
+    };
+    const origDelete = h.doc.deleteRange.bind(h.doc);
+    h.doc.deleteRange = async (t, d, start, end) => { fonts.splice(start - 1, end - start); await origDelete(t, d, start, end); };
+    await runJobWindow(h.jobId, 0, h.deps);
+    if (seed === 3) {
+      // A sync started before the fix: what it typed so far was reset to Arial; the repair restores it
+      for (let k = 0; k < fonts.length; k++) fonts[k] = "Arial";
+      assert.ok(fonts.length > 20, `text typed before the damage: ${fonts.length}`);
+      const job = (await h.store.getJob(h.jobId))!;
+      await h.store.setJob({ ...job, spots: job.spots!.map((sp) => ({ ...sp, restyled: false })) });
+    }
+    await drain(h);
+    assert.equal(h.doc.text, plainOf(target));
+    const wrong = Array.from(h.doc.text).map((ch, k) => (ch !== "\n" && fonts[k] !== "Times New Roman" ? k : -1)).filter((k) => k >= 0);
+    assert.deepEqual(wrong.slice(0, 5), [], `seed ${seed}: characters not in Times New Roman at ${wrong.slice(0, 5)} ("${h.doc.text.slice(wrong[0], wrong[0] + 20)}")`);
+  }
+});

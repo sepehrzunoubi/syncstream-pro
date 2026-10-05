@@ -128,6 +128,11 @@ export interface ImageRef {
 export interface RichFormat {
   v: 1;
   paragraphs: ParagraphFormat[];
+  /**
+   * Text typed into an existing document: the paragraph it starts in, as the
+   * document has it. Paragraph styles are then sent only where they change.
+   */
+  base?: ParagraphFormat;
   runs: RunFormat[];
   images?: ImageRef[];
 }
@@ -448,6 +453,10 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   }
   const format: RichFormat = { v: 1, paragraphs, runs };
   if (images.length) format.images = images;
+  const rawBase = (raw as { base?: ParagraphFormat }).base;
+  if (rawBase && typeof rawBase === "object") {
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, exact: rawBase.exact });
+  }
   return { ok: true, format };
 }
 
@@ -606,6 +615,30 @@ export class FormatIndex {
 }
 
 /**
+ * Only the paragraph style fields that differ between a and b. Setting the
+ * named style resets a paragraph's text to that style's font in Docs, so it
+ * is only sent when it really changes.
+ */
+export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style: DocsRequest; fields: string[] } | null {
+  const style: DocsRequest = {};
+  const fields: string[] = [];
+  if (a.style !== b.style) { style.namedStyleType = NAMED_STYLES[b.style].docs; fields.push("namedStyleType"); }
+  if (a.align !== b.align) { style.alignment = DOCS_ALIGN[b.align]; fields.push("alignment"); }
+  if (a.spacing !== b.spacing) { style.lineSpacing = b.spacing; fields.push("lineSpacing"); }
+  if (!b.list) {
+    const ia = effectiveIndent(a);
+    const ib = effectiveIndent(b);
+    // Removing bullets leaves their indent behind in Docs, so always set it then
+    if (a.list || ia.start !== ib.start || ia.first !== ib.first) {
+      style.indentStart = { magnitude: ib.start, unit: "PT" };
+      style.indentFirstLine = { magnitude: ib.first, unit: "PT" };
+      fields.push("indentStart", "indentFirstLine");
+    }
+  }
+  return fields.length ? { style, fields } : null;
+}
+
+/**
  * Formatting for text typed at one spot inside an existing document.
  *
  * Line k of the text belongs to paragraph k of the format. Line 0 continues
@@ -633,6 +666,11 @@ export class SegmentFormat {
     return this.index.uniformStyleRequests(offset, length, docIndex);
   }
 
+  /** Character styles for text [start, end) of this segment once it sits at docIndex */
+  textRequests(start: number, end: number, docIndex: number): DocsRequest[] {
+    return this.index.textRequests(start, end, docIndex);
+  }
+
   /** `list` is the list state of the paragraph being typed into before this write */
   writeRequests(start: number, end: number, docIndex: number, list: DocListState): { requests: DocsRequest[]; docList: DocListState } {
     if (end <= start) return { requests: [], docList: list };
@@ -651,13 +689,29 @@ export class SegmentFormat {
       if (to <= from) to = from + 1; // one index inside the paragraph after a typed newline
       const range = { startIndex: at(from), endIndex: at(to) };
       const para = this.format.paragraphs[l] ?? DEFAULT_PARAGRAPH;
-      requests.push(paragraphRequest(para, range.startIndex, range.endIndex));
+      // Style a paragraph once, when this sync first types into it: restyling it on
+      // later writes would reset the text already typed there (Docs resets the font
+      // when the named style is set)
+      const fresh = lineStart >= start;
+      if (fresh) {
+        const prev = l === 0 ? this.format.base : this.format.paragraphs[l - 1];
+        if (prev) {
+          const d = paragraphDelta(prev, para);
+          if (d) requests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
+        } else {
+          requests.push(paragraphRequest(para, range.startIndex, range.endIndex));
+        }
+      }
       const want = para.list ?? null;
       if ((cur?.type ?? null) !== want) {
         if (cur) requests.push({ deleteParagraphBullets: { range } });
         if (want) requests.push({ createParagraphBullets: { range, bulletPreset: LIST_PRESETS[want] } });
         cur = want ? { type: want, start: lineStart } : null;
-        if (!want) requests.push(paragraphRequest(para, range.startIndex, range.endIndex)); // indents Docs kept from the bullets
+        if (!want) {
+          // Indents Docs kept from the bullets
+          const ind = effectiveIndent(para);
+          requests.push({ updateParagraphStyle: { range, paragraphStyle: { indentStart: { magnitude: ind.start, unit: "PT" }, indentFirstLine: { magnitude: ind.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
+        }
       }
     }
     requests.push(...this.index.textRequests(start, end, docIndex));

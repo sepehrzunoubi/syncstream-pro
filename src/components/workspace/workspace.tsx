@@ -854,7 +854,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
       <div className="ss-noprint flex-none px-4 pb-1">
         <Toolbar
-          editor={editor}
+          editor={focusedJob ? viewer : editor}
           disabled={!!focusedJob}
           zoom={zoom}
           onZoom={setZoom}
@@ -906,7 +906,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         <main ref={canvasRef} className="ss-canvas min-w-0 flex-none lg:h-full lg:flex-1">
           <div className="ss-ruler-row">
             <div style={{ zoom: scale }}>
-              <Ruler editor={editor} disabled={!!focusedJob} />
+              <Ruler editor={focusedJob ? viewer : editor} disabled={!!focusedJob} />
             </div>
           </div>
 

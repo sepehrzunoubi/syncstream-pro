@@ -238,6 +238,14 @@ interface Place {
   offset: number;
   list: DocListState;
   setList(list: DocListState): void;
+  /**
+   * Re-apply the character styles of what this place already typed, once.
+   * Syncs started before paragraph styles were sent only on change could
+   * have had their earlier text reset to the paragraph's default font.
+   */
+  repair: ((index: number) => DocsRequest[]) | null;
+  /** Called once the repair's requests have landed */
+  repaired(): void;
 }
 
 /** Per-invocation working state around a job. */
@@ -365,6 +373,13 @@ class Context {
         offset: offset - seg.start,
         list: spot.docList ?? null,
         setList: (list) => { spot.docList = list; },
+        repair: spot.restyled
+          ? null
+          : (index) => {
+              const typed = offset - seg.start;
+              return typed > 0 ? fx!.textRequests(0, typed, index - typed) : [];
+            },
+        repaired: () => { spot.restyled = true; },
       };
     }
     const anchor: JobAnchor | undefined = this.job.anchor;
@@ -377,6 +392,8 @@ class Context {
         offset,
         list: this.job.docList ?? null,
         setList: (list) => { this.job.docList = list; },
+        repair: null,
+        repaired: () => {},
       };
     }
     return null;
@@ -439,6 +456,7 @@ class Context {
     let nextList = list;
     if (!alreadyLanded) {
       const requests: DocsRequest[] = [...open, ...this.contentRequests(text, index, isSource ? offset : null, fx)];
+      if (isSource && place?.repair) requests.push(...place.repair(index));
       if (fx) {
         if (isSource) {
           const r = fx.writeRequests(offset, offset + text.length, index, list);
@@ -449,6 +467,7 @@ class Context {
         }
       }
       await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests));
+      if (isSource && place?.repair) place.repaired();
       this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
     } else if (fx && isSource) {
       // The earlier attempt's requests landed with the text, so its list state did too

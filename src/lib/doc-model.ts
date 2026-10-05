@@ -16,13 +16,11 @@
 
 import {
   DEFAULT_PARAGRAPH,
-  DOCS_ALIGN,
   LINK_COLOR,
   LIST_PRESETS,
-  NAMED_STYLES,
   OBJ,
-  effectiveIndent,
   paragraphFromAttrs,
+  paragraphDelta,
   resolveTextStyle,
   rgb,
   sameStyle,
@@ -301,25 +299,6 @@ function textStyleDiff(a: RunStyle, b: RunStyle): { textStyle: DocsRequest; fiel
   return fields.length ? { textStyle, fields } : null;
 }
 
-function paragraphDiff(a: ParagraphFormat, b: ParagraphFormat): { style: DocsRequest; fields: string[] } | null {
-  const style: DocsRequest = {};
-  const fields: string[] = [];
-  if (a.style !== b.style) { style.namedStyleType = NAMED_STYLES[b.style].docs; fields.push("namedStyleType"); }
-  if (a.align !== b.align) { style.alignment = DOCS_ALIGN[b.align]; fields.push("alignment"); }
-  if (a.spacing !== b.spacing) { style.lineSpacing = b.spacing; fields.push("lineSpacing"); }
-  if (!b.list) {
-    const ia = effectiveIndent(a);
-    const ib = effectiveIndent(b);
-    // Removing bullets leaves their indent behind in Docs, so always set it then
-    if (a.list || ia.start !== ib.start || ia.first !== ib.first) {
-      style.indentStart = { magnitude: ib.start, unit: "PT" };
-      style.indentFirstLine = { magnitude: ib.first, unit: "PT" };
-      fields.push("indentStart", "indentFirstLine");
-    }
-  }
-  return fields.length ? { style, fields } : null;
-}
-
 export interface DirectEdits {
   /** One batchUpdate, in order */
   requests: DocsRequest[];
@@ -373,7 +352,7 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
         if (pa.list) bulletRequests.push({ deleteParagraphBullets: { range } });
         if (pb.list) creates.push({ from: range.startIndex, to: range.endIndex, preset: LIST_PRESETS[pb.list] });
       }
-      const d = paragraphDiff(pa, pb);
+      const d = paragraphDelta(pa, pb);
       if (d) styleRequests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
     }
   }
@@ -489,7 +468,10 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
     const endsWithBreak = target[r.te - 1].k === "nl";
     const mode: Segment["mode"] = atParagraphStart && endsWithBreak ? "before" : "inline";
     const te = mode === "before" ? r.te - 1 : r.te;
-    segments.push({ at: index[r.bs], mode, ...segmentText(target, r.ts, te), tokens: [r.ts, te] });
+    const seg = segmentText(target, r.ts, te);
+    // The paragraph the text is typed into (or copied for a new one) as the document has it
+    seg.format.base = paragraphFromAttrs(nextNl(base, r.bs)?.attrs);
+    segments.push({ at: index[r.bs], mode, ...seg, tokens: [r.ts, te] });
   }
   let text = "";
   const boundaries: number[] = [];
