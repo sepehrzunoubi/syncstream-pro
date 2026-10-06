@@ -87,6 +87,25 @@ Once deployed, sign in and open `/api/health` to verify every service is reachab
 
 `/api/sync/process` declares `maxDuration = 300`. If your Vercel plan caps function duration lower, reduce that value; the route chains itself well before the limit. `/api/style/transform` declares the same `maxDuration`, because a long text on a small local model can take minutes; it streams its reply, so the browser sees text as soon as it is written.
 
+## Self-hosting with a local model
+
+The Style engine runs on a model you host, so the whole app can live on your own machine or server with nothing leaving it but the Google Docs calls.
+
+**Everything in one command.** `docker-compose.yml` starts Ollama, pulls the model named by `LLM_MODEL` once (default `llama3.1`), and builds and runs the app against it:
+
+```bash
+cp .env.example .env.local      # Google OAuth values; set LLM_MODEL if you want a different model
+docker compose up --build       # app on http://localhost:3000, Ollama on http://localhost:11434
+```
+
+Add `http://localhost:3000/api/auth/callback` to the OAuth client's redirect URIs. For a GPU, uncomment the `deploy` block in the compose file (NVIDIA container toolkit required); without one, a 7B to 8B model runs on CPU at a few tokens per second, which the streaming UI tolerates. `llama3.1:70b` needs roughly 40 GB of memory.
+
+**App and model on different machines.** Run Ollama where the hardware is (`ollama serve`, `ollama pull llama3.1`) and point the app at it with `LLM_PROVIDER=ollama`, `LLM_BASE_URL=http://<host>:11434`, `LLM_MODEL=llama3.1`. Ollama only listens on localhost by default; set `OLLAMA_HOST=0.0.0.0` on that machine, and keep the port inside your network or behind a tunnel (for example `cloudflared tunnel --url http://localhost:11434` or `ngrok http 11434`), since Ollama has no authentication of its own. Any OpenAI-compatible server (llama.cpp's `llama-server`, vLLM, LM Studio) works the same way with `LLM_PROVIDER=openai` and, if it needs one, `LLM_API_KEY`.
+
+**Check it.** Sign in and open `/api/health`: the `styleEngine` row says whether the model server answers and whether a style has been compiled. The Style engine tab shows the same in its header.
+
+**Vercel.** A Vercel deployment cannot reach a model on a private machine, so there the tab shows a notice unless `LLM_BASE_URL` points at a publicly reachable server. Syncing is unaffected either way.
+
 ## Architecture
 
 ```
