@@ -128,7 +128,7 @@ async function* chat(req: ChatRequest, cfg: LlmConfig, env: NodeJS.ProcessEnv): 
     const res = await fetch(`${cfg.baseUrl}/api/chat`, {
       method: "POST",
       headers: headersFor(cfg, env),
-      body: JSON.stringify({ model, messages: req.messages, stream: true, options: { temperature: req.temperature, num_predict: req.maxTokens } }),
+      body: JSON.stringify({ model, messages: req.messages, stream: true, options: { temperature: req.temperature, num_predict: req.maxTokens, num_ctx: contextFor(req) } }),
       signal,
     });
     if (!res.ok || !res.body) throw new Error(`Ollama answered HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
@@ -182,6 +182,18 @@ async function* chat(req: ChatRequest, cfg: LlmConfig, env: NodeJS.ProcessEnv): 
   }
   const final = await stream.finalMessage();
   yield { done: { model: final.model, stopReason: final.stop_reason, inputTokens: final.usage.input_tokens, outputTokens: final.usage.output_tokens } };
+}
+
+/**
+ * Ollama's default context is 4,096 tokens and it silently drops the oldest
+ * part of a longer prompt (the rules and examples). Ask for room for the
+ * prompt and the reply, in 2k steps, between 8k and 32k.
+ */
+export function contextFor(req: ChatRequest): number {
+  const chars = req.messages.reduce((a, m) => a + m.content.length, 0);
+  const promptTokens = Math.ceil(chars / 3.2);
+  const need = promptTokens + req.maxTokens + 512;
+  return Math.min(32768, Math.max(8192, Math.ceil(need / 2048) * 2048));
 }
 
 async function* lines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
