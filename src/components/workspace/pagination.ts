@@ -131,6 +131,8 @@ function measure(view: EditorView): Break[] {
       const above = gapTops.filter((g) => g.top < l.top).reduce((s, g) => s + g.size, 0);
       return { ...l, ft: l.top - removed - above, fb: l.bottom - removed - above };
     });
+    // An empty paragraph (a new line with nothing typed yet) has no text to measure: its box is its one line
+    if (!lines.length) lines.push({ top: toLocal(r.top), bottom: toLocal(r.bottom), first: null as unknown as Fragment, ft: top, fb: bottom });
     for (let i = 0; i < lines.length; i++) {
       const L = lines[i];
       if (L.fb - pageStart <= CONTENT_H + 0.5) continue;
