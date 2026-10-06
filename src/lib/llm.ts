@@ -131,7 +131,7 @@ async function* chat(req: ChatRequest, cfg: LlmConfig, env: NodeJS.ProcessEnv): 
       body: JSON.stringify({ model, messages: req.messages, stream: true, options: { temperature: req.temperature, num_predict: req.maxTokens, num_ctx: contextFor(req) } }),
       signal,
     });
-    if (!res.ok || !res.body) throw new Error(`Ollama answered HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    if (!res.ok || !res.body) throw new Error(`Ollama answered HTTP ${res.status}${describeBody(await res.text().catch(() => ""))}`);
     for await (const line of lines(res.body)) {
       const ev = JSON.parse(line) as { message?: { content?: string }; done?: boolean; done_reason?: string; prompt_eval_count?: number; eval_count?: number; error?: string };
       if (ev.error) throw new Error(ev.error);
@@ -148,7 +148,7 @@ async function* chat(req: ChatRequest, cfg: LlmConfig, env: NodeJS.ProcessEnv): 
       body: JSON.stringify({ model, messages: req.messages, stream: true, temperature: req.temperature, max_tokens: req.maxTokens, stream_options: { include_usage: true } }),
       signal,
     });
-    if (!res.ok || !res.body) throw new Error(`The model server answered HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    if (!res.ok || !res.body) throw new Error(`The model server answered HTTP ${res.status}${describeBody(await res.text().catch(() => ""))}`);
     let usage = { inputTokens: 0, outputTokens: 0 };
     let stop: string | null = null;
     for await (const line of lines(res.body)) {
@@ -194,6 +194,14 @@ export function contextFor(req: ChatRequest): number {
   const promptTokens = Math.ceil(chars / 3.2);
   const need = promptTokens + req.maxTokens + 512;
   return Math.min(32768, Math.max(8192, Math.ceil(need / 2048) * 2048));
+}
+
+/** An error body, unless it is an HTML page from a proxy or tunnel */
+function describeBody(body: string): string {
+  const t = body.trim();
+  if (!t) return "";
+  if (/^<!doctype html|^<html/i.test(t)) return " (an HTML error page, usually from a tunnel or proxy that timed out)";
+  return `: ${t.slice(0, 200)}`;
 }
 
 async function* lines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {

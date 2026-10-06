@@ -76,6 +76,27 @@ function inlineExamples(exemplars: Sample[]): string {
 
 export const CANDIDATES: Candidate[] = [
   {
+    id: "rules-only",
+    description: "Rules and numeric targets, no examples. The lightest prompt: fastest on a CPU, and the one to beat on quality.",
+    exemplars: 0,
+    temperature: 0.2,
+    build: ({ fingerprint, rules, text, notes }) => [
+      { role: "system", content: `You rewrite text in a fixed house style.\n\nMeasured targets of the style:\n${targets(fingerprint)}\n\nRules of the style:\n${ruleList(rules, 30)}\n\n${FIDELITY}${notesBlock(notes)}` },
+      { role: "user", content: text },
+    ],
+  },
+  {
+    id: "rules-oneshot",
+    description: "Rules plus the single closest example as a prior turn. A middle ground between speed and imitation.",
+    exemplars: 1,
+    temperature: 0.2,
+    build: ({ rules, exemplars, text, notes }) => [
+      { role: "system", content: `You rewrite text in a fixed house style.\n\nRules of the style:\n${ruleList(rules, 30)}\n\n${FIDELITY}${notesBlock(notes)}` },
+      ...fewShot(exemplars),
+      { role: "user", content: text },
+    ],
+  },
+  {
     id: "fewshot-plain",
     description: "No rules at all: the examples as prior turns, then the input. The baseline every other candidate must beat.",
     exemplars: 4,
