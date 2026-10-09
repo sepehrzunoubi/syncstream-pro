@@ -170,6 +170,11 @@ export async function deleteRange(
  * anything collaborators changed since. Returns the revision afterwards.
  */
 export async function editDocument(accessToken: string, documentId: string, requests: object[], revisionId?: string): Promise<string> {
+  return (await editDocumentWithReplies(accessToken, documentId, requests, revisionId)).revisionId;
+}
+
+/** As editDocument, with each request's reply (ids of created headers, footers and footnotes) */
+export async function editDocumentWithReplies(accessToken: string, documentId: string, requests: object[], revisionId?: string): Promise<{ revisionId: string; replies: Record<string, unknown>[] }> {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
   const docs = google.docs({ version: "v1", auth: client });
@@ -179,7 +184,7 @@ export async function editDocument(accessToken: string, documentId: string, requ
       requestBody: { requests, ...(revisionId ? { writeControl: { targetRevisionId: revisionId } } : {}) },
     })
   );
-  return res.data.writeControl?.requiredRevisionId ?? "";
+  return { revisionId: res.data.writeControl?.requiredRevisionId ?? "", replies: (res.data.replies ?? []) as Record<string, unknown>[] };
 }
 
 /** Apply Docs requests in one atomic batchUpdate */

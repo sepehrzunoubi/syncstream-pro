@@ -208,3 +208,18 @@ test("tables: cells are editable paragraphs between structure tokens that keep D
   const gone = { type: "doc", content: [p("Intro"), p("After")] };
   assert.deepEqual(directEdits(base, gone).requests, [{ deleteContentRange: { range: { startIndex: 7, endIndex: 22 } } }]);
 });
+
+test("a header's edits are saved in its own segment, from index 0, never as additions", async () => {
+  const { segmentEdits } = await import("./doc-model");
+  const p = (text: string, marks?: { type: string }[]) => ({ type: "paragraph", attrs: {}, content: text ? [marks ? { type: "text", text, marks } : { type: "text", text }] : [] });
+  const base = { type: "doc", content: [p("My essay")] };
+  const target = { type: "doc", content: [p("My essay, draft"), p("Page", [{ type: "syncAdd" }])] };
+  const { requests } = segmentEdits(base, target, "kix.h1");
+  assert.deepEqual(requests.filter((r) => r.insertText), [
+    { insertText: { location: { index: 8, segmentId: "kix.h1" }, text: ", draft\nPage" } },
+  ]);
+  for (const r of requests) {
+    const body = Object.values(r)[0] as { range?: { segmentId?: string }; location?: { segmentId?: string } };
+    assert.equal((body.range ?? body.location)?.segmentId, "kix.h1");
+  }
+});

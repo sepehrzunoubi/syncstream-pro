@@ -404,6 +404,17 @@
 .ss-pageless .ss-doc .ss-page-break { display: block; width: auto; height: auto; overflow: visible; margin: 6pt 0; border-top: 1px dashed #dadce0; text-align: center; }
 .ss-pageless .ss-doc .ss-page-break-label { position: relative; top: -9px; padding: 0 8px; background: var(--ss-page-color, #fff); font-size: 10px; color: var(--ss-text-3); }
 .ss-doc .ss-page-break-label { display: none; }
+/* Headers and footers sit in the page margins; the live one is on the first page that shows it */
+.ss-sheet { pointer-events: none; }
+.ss-hf-zone { position: absolute; left: 0; right: 0; z-index: 1; pointer-events: auto; }
+.ss-hf { position: absolute; z-index: 2; pointer-events: auto; min-height: 20px; cursor: text; }
+.ss-hf-body .ss-segment-doc { min-height: 0; padding: 0; }
+.ss-hf-editing { outline: 1px dashed #c4c7c5; outline-offset: 4px; }
+.ss-hf:not(.ss-hf-editing) .ss-segment-doc { color: #5f6368; }
+.ss-hf .ProseMirror { outline: none; }
+.ss-doc .ss-fn-ref { font-size: 0.6em; vertical-align: super; line-height: 0; color: #1155cc; cursor: default; }
+.ss-hf-options { position: absolute; left: 0; display: flex; align-items: center; gap: 16px; padding: 6px 10px; margin-top: 6px; border-radius: 8px; background: var(--ss-surface); box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 4px 8px 3px rgba(0,0,0,.15); white-space: nowrap; z-index: 3; }
+.ss-hf-footer .ss-hf-options { bottom: 100%; margin-bottom: 6px; }
 .ss-pageless .ss-doc .ss-page-break-label { display: inline; }
 
 /* New text: glows until a sync types it into the Google Doc */

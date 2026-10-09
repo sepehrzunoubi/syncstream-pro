@@ -145,3 +145,29 @@ test("a Docs table is read as editable rows and cells with their index spans", a
   assert.equal(at, 19);
   assert.equal(table.attrs?.endSpan, 2, "the row's and the table's ends");
 });
+
+test("headers, footers and footnotes are read as their own segments", async () => {
+  const { importDoc } = await import("./doc-import");
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number, extra: Record<string, unknown>[] = []) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex), ...extra], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  const doc = {
+    revisionId: "r",
+    documentStyle: { defaultHeaderId: "kix.h", defaultFooterId: "kix.f", useFirstPageHeaderFooter: true, firstPageHeaderId: "kix.h1", marginHeader: { magnitude: 30, unit: "PT" } },
+    headers: { "kix.h": { content: [para("Running head\n", 0)] }, "kix.h1": { content: [para("\n", 0)] } },
+    footers: { "kix.f": { content: [para("Footer\n", 0)] } },
+    footnotes: { "kix.fn1": { content: [para("A note\n", 0)] } },
+    body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: {} }, para("Body", 1, [{ startIndex: 5, endIndex: 6, footnoteReference: { footnoteId: "kix.fn1", footnoteNumber: "1" } }, run("\n", 6)])] },
+  };
+  const out = importDoc(doc as never);
+  assert.equal(out.header?.id, "kix.h");
+  assert.equal(out.header?.nodes[0].content?.[0].text, "Running head");
+  assert.equal(out.footer?.nodes[0].content?.[0].text, "Footer");
+  assert.equal(out.firstPageHeader?.id, "kix.h1");
+  assert.equal(out.useFirstPage, true);
+  assert.equal(out.marginHeader, 30);
+  assert.equal(out.marginFooter, 36);
+  assert.equal(out.footnotes["kix.fn1"].nodes[0].content?.[0].text, "A note");
+  const body = out.nodes[0];
+  assert.deepEqual(body.content?.[1], { type: "footnoteRef", attrs: { fid: "kix.fn1", n: "1" } });
+  assert.equal(body.attrs?.locked, undefined, "a paragraph with a footnote reference stays editable");
+});

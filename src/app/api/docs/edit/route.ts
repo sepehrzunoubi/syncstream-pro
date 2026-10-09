@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { editDocument } from "@/lib/google";
+import { editDocumentWithReplies } from "@/lib/google";
 import { applyAuthCookies, googleStatus, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +16,11 @@ const ALLOWED = new Set([
   "updateDocumentStyle",
   "insertPageBreak",
   "insertSectionBreak",
+  "createHeader",
+  "createFooter",
+  "deleteHeader",
+  "deleteFooter",
+  "createFootnote",
 ]);
 const MAX_REQUESTS = 2000;
 
@@ -41,8 +46,8 @@ export async function POST(req: NextRequest) {
   }
   const revisionId = typeof body.revisionId === "string" && body.revisionId ? body.revisionId : undefined;
   try {
-    const next = await withGoogleToken(user, (token) => editDocument(token, documentId, requests as object[], revisionId));
-    return applyAuthCookies(NextResponse.json({ revisionId: next }), user);
+    const next = await withGoogleToken(user, (token) => editDocumentWithReplies(token, documentId, requests as object[], revisionId));
+    return applyAuthCookies(NextResponse.json({ revisionId: next.revisionId, replies: next.replies }), user);
   } catch (error) {
     const status = googleStatus(error);
     if (status === 401) return unauthorized();

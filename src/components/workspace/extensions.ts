@@ -706,6 +706,23 @@ const DocTableCell = TableCell.extend({
 // Header cells from pasted HTML become ordinary cells (Docs has none)
 const DocTableHeader = TableHeader.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("cid"), ...spanAttr }; } });
 
+/** A footnote's reference in the text: a superscript number. Its text lives in the footnote editor. */
+const FootnoteRef = Node.create({
+  name: "footnoteRef",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      fid: { default: null, parseHTML: () => null, rendered: false },
+      n: { default: null, parseHTML: () => null, rendered: false },
+    };
+  },
+  parseHTML: () => [{ tag: "sup[data-footnote]" }],
+  renderHTML: ({ node }) => ["sup", { "data-footnote": node.attrs.fid ?? "", class: "ss-fn-ref", contenteditable: "false" }, String(node.attrs.n ?? "")],
+});
+
 /** Superscript and subscript, one or the other, as Docs' Format > Text has them */
 const Superscript = Mark.create({
   name: "superscript",
@@ -742,6 +759,25 @@ const ClipboardHTML = Extension.create({
   },
 });
 
+/** What a header, footer or footnote editor offers: the body's formatting, no pages, no additions */
+export const segmentExtensions = () => [
+  StarterKit.configure({
+    paragraph: false, heading: false, blockquote: false, codeBlock: false, code: false, bulletList: false, orderedList: false, listItem: false, listKeymap: false, horizontalRule: false,
+    link: { openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: "https", HTMLAttributes: { rel: "noopener noreferrer", target: null } },
+  }),
+  DocParagraph,
+  TextStyle,
+  FontAttributes,
+  Color,
+  DocHighlight,
+  Superscript,
+  Subscript,
+  DocImage,
+  TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
+  DocFormat,
+  ClipboardHTML,
+];
+
 export const editorExtensions = [
   StarterKit.configure({
     paragraph: false,
@@ -764,6 +800,7 @@ export const editorExtensions = [
   Superscript,
   Subscript,
   PageBreak,
+  FootnoteRef,
   DocTable,
   DocTableRow,
   DocTableCell,

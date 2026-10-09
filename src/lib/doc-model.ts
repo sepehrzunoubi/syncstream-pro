@@ -47,6 +47,8 @@ export type Tok =
   | { k: "br"; marks: Marks; pending: boolean }
   /** A page break (one Docs index), always right before its paragraph's end */
   | { k: "pb"; marks: Marks; pending: boolean }
+  /** A footnote reference (one Docs index); `fid` is null until Docs has created the footnote */
+  | { k: "fn"; fid: string | null; attrs: Record<string, unknown> }
   /** End of a paragraph; carries the paragraph's attributes, like the newline does in Docs */
   | { k: "nl"; attrs: Record<string, unknown> }
   /** Something shown but not editable (a table of contents, a section break): `span` Docs indices */
@@ -91,6 +93,8 @@ export function tokenize(doc: EditorNode | null | undefined): Tok[] {
         out.push({ k: "br", marks, pending });
       } else if (child.type === "pageBreak") {
         out.push({ k: "pb", marks, pending });
+      } else if (child.type === "footnoteRef") {
+        out.push({ k: "fn", fid: typeof child.attrs?.fid === "string" ? child.attrs.fid : null, attrs: child.attrs ?? {} });
       }
     }
     out.push({ k: "nl", attrs: node.attrs ?? {} });
@@ -149,6 +153,7 @@ export function untokenize(tokens: Tok[]): EditorNode {
     if (t.k === "img") inline.push(t.marks.length ? { type: "image", attrs: t.attrs, marks: t.marks } : { type: "image", attrs: t.attrs });
     else if (t.k === "br") inline.push(t.marks.length ? { type: "hardBreak", marks: t.marks } : { type: "hardBreak" });
     else if (t.k === "pb") inline.push(t.marks.length ? { type: "pageBreak", marks: t.marks } : { type: "pageBreak" });
+    else if (t.k === "fn") inline.push({ type: "footnoteRef", attrs: t.attrs });
     else if (t.k === "nl") {
       blocks().push({ type: "paragraph", attrs: t.attrs, content: inline });
       inline = [];
@@ -175,7 +180,7 @@ export function untokenize(tokens: Tok[]): EditorNode {
 export function signature(doc: EditorNode | null | undefined): string {
   return tokenize(doc)
     .filter((t) => !isPending(t))
-    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "nl" ? "\n" : t.k === "st" ? `\u0000${t.kind[0]}${t.span}\u0000` : `\u0000${sizeOf(t)}\u0000`))
+    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "fn" ? "\u0001" : t.k === "nl" ? "\n" : t.k === "st" ? `\u0000${t.kind[0]}${t.span}\u0000` : `\u0000${sizeOf(t)}\u0000`))
     .join("");
 }
 
@@ -198,6 +203,7 @@ function same(b: Tok, t: Tok): boolean {
     case "img": return b.attrs.src === (t as typeof b).attrs.src;
     case "block": return b.node.attrs?.bid === (t as typeof b).node.attrs?.bid;
     case "st": return b.kind === (t as typeof b).kind && b.id === (t as typeof b).id;
+    case "fn": return b.fid === (t as typeof b).fid;
     default: return true;
   }
 }
@@ -283,8 +289,9 @@ function regionsOf(base: Tok[], target: Tok[], match: number[]): Region[] {
     i = Math.max(i, nextBase);
     if (j > ts || i > bs) {
       const added = target.slice(ts, j);
-      // Table structure is always a direct edit; the text inside a new table becomes an addition once the table exists
-      regions.push({ bs, be: i, ts, te: j, pending: added.some(isPending) && !added.some((t) => t.k === "st") && !base.slice(bs, i).some((t) => t.k === "st") });
+      // Table structure and footnotes are always direct edits; the text inside a new table becomes an addition once the table exists
+      const structural = (t: Tok) => t.k === "st" || t.k === "fn";
+      regions.push({ bs, be: i, ts, te: j, pending: added.some(isPending) && !added.some(structural) && !base.slice(bs, i).some(structural) });
     }
   }
   return regions;
@@ -306,13 +313,13 @@ function rotate(base: Tok[], target: Tok[], match: number[]): void {
   }
 }
 
-function diff(base: Tok[], target: Tok[], forTyping = true) {
+function diff(base: Tok[], target: Tok[], forTyping = true, firstIndex = 1) {
   const match = alignTokens(base, target);
   if (forTyping) rotate(base, target, match);
   const regions = regionsOf(base, target, match);
-  // Docs index of each base token
+  // Docs index of each base token (the body starts at 1, after its section break; segments at 0)
   const index = new Array<number>(base.length + 1);
-  let at = 1;
+  let at = firstIndex;
   for (let i = 0; i < base.length; i++) { index[i] = at; at += sizeOf(base[i]); }
   index[base.length] = at;
   return { match, regions, index };
@@ -452,9 +459,31 @@ export interface DirectEdits {
 
 /** Requests that make the Google Doc match the editor, except for additions */
 export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectEdits {
+  return edits(baseDoc, targetDoc, 1);
+}
+
+/**
+ * Requests that make a header, footer or footnote match its editor. A
+ * segment's indices start at 0 and nothing in it is typed by a sync: every
+ * change is saved right away, so additions marks are ignored.
+ */
+export function segmentEdits(baseDoc: EditorNode, targetDoc: EditorNode, segmentId: string): DirectEdits {
+  const plain = (doc: EditorNode): EditorNode => untokenize(tokenize(doc).map(stripPending));
+  const out = edits(plain(baseDoc), plain(targetDoc), 0);
+  const tag = (r: DocsRequest): DocsRequest => {
+    const [key] = Object.keys(r);
+    const body = { ...(r[key] as Record<string, unknown>) };
+    if (body.range && typeof body.range === "object") body.range = { ...(body.range as object), segmentId };
+    if (body.location && typeof body.location === "object") body.location = { ...(body.location as object), segmentId };
+    return { [key]: body };
+  };
+  return { ...out, requests: out.requests.map(tag) };
+}
+
+function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): DirectEdits {
   const base = tokenize(baseDoc);
   const target = tokenize(targetDoc);
-  const { match, regions, index } = diff(base, target);
+  const { match, regions, index } = diff(base, target, true, firstIndex);
   // Tables added, removed or reshaped come first, on their own: their indices are only known once Google has applied them
   const structure = tableStructureRequests(base, target, index);
   if (structure.length) return { requests: structure, saved: baseDoc, structural: true };
@@ -568,6 +597,13 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
         contentRequests.push({ insertPageBreak: { location: { index: pos } } });
         pos += 2; // the break and the newline Docs adds with it
         if (inserted[q + 1]?.k === "nl") q++;
+        continue;
+      }
+      if (t.k === "fn") {
+        if (text) { contentRequests.push({ insertText: { location: { index: pos }, text } }); pos += text.length; text = ""; }
+        // Docs creates the footnote and its reference; the id arrives when the document is read back
+        contentRequests.push({ createFootnote: { location: { index: pos } } });
+        pos += 1;
         continue;
       }
       if (t.k === "img") {
@@ -705,7 +741,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
       lineStart = true;
       continue;
     }
-    if (t.k === "block" || t.k === "st") continue;
+    if (t.k === "block" || t.k === "st" || t.k === "fn") continue;
     const style = styleFromMarks(withoutPending(t.marks));
     lastStyle = style;
     if (t.k === "pb") { text += PAGE_BREAK; push(1, style); continue; }

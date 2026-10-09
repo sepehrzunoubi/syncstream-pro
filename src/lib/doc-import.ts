@@ -27,10 +27,25 @@ export interface Anchor {
   at: number;
 }
 
+/** A header, footer or footnote: its Docs segment id and paragraphs */
+export interface ImportedSegment { id: string; nodes: EditorNode[] }
+
 export interface ImportedDoc {
   revisionId: string;
   /** Paper size, margins and colour, from the document's style */
   pageSetup: PageSetup;
+  /** Headers and footers, when the document has them */
+  header?: ImportedSegment;
+  footer?: ImportedSegment;
+  firstPageHeader?: ImportedSegment;
+  firstPageFooter?: ImportedSegment;
+  /** Docs' "Different first page" */
+  useFirstPage: boolean;
+  /** Distance of the header and footer from the page edge, in points */
+  marginHeader: number;
+  marginFooter: number;
+  /** Footnotes, keyed by id */
+  footnotes: Record<string, ImportedSegment>;
   /** True when the doc has no text, images or tables */
   empty: boolean;
   /** The document's paragraphs, in order */
@@ -210,6 +225,9 @@ export function importDoc(doc: Doc): ImportedDoc {
         unsupported = true;
       } else if (pe.pageBreak) {
         content.push({ type: "pageBreak" });
+      } else if (pe.footnoteReference?.footnoteId) {
+        content.push({ type: "footnoteRef", attrs: { fid: pe.footnoteReference.footnoteId, n: pe.footnoteReference.footnoteNumber ?? null } });
+        hasContent = true;
       } else if (!pe.textRun) {
         // Footnote references, equations and the like: shown, not editable
         unsupported = true;
@@ -346,7 +364,35 @@ export function importDoc(doc: Doc): ImportedDoc {
   }
 
   if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
-  return { revisionId: doc.revisionId ?? "", pageSetup: pageSetupFromDocumentStyle(doc.documentStyle), empty: !hasContent, nodes };
+
+  // Headers, footers and footnotes: paragraphs of their own, read the same way
+  const segment = (id: string | null | undefined, content: Element[] | undefined): ImportedSegment | undefined => {
+    if (!id) return undefined;
+    const out: EditorNode[] = [];
+    for (const el of content ?? []) {
+      if (el.paragraph) { const node = paragraphNode(el.paragraph); out.push(node.attrs?.locked ? lock(node, (el.endIndex ?? 0) - (el.startIndex ?? 0)) : node); }
+      else if (el.table) out.push(tableNode(el, `t${++blockId}`));
+    }
+    if (!out.length) out.push({ type: "paragraph", attrs: {}, content: [] });
+    return { id, nodes: out };
+  };
+  const ds = doc.documentStyle ?? {};
+  const footnotes: Record<string, ImportedSegment> = {};
+  for (const [id, fn] of Object.entries(doc.footnotes ?? {})) { const seg = segment(id, fn.content ?? undefined); if (seg) footnotes[id] = seg; }
+  return {
+    revisionId: doc.revisionId ?? "",
+    pageSetup: pageSetupFromDocumentStyle(doc.documentStyle),
+    header: segment(ds.defaultHeaderId, doc.headers?.[ds.defaultHeaderId ?? ""]?.content ?? undefined),
+    footer: segment(ds.defaultFooterId, doc.footers?.[ds.defaultFooterId ?? ""]?.content ?? undefined),
+    firstPageHeader: segment(ds.firstPageHeaderId, doc.headers?.[ds.firstPageHeaderId ?? ""]?.content ?? undefined),
+    firstPageFooter: segment(ds.firstPageFooterId, doc.footers?.[ds.firstPageFooterId ?? ""]?.content ?? undefined),
+    useFirstPage: ds.useFirstPageHeaderFooter === true,
+    marginHeader: pt(ds.marginHeader) ?? 36,
+    marginFooter: pt(ds.marginFooter) ?? 36,
+    footnotes,
+    empty: !hasContent,
+    nodes,
+  };
 }
 
 function stripNull<T extends object>(o: T): Partial<T> {

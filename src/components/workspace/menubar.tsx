@@ -100,6 +100,9 @@ interface DocsMenubarProps {
   onPageSetup: () => void;
   onCustomSpacing: () => void;
   onBorders: () => void;
+  onHeaderFooter: (which: "header" | "footer") => void;
+  /** Headers, footers and footnotes need an open Google Doc */
+  docOpen: boolean;
 }
 
 export function DocsMenubar(p: DocsMenubarProps) {
@@ -186,6 +189,10 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item onSelect={() => window.dispatchEvent(new CustomEvent("ss-image-url"))}>By URL</Item>
         </Sub>
         <Item disabled={off} shortcut={`${mod}K`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-open-link"))}>Link</Item>
+        <Sub label="Headers & footers" disabled={off || !p.docOpen}>
+          <Item onSelect={() => p.onHeaderFooter("header")}>Header</Item>
+          <Item onSelect={() => p.onHeaderFooter("footer")}>Footer</Item>
+        </Sub>
         <Sub label="Table" disabled={off}>
           <TableGrid onPick={(rows, cols) => run((c) => c.insertTable({ rows, cols, withHeaderRow: false }))} />
         </Sub>

@@ -28,7 +28,10 @@ import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat } from "@/lib/rich-text";
 import { loadDocument } from "./doc-sync";
-import { additions, directEdits, hasPending, rebase, signature, PENDING_MARK } from "@/lib/doc-model";
+import { additions, directEdits, hasPending, rebase, segmentEdits, signature, PENDING_MARK } from "@/lib/doc-model";
+import { useSegmentEditor } from "./segment-editor";
+import type { HeaderFooters } from "./paged-surface";
+import type { Editor } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
 import { countWords, formatClock } from "@/lib/format";
 
@@ -182,6 +185,13 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const [spacingOpen, setSpacingOpen] = useState(false);
   const [bordersOpen, setBordersOpen] = useState(false);
+  // Headers and footers: each a Docs segment with the content as last saved
+  type Segment = { id: string; base: EditorNode[] };
+  const [segments, setSegments] = useState<{ header: Segment | null; footer: Segment | null; firstPageHeader: Segment | null; firstPageFooter: Segment | null }>({ header: null, footer: null, firstPageHeader: null, firstPageFooter: null });
+  const [hfSetup, setHfSetup] = useState({ useFirstPage: false, marginHeader: 36, marginFooter: 36 });
+  const [editingHf, setEditingHf] = useState<"header" | "footer" | null>(null);
+  /** The header or footer editor being used, when one is; the body otherwise */
+  const [segmentEditor, setSegmentEditor] = useState<Editor | null>(null);
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [docContent, setDocContent] = useState<DocContent | null>(null);
   const contentReq = useRef(0);
@@ -248,6 +258,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       },
     },
     onUpdate: ({ editor: e }) => setDocJSON(e.getJSON()),
+    onFocus: () => { setSegmentEditor(null); setEditingHf(null); },
   });
 
   // A read-only copy of the editor shows a running sync, paginated the same way
@@ -463,9 +474,13 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       if (req !== contentReq.current) return;
       const revision = data.revisionId ?? "";
       if (keep && revision === revisionRef.current && docContentRef.current?.docId === docId) return; // unchanged
-      // The document's own page setup
+      // The document's own page setup, headers and footers
       const docSetup = parsePageSetup(data.pageSetup);
       if (docSetup) setPageSetup(docSetup);
+      const seg = (v: unknown): { id: string; base: EditorNode[] } | null => (v && typeof v === "object" && typeof (v as { id?: unknown }).id === "string" && Array.isArray((v as { nodes?: unknown }).nodes) ? { id: (v as { id: string }).id, base: (v as { nodes: EditorNode[] }).nodes } : null);
+      const d = data as { header?: unknown; footer?: unknown; firstPageHeader?: unknown; firstPageFooter?: unknown; useFirstPage?: unknown; marginHeader?: unknown; marginFooter?: unknown };
+      setSegments({ header: seg(d.header), footer: seg(d.footer), firstPageHeader: seg(d.firstPageHeader), firstPageFooter: seg(d.firstPageFooter) });
+      setHfSetup({ useFirstPage: d.useFirstPage === true, marginHeader: typeof d.marginHeader === "number" ? d.marginHeader : 36, marginFooter: typeof d.marginFooter === "number" ? d.marginFooter : 36 });
       const fresh: EditorNode = { type: "doc", content: data.nodes };
       let target = fresh;
       if (keep) target = rebase(fresh, keep);
@@ -581,6 +596,128 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       setIsCreatingDoc(false);
     }
   }, []);
+
+  // ── Headers and footers ──
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  const segmentTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const saveSegment = useCallback(async (key: keyof typeof segments, doc: JSONContent) => {
+    const seg = segmentsRef.current[key];
+    const content = docContentRef.current;
+    if (!seg || content?.status !== "ready") return;
+    const target = doc as EditorNode;
+    const { requests } = segmentEdits({ type: "doc", content: seg.base }, target, seg.id);
+    if (!requests.length) return;
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    if (ok) {
+      if (data.revisionId) revisionRef.current = data.revisionId;
+      setSegments((s) => (s[key] && s[key]!.id === seg.id ? { ...s, [key]: { id: seg.id, base: target.content ?? [] } } : s));
+      return;
+    }
+    if (status === 401) setScopeError(true);
+    setSnack(data.error || "Couldn't save the header or footer to Google Docs");
+  }, []);
+  const segmentChanged = useCallback((key: keyof typeof segments) => (doc: JSONContent) => {
+    clearTimeout(segmentTimers.current[key]);
+    segmentTimers.current[key] = setTimeout(() => { void saveSegment(key, doc); }, 600);
+  }, [saveSegment]);
+  const segmentFocused = (which: "header" | "footer") => (e: Editor) => { setSegmentEditor(e); setEditingHf(which); };
+  const headerEditor = useSegmentEditor(segments.header?.base ?? null, segmentChanged("header"), segmentFocused("header"));
+  const footerEditor = useSegmentEditor(segments.footer?.base ?? null, segmentChanged("footer"), segmentFocused("footer"));
+  const firstHeaderEditor = useSegmentEditor(segments.firstPageHeader?.base ?? null, segmentChanged("firstPageHeader"), segmentFocused("header"));
+  const firstFooterEditor = useSegmentEditor(segments.firstPageFooter?.base ?? null, segmentChanged("firstPageFooter"), segmentFocused("footer"));
+
+  /** Docs requests for the open document, with the replies (ids of what was created) */
+  const docEdit = useCallback(async (requests: Record<string, unknown>[]): Promise<Record<string, unknown>[] | null> => {
+    const content = docContentRef.current;
+    if (content?.status !== "ready") { setSnack("Open a Google Doc first"); return null; }
+    await saveNow();
+    const { ok, status, data } = await postJson<{ revisionId: string; replies?: Record<string, unknown>[] }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    if (!ok) {
+      if (status === 401) setScopeError(true);
+      setSnack(data.error || "Couldn't change the document");
+      return null;
+    }
+    if (data.revisionId) revisionRef.current = data.revisionId;
+    return data.replies ?? [];
+  }, [saveNow]);
+
+  /** Insert > Headers & footers: make the header or footer if the document has none, then edit it */
+  const openHeaderFooter = useCallback(async (which: "header" | "footer") => {
+    const cur = segmentsRef.current;
+    const first = hfSetup.useFirstPage;
+    const key = which === "header" ? (first ? "firstPageHeader" : "header") : first ? "firstPageFooter" : "footer";
+    if (!cur[key]) {
+      const req = which === "header" ? { createHeader: { type: first ? "FIRST_PAGE" : "DEFAULT" } } : { createFooter: { type: first ? "FIRST_PAGE" : "DEFAULT" } };
+      const replies = await docEdit([req]);
+      if (!replies) return;
+      const reply = replies[0] as { createHeader?: { headerId?: string }; createFooter?: { footerId?: string } } | undefined;
+      const id = reply?.createHeader?.headerId ?? reply?.createFooter?.footerId;
+      if (!id) { setSnack("Google Docs didn't return the new " + which); return; }
+      setSegments((s) => ({ ...s, [key]: { id, base: [{ type: "paragraph", attrs: {}, content: [] }] } }));
+    }
+    setEditingHf(which);
+    const ed = which === "header" ? (first ? firstHeaderEditor : headerEditor) : first ? firstFooterEditor : footerEditor;
+    setTimeout(() => ed?.commands.focus("end"), 50);
+  }, [docEdit, hfSetup.useFirstPage, headerEditor, footerEditor, firstHeaderEditor, firstFooterEditor]);
+
+  const removeHeaderFooter = useCallback(async (which: "header" | "footer") => {
+    const cur = segmentsRef.current;
+    const keys = which === "header" ? (["header", "firstPageHeader"] as const) : (["footer", "firstPageFooter"] as const);
+    const requests = keys.map((k) => cur[k]).filter(Boolean).map((seg) => (which === "header" ? { deleteHeader: { headerId: seg!.id } } : { deleteFooter: { footerId: seg!.id } }));
+    if (!requests.length) return;
+    if (!(await docEdit(requests))) return;
+    setSegments((s) => ({ ...s, [keys[0]]: null, [keys[1]]: null }));
+    setEditingHf(null);
+    setSegmentEditor(null);
+    editor?.commands.focus();
+  }, [docEdit, editor]);
+
+  const setHeaderFooterOptions = useCallback(async (next: Partial<typeof hfSetup>) => {
+    const merged = { ...hfSetup, ...next };
+    const style: Record<string, unknown> = {};
+    const fields: string[] = [];
+    if (next.useFirstPage != null) { style.useFirstPageHeaderFooter = next.useFirstPage; fields.push("useFirstPageHeaderFooter"); }
+    if (next.marginHeader != null) { style.marginHeader = { magnitude: next.marginHeader, unit: "PT" }; fields.push("marginHeader"); }
+    if (next.marginFooter != null) { style.marginFooter = { magnitude: next.marginFooter, unit: "PT" }; fields.push("marginFooter"); }
+    const requests: Record<string, unknown>[] = [{ updateDocumentStyle: { documentStyle: style, fields: fields.join(",") } }];
+    // Different first page: Docs keeps a separate header and footer for it
+    const cur = segmentsRef.current;
+    if (next.useFirstPage && !cur.firstPageHeader && cur.header) requests.push({ createHeader: { type: "FIRST_PAGE" } });
+    if (next.useFirstPage && !cur.firstPageFooter && cur.footer) requests.push({ createFooter: { type: "FIRST_PAGE" } });
+    const replies = await docEdit(requests);
+    if (!replies) return;
+    setHfSetup(merged);
+    const created = { ...cur };
+    for (const r of replies as { createHeader?: { headerId?: string }; createFooter?: { footerId?: string } }[]) {
+      if (r.createHeader?.headerId) created.firstPageHeader = { id: r.createHeader.headerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
+      if (r.createFooter?.footerId) created.firstPageFooter = { id: r.createFooter.footerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
+    }
+    setSegments(created);
+  }, [docEdit, hfSetup]);
+
+  const headerFooters: HeaderFooters = {
+    header: segments.header ? headerEditor : null,
+    footer: segments.footer ? footerEditor : null,
+    firstPageHeader: segments.firstPageHeader ? firstHeaderEditor : null,
+    firstPageFooter: segments.firstPageFooter ? firstFooterEditor : null,
+    useFirstPage: hfSetup.useFirstPage,
+    marginHeader: hfSetup.marginHeader,
+    marginFooter: hfSetup.marginFooter,
+    editing: editingHf,
+    onDoubleClick: (which) => { void openHeaderFooter(which); },
+    options: editingHf ? (
+      <div className="ss-hf-options" onMouseDown={(e) => e.stopPropagation()}>
+        <label className="ss-checkbox text-[12px]"><input type="checkbox" checked={hfSetup.useFirstPage} onChange={(e) => { void setHeaderFooterOptions({ useFirstPage: e.target.checked }); }} /> Different first page</label>
+        <label className="flex items-center gap-2 text-[12px]">{editingHf === "header" ? "Header from top" : "Footer from bottom"}
+          <input className="ss-input" style={{ width: 64, height: 28 }} defaultValue={String(Math.round(((editingHf === "header" ? hfSetup.marginHeader : hfSetup.marginFooter) / 72) * 100) / 100)} aria-label="Margin in inches"
+            onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) void setHeaderFooterOptions(editingHf === "header" ? { marginHeader: v * 72 } : { marginFooter: v * 72 }); }} />
+          <span className="text-[var(--ss-text-3)]">in</span>
+        </label>
+        <button type="button" className="ss-btn ss-btn-text" style={{ height: 28 }} onClick={() => { void removeHeaderFooter(editingHf); }}>Remove {editingHf}</button>
+      </div>
+    ) : null,
+  };
 
   /** Page setup from the dialog: shown here, and written to the open Google Doc */
   const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {
@@ -898,7 +1035,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   // Clicking the page margins puts the caret at the end, like Docs
   const onPageMouseDown = (e: React.MouseEvent) => {
-    if (!editor || (e.target as HTMLElement).closest(".ProseMirror")) return;
+    if (!editor || (e.target as HTMLElement).closest(".ProseMirror, .ss-hf")) return;
     e.preventDefault();
     // Clicking above or below the text puts the caret on the nearest line, like Docs
     const r = editor.view.dom.getBoundingClientRect();
@@ -930,7 +1067,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         tabs={<WorkspaceTabs active="sync" />}
         menubar={
           <DocsMenubar
-            editor={editor}
+            editor={segmentEditor ?? editor}
             editingDisabled={!!focusedJob}
             zoom={zoom}
             onZoom={setZoom}
@@ -945,13 +1082,15 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onPageSetup={() => setPageSetupOpen(true)}
             onCustomSpacing={() => setSpacingOpen(true)}
             onBorders={() => setBordersOpen(true)}
+            onHeaderFooter={(which) => { void openHeaderFooter(which); }}
+            docOpen={docContent?.status === "ready"}
           />
         }
       />
 
       <div className="ss-noprint flex-none px-4 pb-1">
         <Toolbar
-          editor={focusedJob ? viewer : editor}
+          editor={focusedJob ? viewer : segmentEditor ?? editor}
           disabled={!!focusedJob}
           zoom={zoom}
           onZoom={setZoom}
@@ -1005,7 +1144,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           <FindBar editor={editor} />
           <div className="ss-ruler-row">
             <div style={{ zoom: scale }}>
-              <Ruler editor={focusedJob ? viewer : editor} disabled={!!focusedJob} geometry={geometry} />
+              <Ruler editor={focusedJob ? viewer : segmentEditor ?? editor} disabled={!!focusedJob} geometry={geometry} />
             </div>
           </div>
 
@@ -1020,7 +1159,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
             transition={{ duration: 0.32, ease }}
           >
-            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} />
+            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} headerFooters={docContent?.status === "ready" ? headerFooters : undefined} />
           </motion.div>
           <WordCount editor={focusedJob ? viewer : editor} />
         </main>
