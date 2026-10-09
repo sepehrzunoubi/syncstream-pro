@@ -10,7 +10,16 @@ export const PAGE_GAP = 16;
 const sameGeometry = (a: PageGeometry, b: PageGeometry) => a.w === b.w && a.h === b.h && a.top === b.top && a.bottom === b.bottom && a.left === b.left && a.right === b.right;
 
 interface Break { pos: number; height: number; block: boolean }
-interface PaginationState { breaks: Break[]; pages: number; enabled: boolean; deco: DecorationSet; geometry: PageGeometry; reserves: number[] }
+interface PaginationState {
+  breaks: Break[];
+  pages: number;
+  enabled: boolean;
+  deco: DecorationSet;
+  geometry: PageGeometry;
+  reserves: number[];
+  /** Positions where Google Docs itself starts a page (from its PDF export); measured breaks only follow the last one */
+  pins: number[];
+}
 
 export const paginationKey = new PluginKey<PaginationState>("ssPagination");
 
@@ -22,6 +31,8 @@ declare module "@tiptap/core" {
       setPageGeometry: (geometry: PageGeometry) => ReturnType;
       /** Space at the bottom of each page taken by footnotes, in px */
       setPageReserves: (reserves: number[]) => ReturnType;
+      /** Where Google Docs starts each page after the first, as document positions; [] to measure everything */
+      setPinnedBreaks: (positions: number[]) => ReturnType;
     };
   }
 }
@@ -115,7 +126,7 @@ function lineStartPos(view: EditorView, line: Line, toLocal: (y: number) => numb
  * Where pages break. Measured in "flow" space (the layout minus our own
  * gaps), so adding gaps never changes the answer and the result is stable.
  */
-function measure(view: EditorView, geom: PageGeometry, reserves: number[] = []): Break[] {
+function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], pins: number[] = []): Break[] {
   const FULL_H = geom.h - geom.top - geom.bottom;
   // The current page's room for text: less where footnotes sit
   let CONTENT_H = FULL_H - (reserves[0] ?? 0);
@@ -129,6 +140,24 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = []):
   const gapSize = (el: Element) => parseFloat((el as HTMLElement).dataset.gap || "0");
   let removed = 0;
   let pageStart = 0;
+
+  // Google's page starts come first, exactly where its PDF has them
+  let pinnedUntil = -1;
+  const gapsAbove = (y: number) => Array.from(dom.querySelectorAll(".ss-page-gap")).reduce((s, g) => (toLocal(g.getBoundingClientRect().top) < y ? s + gapSize(g) : s), 0);
+  for (const pos of pins) {
+    if (pos <= 0 || pos >= view.state.doc.content.size) continue;
+    let y: number;
+    try { y = toLocal(view.coordsAtPos(pos).top); } catch { continue; }
+    const flowY = y - gapsAbove(y);
+    if (flowY <= pageStart + 1) continue;
+    const $pos = view.state.doc.resolve(pos);
+    // At a paragraph's start the gap goes before the paragraph, as measured block breaks do
+    const block = $pos.parentOffset === 0 && $pos.depth === 1;
+    breaks.push({ pos: block ? $pos.before(1) : pos, height: Math.round((CONTENT_H - (flowY - pageStart) + BETWEEN) * 2) / 2, block });
+    pageStart = flowY;
+    pinnedUntil = pos;
+    nextPage();
+  }
 
   const all = Array.from(dom.children) as HTMLElement[];
   const children = all.filter((c) => !c.classList.contains("ss-page-gap"));
@@ -150,6 +179,12 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = []):
     const top = toLocal(r.top) - removed;
     const bottom = toLocal(r.bottom) - removed - innerTotal;
     flowTop.set(child, top);
+    // What Google already paginated is left alone; measuring starts after the last pin
+    if (pinnedUntil >= 0) {
+      const childStart = view.posAtDOM(child, 0) - 1;
+      const childEnd = childStart + ((view.state.doc.nodeAt(childStart)?.nodeSize) ?? 1);
+      if (childEnd <= pinnedUntil) { removed += innerTotal; forceNext = false; continue; }
+    }
     const forced = forceNext;
     forceNext = !!child.querySelector("[data-page-break]") || (child.getAttribute("data-kind") === "section" && child.getAttribute("data-section") !== "continuous");
     if (forced && top > pageStart + 1) {
@@ -197,6 +232,8 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = []):
     const singleLines = !keep.includes("single") && lines.length >= 2;
     for (let i = 0; i < lines.length; i++) {
       const L = lines[i];
+      // Lines up to the last pinned page start are Google's
+      if (pinnedUntil >= 0 && i > 0 && (lineStartPos(view, L, toLocal) ?? Infinity) <= pinnedUntil) continue;
       if (L.fb - pageStart <= CONTENT_H + 0.5) continue;
       let at = i;
       if (singleLines && at === 1 && fits) at = 0; // an orphan: move the whole paragraph
@@ -247,6 +284,13 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
         if (dispatch) dispatch(tr.setMeta(paginationKey, { geometry }).setMeta("addToHistory", false));
         return true;
       },
+      setPinnedBreaks: (positions) => ({ tr, state, dispatch }) => {
+        const cur = paginationKey.getState(state)?.pins ?? [];
+        const next = positions.filter((p, i, all) => Number.isInteger(p) && p > 0 && (i === 0 || p > all[i - 1]));
+        if (cur.length === next.length && cur.every((v, i) => v === next[i])) return true;
+        if (dispatch) dispatch(tr.setMeta(paginationKey, { pins: next }).setMeta("addToHistory", false));
+        return true;
+      },
       setPageReserves: (reserves) => ({ tr, state, dispatch }) => {
         const cur = paginationKey.getState(state)?.reserves ?? [];
         const trimmed = [...reserves];
@@ -263,21 +307,24 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
       new Plugin<PaginationState>({
         key: paginationKey,
         state: {
-          init: (_, state) => ({ breaks: [], pages: 1, enabled: initial, deco: DecorationSet.create(state.doc, []), geometry: DEFAULT_GEOMETRY, reserves: [] }),
+          init: (_, state) => ({ breaks: [], pages: 1, enabled: initial, deco: DecorationSet.create(state.doc, []), geometry: DEFAULT_GEOMETRY, reserves: [], pins: [] }),
           apply(tr, value) {
-            const meta = tr.getMeta(paginationKey) as Partial<Pick<PaginationState, "breaks" | "enabled" | "geometry" | "reserves">> | undefined;
+            const meta = tr.getMeta(paginationKey) as Partial<Pick<PaginationState, "breaks" | "enabled" | "geometry" | "reserves" | "pins">> | undefined;
             if (meta) {
               const enabled = meta.enabled ?? value.enabled;
               const geometry = meta.geometry ?? value.geometry;
               const reserves = meta.reserves ?? value.reserves;
+              const pins = meta.pins ?? value.pins;
               // Turning pages on or changing the page starts from no breaks; they are measured again
-              const reset = meta.enabled != null || meta.geometry != null;
+              const reset = meta.enabled != null || meta.geometry != null || meta.pins != null;
               const breaks = enabled ? meta.breaks ?? (reset ? [] : value.breaks) : [];
-              return { breaks, pages: breaks.length + 1, enabled, deco: decorate(tr.doc, breaks), geometry, reserves };
+              return { breaks, pages: breaks.length + 1, enabled, deco: decorate(tr.doc, breaks), geometry, reserves, pins };
             }
             if (!tr.docChanged) return value;
             const breaks = value.breaks.map((b) => ({ ...b, pos: tr.mapping.map(b.pos, -1) }));
-            return { ...value, breaks, deco: value.deco.map(tr.mapping, tr.doc) };
+            // Google's page starts stay with the text they precede
+            const pins = value.pins.map((p) => tr.mapping.map(p, 1)).filter((p, i, all) => i === 0 || p > all[i - 1]);
+            return { ...value, breaks, pins, deco: value.deco.map(tr.mapping, tr.doc) };
           },
         },
         props: {
@@ -294,7 +341,7 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
             const now = performance.now();
             if (now - windowStart > 1000) { windowStart = now; recent = 0; }
             if (recent > 8) return; // never loop
-            const breaks = measure(view, st.geometry, st.reserves);
+            const breaks = measure(view, st.geometry, st.reserves, st.pins);
             if (!same(breaks, st.breaks)) {
               recent++;
               view.dispatch(view.state.tr.setMeta(paginationKey, { breaks }).setMeta("addToHistory", false));

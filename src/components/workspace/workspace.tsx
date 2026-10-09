@@ -17,6 +17,9 @@ import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
 import { PageSetupDialog } from "./page-setup-dialog";
 import { installLineMetrics } from "./line-metrics";
+import { pageStartOffsets } from "@/lib/page-text";
+import { tokenPositions } from "./pagination";
+import { tokenize } from "@/lib/doc-model";
 import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
 import { FindBar } from "./find-bar";
 import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
@@ -749,6 +752,40 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       </div>
     ) : null,
   };
+
+  // ── Google's pagination ──
+  // After the document is opened or saved, Drive's PDF of it says where Docs starts each page;
+  // the preview pins its page breaks there and only measures what comes after
+  const pagesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pagesRevision = useRef("");
+  const pinGooglePages = useCallback(async (docId: string) => {
+    if (!editor) return;
+    const res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}`);
+    if (!res.ok) return;
+    const data = (await res.json().catch(() => ({}))) as { pages?: string[] };
+    if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId) return;
+    // The saved text, token by token, so each offset maps to a document position
+    const positions = tokenPositions(editor.state.doc);
+    const all = tokenize(editor.getJSON() as EditorNode);
+    let body = "";
+    const tokenAt: number[] = [];
+    all.forEach((t, i) => {
+      if ((t.k === "c" || t.k === "img" || t.k === "pb") && t.pending) return;
+      const ch = t.k === "c" ? t.c : t.k === "nl" ? "\n" : t.k === "img" || t.k === "pb" || t.k === "fn" ? " " : "";
+      for (let k = 0; k < ch.length; k++) tokenAt.push(i);
+      body += ch;
+    });
+    const pins = pageStartOffsets(body, data.pages).map((o) => (o == null ? null : positions[tokenAt[o]])).filter((p): p is number => typeof p === "number");
+    editor.commands.setPinnedBreaks(pins);
+  }, [editor]);
+  useEffect(() => {
+    const content = docContent;
+    if (content?.status !== "ready" || !content.revisionId || content.revisionId === pagesRevision.current) return;
+    pagesRevision.current = content.revisionId;
+    if (pagesTimer.current) clearTimeout(pagesTimer.current);
+    pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId); }, 1500);
+  }, [docContent, pinGooglePages]);
+  useEffect(() => { if (docContent?.status !== "ready") editor?.commands.setPinnedBreaks([]); }, [docContent?.status, editor]);
 
   /** Page setup from the dialog: shown here, and written to the open Google Doc */
   const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {

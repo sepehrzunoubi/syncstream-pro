@@ -187,6 +187,15 @@ export async function editDocumentWithReplies(accessToken: string, documentId: s
   return { revisionId: res.data.writeControl?.requiredRevisionId ?? "", replies: (res.data.replies ?? []) as Record<string, unknown>[] };
 }
 
+/** The document as Google lays it out: Drive's PDF export */
+export async function exportPdf(accessToken: string, documentId: string): Promise<Uint8Array> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const drive = google.drive({ version: "v3", auth: client });
+  const res = await withRetry(() => drive.files.export({ fileId: documentId, mimeType: "application/pdf" }, { responseType: "arraybuffer" }));
+  return new Uint8Array(res.data as ArrayBuffer);
+}
+
 /** Apply Docs requests in one atomic batchUpdate */
 export async function batchUpdate(accessToken: string, documentId: string, requests: object[]) {
   if (requests.length === 0) return;
