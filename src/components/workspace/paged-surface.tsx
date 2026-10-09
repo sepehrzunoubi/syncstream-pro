@@ -1,9 +1,17 @@
 "use client";
 
-import React from "react";
-import { EditorContent, useEditorState, type Editor } from "@tiptap/react";
+import React, { useEffect, useMemo, useRef } from "react";
+import { EditorContent, useEditorState, type Editor, type JSONContent } from "@tiptap/react";
+import type { EditorNode } from "@/lib/rich-text";
 import { DEFAULT_GEOMETRY, PAGE_GAP, paginationKey } from "./pagination";
-import { SegmentView } from "./segment-editor";
+import { SegmentView, FootnoteItem } from "./segment-editor";
+
+/** Footnotes of the open document, with where each reference is */
+export interface FootnotesProps {
+  items: { id: string; base: EditorNode[] }[];
+  onChange: (id: string, doc: JSONContent) => void;
+  onFocus: (id: string, editor: Editor) => void;
+}
 
 /** Header and footer editors and where they sit, from the document's page setup */
 export interface HeaderFooters {
@@ -30,6 +38,7 @@ export function PagedSurface({
   pageColor,
   onMouseDown,
   headerFooters,
+  footnotes,
 }: {
   editor: Editor | null;
   pageless: boolean;
@@ -38,15 +47,46 @@ export function PagedSurface({
   pageColor?: string | null;
   onMouseDown?: (e: React.MouseEvent) => void;
   headerFooters?: HeaderFooters;
+  footnotes?: FootnotesProps;
 }) {
   const st = useEditorState({
     editor,
     selector: ({ editor: e }) => {
       const s = e ? paginationKey.getState(e.state) : null;
-      return { pages: s?.pages ?? 1, geometry: s?.geometry ?? DEFAULT_GEOMETRY };
+      // Which page each footnote reference is on: the breaks before it
+      const refPages: Record<string, number> = {};
+      if (e && s?.enabled) {
+        e.state.doc.descendants((node, pos) => {
+          if (node.type.name === "footnoteRef" && typeof node.attrs.fid === "string") refPages[node.attrs.fid] = s.breaks.filter((b) => b.pos <= pos).length;
+        });
+      }
+      return { pages: s?.pages ?? 1, geometry: s?.geometry ?? DEFAULT_GEOMETRY, refPages: JSON.stringify(refPages) };
     },
   });
   const pages = st?.pages ?? 1;
+  const refPages = useMemo(() => JSON.parse(st?.refPages ?? "{}") as Record<string, number>, [st?.refPages]);
+  // Footnotes in reference order, numbered as the text numbers them
+  const footnoteOrder = useMemo(() => {
+    const order: { id: string; n: number; page: number }[] = [];
+    if (!footnotes || !editor) return order;
+    let n = 0;
+    editor.state.doc.descendants((node) => { if (node.type.name === "footnoteRef" && typeof node.attrs.fid === "string") order.push({ id: node.attrs.fid, n: ++n, page: refPages[node.attrs.fid] ?? 0 }); });
+    return order;
+  }, [footnotes, editor, refPages]);
+  // The space footnotes take at the bottom of each page is kept clear of text
+  const areaRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  useEffect(() => {
+    if (!editor || pageless) return;
+    const report = () => {
+      const reserves: number[] = [];
+      for (const [k, el] of Object.entries(areaRefs.current)) if (el) reserves[Number(k)] = el.getBoundingClientRect().height / (scale || 1) + 8;
+      editor.commands.setPageReserves(Array.from({ length: pages }, (_, i) => reserves[i] ?? 0));
+    };
+    report();
+    const ro = new ResizeObserver(report);
+    for (const el of Object.values(areaRefs.current)) if (el) ro.observe(el);
+    return () => ro.disconnect();
+  }, [editor, pageless, pages, footnoteOrder, scale]);
   const g = st?.geometry ?? DEFAULT_GEOMETRY;
   const stride = g.h + PAGE_GAP;
   const px = (pt: number) => Math.round((pt * 96) / 72);
@@ -85,6 +125,14 @@ export function PagedSurface({
                 <div className={`ss-hf ss-hf-header ${hf.editing === "header" ? "ss-hf-editing" : ""}`} style={{ top: px(hf.marginHeader), left: g.left, right: g.right }} onDoubleClick={() => hf.onDoubleClick("header")}>
                   <SegmentView editor={header} live={liveHeader} className="ss-hf-body" />
                   {liveHeader && hf.editing === "header" && hf.options}
+                </div>
+              )}
+              {footnotes && footnoteOrder.some((f) => f.page === k) && (
+                <div className="ss-footnotes" style={{ bottom: g.bottom, left: g.left }} ref={(el) => { areaRefs.current[k] = el; }}>
+                  {footnoteOrder.filter((f) => f.page === k).map((f) => {
+                    const item = footnotes.items.find((x) => x.id === f.id);
+                    return item ? <FootnoteItem key={f.id} id={f.id} n={f.n} base={item.base} onChange={footnotes.onChange} onFocus={footnotes.onFocus} /> : null;
+                  })}
                 </div>
               )}
               {hf && footer && (

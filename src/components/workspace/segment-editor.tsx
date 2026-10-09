@@ -35,3 +35,14 @@ export function SegmentView({ editor, live, className }: { editor: Editor | null
   if (live) return <div className={className}><EditorContent editor={editor} /></div>;
   return <div className={className} aria-hidden="true"><div className="ss-doc ss-segment-doc" dangerouslySetInnerHTML={{ __html: html }} /></div>;
 }
+
+/** One footnote: its number and an editor for its text */
+export function FootnoteItem({ id, n, base, onChange, onFocus }: { id: string; n: number; base: EditorNode[]; onChange: (id: string, doc: JSONContent) => void; onFocus: (id: string, editor: Editor) => void }) {
+  const editor = useSegmentEditor(base, (doc) => onChange(id, doc), (e) => onFocus(id, e));
+  return (
+    <div className="ss-footnote">
+      <span className="ss-footnote-n" aria-hidden="true">{n}</span>
+      <div className="min-w-0 flex-1">{editor && <EditorContent editor={editor} />}</div>
+    </div>
+  );
+}

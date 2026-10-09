@@ -189,6 +189,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item onSelect={() => window.dispatchEvent(new CustomEvent("ss-image-url"))}>By URL</Item>
         </Sub>
         <Item disabled={off} shortcut={`${mod}K`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-open-link"))}>Link</Item>
+        <Item disabled={off || !p.docOpen} shortcut={`${mod}Alt+F`} onSelect={() => run((c) => c.insertFootnote())}>Footnote</Item>
         <Sub label="Headers & footers" disabled={off || !p.docOpen}>
           <Item onSelect={() => p.onHeaderFooter("header")}>Header</Item>
           <Item onSelect={() => p.onHeaderFooter("footer")}>Footer</Item>

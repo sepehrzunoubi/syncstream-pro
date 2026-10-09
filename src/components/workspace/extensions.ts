@@ -1,5 +1,6 @@
 import { Extension, InputRule, Mark, Node, type Editor } from "@tiptap/core";
 import { Plugin, TextSelection } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { DOMSerializer, type DOMOutputSpec, type Node as PMNode } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
 import Paragraph from "@tiptap/extension-paragraph";
@@ -61,6 +62,8 @@ declare module "@tiptap/core" {
       insertPageBreak: () => ReturnType;
       /** A section break after the current paragraph (saved to the document right away) */
       insertSectionBreak: (type: "next" | "continuous") => ReturnType;
+      /** Docs' Ctrl+Alt+F: a footnote reference here; Docs creates the footnote when it is saved */
+      insertFootnote: () => ReturnType;
     };
   }
 }
@@ -464,6 +467,10 @@ const DocFormat = Extension.create({
         if (state.selection.$from.parent.attrs.locked) return false;
         return chain().insertContent({ type: "pageBreak" }).splitBlock().run();
       },
+      insertFootnote: () => ({ chain, state }) => {
+        if (state.selection.$from.parent.attrs.locked || state.selection.$from.parent.type.name !== "paragraph") return false;
+        return chain().insertContent({ type: "footnoteRef", attrs: { fid: null } }).run();
+      },
       insertSectionBreak: (type) => ({ tr, state, dispatch }) => {
         const { $to } = state.selection;
         if ($to.parent.attrs.locked) return false;
@@ -563,6 +570,7 @@ const DocFormat = Extension.create({
       "Mod-Alt-5": ({ editor }) => editor.commands.setNamedStyle("h5"),
       "Mod-Alt-6": ({ editor }) => editor.commands.setNamedStyle("h6"),
       "Mod-Enter": ({ editor }) => editor.commands.insertPageBreak(),
+      "Mod-Alt-f": ({ editor }) => editor.commands.insertFootnote(),
       "Mod-.": ({ editor }) => editor.commands.toggleMark("superscript"),
       "Mod-,": ({ editor }) => editor.commands.toggleMark("subscript"),
       "Mod-Shift-.": ({ editor }) => editor.commands.stepFontSize(1),
@@ -720,7 +728,20 @@ const FootnoteRef = Node.create({
     };
   },
   parseHTML: () => [{ tag: "sup[data-footnote]" }],
-  renderHTML: ({ node }) => ["sup", { "data-footnote": node.attrs.fid ?? "", class: "ss-fn-ref", contenteditable: "false" }, String(node.attrs.n ?? "")],
+  renderHTML: ({ node }) => ["sup", { "data-footnote": node.attrs.fid ?? "", class: "ss-fn-ref", contenteditable: "false" }],
+  addProseMirrorPlugins() {
+    // Numbered in document order, as Docs numbers them
+    const number = (doc: PMNode) => {
+      const decos: Decoration[] = [];
+      let n = 0;
+      doc.descendants((node, pos) => { if (node.type.name === "footnoteRef") decos.push(Decoration.node(pos, pos + node.nodeSize, { "data-n": String(++n) })); });
+      return DecorationSet.create(doc, decos);
+    };
+    return [new Plugin<DecorationSet>({
+      state: { init: (_c, state) => number(state.doc), apply: (tr, value) => (tr.docChanged ? number(tr.doc) : value) },
+      props: { decorations(state) { return this.getState(state); } },
+    })];
+  },
 });
 
 /** Superscript and subscript, one or the other, as Docs' Format > Text has them */

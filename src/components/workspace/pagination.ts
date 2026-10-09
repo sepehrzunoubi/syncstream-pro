@@ -10,7 +10,7 @@ export const PAGE_GAP = 16;
 const sameGeometry = (a: PageGeometry, b: PageGeometry) => a.w === b.w && a.h === b.h && a.top === b.top && a.bottom === b.bottom && a.left === b.left && a.right === b.right;
 
 interface Break { pos: number; height: number; block: boolean }
-interface PaginationState { breaks: Break[]; pages: number; enabled: boolean; deco: DecorationSet; geometry: PageGeometry }
+interface PaginationState { breaks: Break[]; pages: number; enabled: boolean; deco: DecorationSet; geometry: PageGeometry; reserves: number[] }
 
 export const paginationKey = new PluginKey<PaginationState>("ssPagination");
 
@@ -20,6 +20,8 @@ declare module "@tiptap/core" {
       setPaginated: (on: boolean) => ReturnType;
       /** Page size and margins from the document's page setup */
       setPageGeometry: (geometry: PageGeometry) => ReturnType;
+      /** Space at the bottom of each page taken by footnotes, in px */
+      setPageReserves: (reserves: number[]) => ReturnType;
     };
   }
 }
@@ -113,15 +115,18 @@ function lineStartPos(view: EditorView, line: Line, toLocal: (y: number) => numb
  * Where pages break. Measured in "flow" space (the layout minus our own
  * gaps), so adding gaps never changes the answer and the result is stable.
  */
-function measure(view: EditorView, geom: PageGeometry): Break[] {
-  const CONTENT_H = geom.h - geom.top - geom.bottom;
+function measure(view: EditorView, geom: PageGeometry, reserves: number[] = []): Break[] {
+  const FULL_H = geom.h - geom.top - geom.bottom;
+  // The current page's room for text: less where footnotes sit
+  let CONTENT_H = FULL_H - (reserves[0] ?? 0);
   const BETWEEN = geom.bottom + PAGE_GAP + geom.top;
+  const breaks: Break[] = [];
+  const nextPage = () => { CONTENT_H = FULL_H - (reserves[breaks.length] ?? 0); };
   const dom = view.dom as HTMLElement;
   const box = dom.getBoundingClientRect();
   const scale = box.width / (dom.offsetWidth || box.width || 1) || 1;
   const toLocal = (clientY: number) => (clientY - box.top) / scale;
   const gapSize = (el: Element) => parseFloat((el as HTMLElement).dataset.gap || "0");
-  const breaks: Break[] = [];
   let removed = 0;
   let pageStart = 0;
 
@@ -151,6 +156,7 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
       breaks.push({ pos: view.posAtDOM(child, 0) - 1, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
       pageStart = top;
       lastBreakPara = ci;
+      nextPage();
     }
     if (bottom - pageStart <= CONTENT_H + 0.5) { removed += innerTotal; continue; }
     const keep = keepOf(child);
@@ -166,6 +172,7 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
       breaks.push({ pos, height: Math.round((CONTENT_H - (t - pageStart) + BETWEEN) * 2) / 2, block: true });
       pageStart = t;
       lastBreakPara = q;
+      nextPage();
       return true;
     };
     // A table moves to the next page whole (Docs breaks tables by row; cells here stay together)
@@ -199,6 +206,7 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
         if (!breakBefore(ci) && top > pageStart + 1) {
           breaks.push({ pos: view.posAtDOM(child, 0) - 1, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
           pageStart = top;
+          nextPage();
         }
       } else {
         const Lb = lines[at];
@@ -208,6 +216,7 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
           breaks.push({ pos, height: Math.round((CONTENT_H - (breakTop - pageStart) + BETWEEN) * 2) / 2, block: false });
           pageStart = breakTop;
           lastBreakPara = ci;
+          nextPage();
         }
       }
       if (at > i) i = at;
@@ -238,6 +247,14 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
         if (dispatch) dispatch(tr.setMeta(paginationKey, { geometry }).setMeta("addToHistory", false));
         return true;
       },
+      setPageReserves: (reserves) => ({ tr, state, dispatch }) => {
+        const cur = paginationKey.getState(state)?.reserves ?? [];
+        const trimmed = [...reserves];
+        while (trimmed.length && !trimmed[trimmed.length - 1]) trimmed.pop();
+        if (cur.length === trimmed.length && cur.every((v, i) => Math.abs(v - trimmed[i]) < 1)) return true;
+        if (dispatch) dispatch(tr.setMeta(paginationKey, { reserves: trimmed }).setMeta("addToHistory", false));
+        return true;
+      },
     };
   },
   addProseMirrorPlugins() {
@@ -246,16 +263,17 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
       new Plugin<PaginationState>({
         key: paginationKey,
         state: {
-          init: (_, state) => ({ breaks: [], pages: 1, enabled: initial, deco: DecorationSet.create(state.doc, []), geometry: DEFAULT_GEOMETRY }),
+          init: (_, state) => ({ breaks: [], pages: 1, enabled: initial, deco: DecorationSet.create(state.doc, []), geometry: DEFAULT_GEOMETRY, reserves: [] }),
           apply(tr, value) {
-            const meta = tr.getMeta(paginationKey) as Partial<Pick<PaginationState, "breaks" | "enabled" | "geometry">> | undefined;
+            const meta = tr.getMeta(paginationKey) as Partial<Pick<PaginationState, "breaks" | "enabled" | "geometry" | "reserves">> | undefined;
             if (meta) {
               const enabled = meta.enabled ?? value.enabled;
               const geometry = meta.geometry ?? value.geometry;
+              const reserves = meta.reserves ?? value.reserves;
               // Turning pages on or changing the page starts from no breaks; they are measured again
               const reset = meta.enabled != null || meta.geometry != null;
               const breaks = enabled ? meta.breaks ?? (reset ? [] : value.breaks) : [];
-              return { breaks, pages: breaks.length + 1, enabled, deco: decorate(tr.doc, breaks), geometry };
+              return { breaks, pages: breaks.length + 1, enabled, deco: decorate(tr.doc, breaks), geometry, reserves };
             }
             if (!tr.docChanged) return value;
             const breaks = value.breaks.map((b) => ({ ...b, pos: tr.mapping.map(b.pos, -1) }));
@@ -276,7 +294,7 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
             const now = performance.now();
             if (now - windowStart > 1000) { windowStart = now; recent = 0; }
             if (recent > 8) return; // never loop
-            const breaks = measure(view, st.geometry);
+            const breaks = measure(view, st.geometry, st.reserves);
             if (!same(breaks, st.breaks)) {
               recent++;
               view.dispatch(view.state.tr.setMeta(paginationKey, { breaks }).setMeta("addToHistory", false));

@@ -190,6 +190,9 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [segments, setSegments] = useState<{ header: Segment | null; footer: Segment | null; firstPageHeader: Segment | null; firstPageFooter: Segment | null }>({ header: null, footer: null, firstPageHeader: null, firstPageFooter: null });
   const [hfSetup, setHfSetup] = useState({ useFirstPage: false, marginHeader: 36, marginFooter: 36 });
   const [editingHf, setEditingHf] = useState<"header" | "footer" | null>(null);
+  const [footnotes, setFootnotes] = useState<Record<string, EditorNode[]>>({});
+  const footnotesRef = useRef(footnotes);
+  footnotesRef.current = footnotes;
   /** The header or footer editor being used, when one is; the body otherwise */
   const [segmentEditor, setSegmentEditor] = useState<Editor | null>(null);
   const [draftLoaded, setDraftLoaded] = useState(false);
@@ -481,6 +484,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       const d = data as { header?: unknown; footer?: unknown; firstPageHeader?: unknown; firstPageFooter?: unknown; useFirstPage?: unknown; marginHeader?: unknown; marginFooter?: unknown };
       setSegments({ header: seg(d.header), footer: seg(d.footer), firstPageHeader: seg(d.firstPageHeader), firstPageFooter: seg(d.firstPageFooter) });
       setHfSetup({ useFirstPage: d.useFirstPage === true, marginHeader: typeof d.marginHeader === "number" ? d.marginHeader : 36, marginFooter: typeof d.marginFooter === "number" ? d.marginFooter : 36 });
+      const fns = (data as { footnotes?: Record<string, unknown> }).footnotes ?? {};
+      const next: Record<string, EditorNode[]> = {};
+      for (const [id, v] of Object.entries(fns)) { const s = seg(v); if (s) next[id] = s.base; }
+      setFootnotes(next);
       const fresh: EditorNode = { type: "doc", content: data.nodes };
       let target = fresh;
       if (keep) target = rebase(fresh, keep);
@@ -622,6 +629,27 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     segmentTimers.current[key] = setTimeout(() => { void saveSegment(key, doc); }, 600);
   }, [saveSegment]);
   const segmentFocused = (which: "header" | "footer") => (e: Editor) => { setSegmentEditor(e); setEditingHf(which); };
+  const footnoteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const saveFootnote = useCallback(async (id: string, doc: JSONContent) => {
+    const base = footnotesRef.current[id];
+    const content = docContentRef.current;
+    if (!base || content?.status !== "ready") return;
+    const { requests } = segmentEdits({ type: "doc", content: base }, doc as EditorNode, id);
+    if (!requests.length) return;
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    if (ok) {
+      if (data.revisionId) revisionRef.current = data.revisionId;
+      setFootnotes((f) => (f[id] ? { ...f, [id]: (doc as EditorNode).content ?? [] } : f));
+      return;
+    }
+    if (status === 401) setScopeError(true);
+    setSnack(data.error || "Couldn't save the footnote to Google Docs");
+  }, []);
+  const footnoteProps = useMemo(() => ({
+    items: Object.entries(footnotes).map(([id, base]) => ({ id, base })),
+    onChange: (id: string, doc: JSONContent) => { clearTimeout(footnoteTimers.current[id]); footnoteTimers.current[id] = setTimeout(() => { void saveFootnote(id, doc); }, 600); },
+    onFocus: (_id: string, e: Editor) => { setSegmentEditor(e); setEditingHf(null); },
+  }), [footnotes, saveFootnote]);
   const headerEditor = useSegmentEditor(segments.header?.base ?? null, segmentChanged("header"), segmentFocused("header"));
   const footerEditor = useSegmentEditor(segments.footer?.base ?? null, segmentChanged("footer"), segmentFocused("footer"));
   const firstHeaderEditor = useSegmentEditor(segments.firstPageHeader?.base ?? null, segmentChanged("firstPageHeader"), segmentFocused("header"));
@@ -1035,7 +1063,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   // Clicking the page margins puts the caret at the end, like Docs
   const onPageMouseDown = (e: React.MouseEvent) => {
-    if (!editor || (e.target as HTMLElement).closest(".ProseMirror, .ss-hf")) return;
+    if (!editor || (e.target as HTMLElement).closest(".ProseMirror, .ss-hf, .ss-footnotes")) return;
     e.preventDefault();
     // Clicking above or below the text puts the caret on the nearest line, like Docs
     const r = editor.view.dom.getBoundingClientRect();
@@ -1159,7 +1187,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
             transition={{ duration: 0.32, ease }}
           >
-            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} headerFooters={docContent?.status === "ready" ? headerFooters : undefined} />
+            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} headerFooters={docContent?.status === "ready" ? headerFooters : undefined} footnotes={docContent?.status === "ready" ? footnoteProps : undefined} />
           </motion.div>
           <WordCount editor={focusedJob ? viewer : editor} />
         </main>
