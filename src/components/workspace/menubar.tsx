@@ -69,8 +69,7 @@ interface DocsMenubarProps {
   onOpenStyle?: () => void;
   docUrl: string | null;
   onSignOut: () => void;
-  pageless: boolean;
-  onPageless: (on: boolean) => void;
+  onPageSetup: () => void;
 }
 
 export function DocsMenubar(p: DocsMenubarProps) {
@@ -109,10 +108,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
         {p.onOpenStyle && <Item onSelect={p.onOpenStyle}>Style engine</Item>}
         <Sep />
-        <Sub label="Page setup">
-          <Item checkable checked={!p.pageless} onSelect={() => p.onPageless(false)}>Pages</Item>
-          <Item checkable checked={p.pageless} onSelect={() => p.onPageless(true)}>Pageless</Item>
-        </Sub>
+        <Item onSelect={p.onPageSetup}>Page setup</Item>
         <Item shortcut={`${mod}P`} onSelect={() => window.print()}>Print</Item>
         <Sep />
         <Item onSelect={p.onSignOut}>Sign out</Item>

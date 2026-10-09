@@ -13,6 +13,7 @@ const ALLOWED = new Set([
   "insertInlineImage",
   "createParagraphBullets",
   "deleteParagraphBullets",
+  "updateDocumentStyle",
 ]);
 const MAX_REQUESTS = 2000;
 

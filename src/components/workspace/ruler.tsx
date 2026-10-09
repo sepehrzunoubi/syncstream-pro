@@ -4,17 +4,20 @@ import React, { useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { MAX_INDENT } from "@/lib/rich-text";
+import { DEFAULT_GEOMETRY, type PageGeometry } from "./pagination";
 
-// Page geometry in CSS pixels (96 per inch): 8.5in page, 1in margins, 0.5in indent steps
-const W = 816;
-const M = 96;
+// Indent steps of half an inch, in CSS pixels (96 per inch)
 const STEP = 48;
 const BLUE = "#0b57d0";
 
 type Drag = { kind: "left" | "first"; x: number } | null;
 
 /** The Docs ruler: inch scale, grey margins, and draggable indent markers for the current paragraph. */
-export function Ruler({ editor, disabled }: { editor: Editor | null; disabled?: boolean }) {
+export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { editor: Editor | null; disabled?: boolean; geometry?: PageGeometry }) {
+  // Page width and margins from the page setup
+  const W = geometry.w;
+  const M = geometry.left;
+  const MR = geometry.right;
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<Drag>(null);
   const para = useEditorState({
@@ -47,7 +50,7 @@ export function Ruler({ editor, disabled }: { editor: Editor | null; disabled?: 
   const move = (e: React.PointerEvent) => {
     if (!drag) return;
     const x = toRulerX(e.clientX);
-    setDrag({ ...drag, x: drag.kind === "left" ? snapLeft(x) : Math.max(leftX, Math.min(W - M, x)) });
+    setDrag({ ...drag, x: drag.kind === "left" ? snapLeft(x) : Math.max(leftX, Math.min(W - MR, x)) });
   };
   const end = () => {
     if (!drag || !editor) return setDrag(null);
@@ -80,10 +83,10 @@ export function Ruler({ editor, disabled }: { editor: Editor | null; disabled?: 
   }
 
   return (
-    <div className="ss-ruler" aria-hidden="true">
+    <div className="ss-ruler" aria-hidden="true" style={{ width: W }}>
       <svg ref={svgRef} width={W} height={24} viewBox={`0 0 ${W} 24`} onPointerMove={move} onPointerUp={end} onPointerCancel={() => setDrag(null)}>
         <rect x={0} y={4} width={W} height={16} fill="#e1e3e1" rx={2} />
-        <rect x={M} y={4} width={W - 2 * M} height={16} fill="#fff" />
+        <rect x={M} y={4} width={Math.max(0, W - M - MR)} height={16} fill="#fff" />
         {ticks}
         {!disabled && (
           <g style={{ transition: drag ? undefined : "transform 180ms cubic-bezier(.2,0,0,1)" }}>
@@ -92,7 +95,7 @@ export function Ruler({ editor, disabled }: { editor: Editor | null; disabled?: 
             {/* left indent: triangle */}
             <path className="ss-marker" d={`M ${shownLeft - 6} 5 L ${shownLeft + 6} 5 L ${shownLeft} 11 Z`} fill={BLUE} onPointerDown={start("left")} />
             {/* right indent (fixed) */}
-            <path d={`M ${W - M - 6} 5 L ${W - M + 6} 5 L ${W - M} 11 Z`} fill={BLUE} />
+            <path d={`M ${W - MR - 6} 5 L ${W - MR + 6} 5 L ${W - MR} 11 Z`} fill={BLUE} />
           </g>
         )}
       </svg>

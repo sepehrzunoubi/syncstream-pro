@@ -15,6 +15,8 @@ import { SyncRail } from "./sync-rail";
 import { SyncPanel, type BreaksMode } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
+import { PageSetupDialog } from "./page-setup-dialog";
+import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
 import { ProgressMarks, progressKey } from "./pagination";
 import { measureRemoteImage, uploadImage } from "./image-upload";
@@ -42,6 +44,19 @@ interface Draft {
   typoFrequency?: number;
   zoom?: number | "fit";
   pageless?: boolean;
+  /** Page setup of text typed with no document selected */
+  pageSetup?: PageSetup;
+}
+
+/** The page setup new documents get (File > Page setup > Set as default) */
+const PAGE_DEFAULT_KEY = "syncstream_page_default";
+function readPageDefault(): { setup: PageSetup; pageless: boolean } | null {
+  try {
+    const raw = localStorage.getItem(PAGE_DEFAULT_KEY);
+    const v = raw ? (JSON.parse(raw) as { setup?: unknown; pageless?: unknown }) : null;
+    const setup = v ? parsePageSetup(v.setup) : null;
+    return setup ? { setup, pageless: v?.pageless === true } : null;
+  } catch { return null; }
 }
 
 /** Additions made to a document, kept per document until they are synced */
@@ -160,6 +175,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [fitScale, setFitScale] = useState(1);
   const [narrow, setNarrow] = useState(false);
   const [pageless, setPageless] = useState(false);
+  const [pageSetup, setPageSetup] = useState<PageSetup>(DEFAULT_PAGE_SETUP);
+  const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [docContent, setDocContent] = useState<DocContent | null>(null);
   const contentReq = useRef(0);
@@ -260,21 +277,26 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     return () => mq.removeEventListener("change", apply);
   }, []);
 
-  // "Fit" zoom: shrink the 8.5in page to the space between the side columns.
+  const geometry = useMemo(() => pageGeometry(pageSetup), [pageSetup]);
+  // "Fit" zoom: shrink the page to the space between the side columns.
   // Below 720px the page reflows instead (see docs.css), so no scaling there.
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
     const measure = () => {
       const w = el.clientWidth;
-      setFitScale(w < 720 ? 1 : Math.min(1, (w - 48) / 816));
+      setFitScale(w < 720 ? 1 : Math.min(1, (w - 48) / geometry.w));
       setNarrow(w < 720);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ready]);
+  }, [ready, geometry.w]);
+  useEffect(() => {
+    editor?.commands.setPageGeometry(geometry);
+    viewer?.commands.setPageGeometry(geometry);
+  }, [editor, viewer, geometry]);
   const scale = zoom === "fit" ? fitScale : zoom / 100;
   // Narrow screens reflow the page, so page breaks would be wrong there
   const effectivePageless = pageless || narrow;
@@ -300,6 +322,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (typeof d.typoFrequency === "number") setTypoFrequency(d.typoFrequency);
     if (typeof d.zoom === "number" || d.zoom === "fit") setZoom(d.zoom);
     if (typeof d.pageless === "boolean") setPageless(d.pageless);
+    const draftSetup = d.pageSetup ? parsePageSetup(d.pageSetup) : null;
+    const def = readPageDefault();
+    if (draftSetup) setPageSetup(draftSetup);
+    else if (def) { setPageSetup(def.setup); if (typeof d.pageless !== "boolean") setPageless(def.pageless); }
     setDraftLoaded(true);
   }, [editor, draftLoaded]);
 
@@ -323,6 +349,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           doc: !selectedDocId && json ? (json as JSONContent) : undefined,
           selectedDocId,
           durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless,
+          pageSetup: selectedDocId ? undefined : pageSetup,
         } satisfies Draft));
         localStorage.removeItem(LEGACY_DRAFT_KEY);
         if (json && docContent?.status === "ready" && docContent.docId === selectedDocId) {
@@ -331,7 +358,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       } catch { /* storage full or blocked */ }
     }, 400);
     return () => clearTimeout(id);
-  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, docContent]);
+  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, pageSetup, docContent]);
 
   // ── The selected Google Doc, editable ──
   const docContentRef = useRef<DocContent | null>(null);
@@ -419,12 +446,15 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (!keep) setDocContent({ docId, status: "loading" });
     try {
       const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
-      const data = (await res.json().catch(() => ({}))) as { nodes?: EditorNode[]; revisionId?: string; empty?: boolean; error?: string };
+      const data = (await res.json().catch(() => ({}))) as { nodes?: EditorNode[]; revisionId?: string; empty?: boolean; pageSetup?: unknown; error?: string };
       if (res.status === 401) setScopeError(true);
       if (!res.ok || !Array.isArray(data.nodes)) throw new Error(data.error || "Couldn't open this document");
       if (req !== contentReq.current) return;
       const revision = data.revisionId ?? "";
       if (keep && revision === revisionRef.current && docContentRef.current?.docId === docId) return; // unchanged
+      // The document's own page setup
+      const docSetup = parsePageSetup(data.pageSetup);
+      if (docSetup) setPageSetup(docSetup);
       const fresh: EditorNode = { type: "doc", content: data.nodes };
       let target = fresh;
       if (keep) target = rebase(fresh, keep);
@@ -528,7 +558,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const createDoc = useCallback(async () => {
     setIsCreatingDoc(true);
     try {
-      const { ok, status, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "Untitled document" });
+      const { ok, status, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "Untitled document", pageSetup: readPageDefault()?.setup });
       if (status === 401) throw new Error("Your Google sign-in expired. Choose Reconnect Google account in the account menu.");
       if (!ok) throw new Error(data.error || "Couldn't create the document");
       setDocs((prev) => [{ id: data.id, name: data.name, modifiedTime: new Date().toISOString() }, ...prev]);
@@ -539,6 +569,30 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     } finally {
       setIsCreatingDoc(false);
     }
+  }, []);
+
+  /** Page setup from the dialog: shown here, and written to the open Google Doc */
+  const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {
+    setPageless(nextPageless);
+    const prev = pageSetup;
+    if (samePageSetup(prev, next)) return;
+    setPageSetup(next);
+    const content = docContentRef.current;
+    if (content?.status !== "ready") return;
+    await saveNow();
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", {
+      documentId: content.docId,
+      revisionId: revisionRef.current,
+      requests: [documentStyleRequest(next)],
+    });
+    if (ok) { revisionRef.current = data.revisionId; return; }
+    setPageSetup(prev);
+    if (status === 401) setScopeError(true);
+    setSnack(data.error || "Couldn't change the page setup in Google Docs");
+  }, [pageSetup, saveNow]);
+  const setPageDefault = useCallback((setup: PageSetup, nextPageless: boolean) => {
+    try { localStorage.setItem(PAGE_DEFAULT_KEY, JSON.stringify({ setup, pageless: nextPageless })); } catch { /* storage blocked */ }
+    setSnack("New documents will use this page setup");
   }, []);
 
   // Syncs
@@ -877,8 +931,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onOpenStyle={() => router.push("/dashboard/style")}
             docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
             onSignOut={onSignOut}
-            pageless={pageless}
-            onPageless={setPageless}
+            onPageSetup={() => setPageSetupOpen(true)}
           />
         }
       />
@@ -937,13 +990,13 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         <main ref={canvasRef} className="ss-canvas min-w-0 flex-none lg:h-full lg:flex-1">
           <div className="ss-ruler-row">
             <div style={{ zoom: scale }}>
-              <Ruler editor={focusedJob ? viewer : editor} disabled={!!focusedJob} />
+              <Ruler editor={focusedJob ? viewer : editor} disabled={!!focusedJob} geometry={geometry} />
             </div>
           </div>
 
           {focusedJob && (
             <motion.div key={focusedJob.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease }}>
-              <PagedSurface editor={viewer} pageless={effectivePageless} scale={scale} />
+              <PagedSurface editor={viewer} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} />
             </motion.div>
           )}
           <motion.div
@@ -952,7 +1005,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
             transition={{ duration: 0.32, ease }}
           >
-            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} onMouseDown={onPageMouseDown} />
+            <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} />
           </motion.div>
           <WordCount editor={focusedJob ? viewer : editor} />
         </main>
@@ -1003,6 +1056,16 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         </aside>
       </div>
 
+      <PageSetupDialog
+        open={pageSetupOpen}
+        setup={pageSetup}
+        pageless={pageless}
+        onClose={() => setPageSetupOpen(false)}
+        onApply={applyPageSetup}
+        onSetDefault={setPageDefault}
+      />
+      {/* Print on the document's paper with its margins */}
+      <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
       <AnimatePresence>
         {snack && (
           <motion.div

@@ -9,6 +9,7 @@
  */
 
 import type { docs_v1 } from "googleapis";
+import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
 import { DEFAULT_FONT, NAMED_STYLES, OBJ, type Align, type EditorNode, type ListType, type NamedStyle } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
@@ -28,6 +29,8 @@ export interface Anchor {
 
 export interface ImportedDoc {
   revisionId: string;
+  /** Paper size, margins and colour, from the document's style */
+  pageSetup: PageSetup;
   /** True when the doc has no text, images or tables */
   empty: boolean;
   /** The document's paragraphs, in order */
@@ -267,7 +270,7 @@ export function importDoc(doc: Doc): ImportedDoc {
   }
 
   if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
-  return { revisionId: doc.revisionId ?? "", empty: !hasContent, nodes };
+  return { revisionId: doc.revisionId ?? "", pageSetup: pageSetupFromDocumentStyle(doc.documentStyle), empty: !hasContent, nodes };
 }
 
 function stripNull<T extends object>(o: T): Partial<T> {

@@ -5,7 +5,8 @@
 /* Tokens are shared with menus, which render in a portal outside the workspace */
 .ss-workspace,
 .ss-menu,
-.ss-popover {
+.ss-popover,
+.ss-dialog-scrim {
   --ss-canvas: #f9fbfd;
   --ss-surface: #ffffff;
   --ss-toolbar: #edf2fa;
@@ -271,6 +272,7 @@
   background: var(--ss-canvas);
 }
 .ss-ruler { width: 8.5in; height: 24px; margin: 0 auto; }
+.ss-ruler-row { overflow: hidden; }
 .ss-ruler svg { display: block; overflow: visible; }
 .ss-ruler .ss-marker { cursor: ew-resize; }
 @media (max-width: 720px) { .ss-ruler-row { display: none; } }
@@ -413,22 +415,26 @@
 .ss-doc .ProseMirror-selectednode img,
 .ss-doc img.ProseMirror-selectednode { outline: 1px solid var(--ss-blue, #0b57d0); }
 
-/* Pages: sheets drawn behind the text, gaps pushed in by the pagination plugin */
-.ss-pages { position: relative; width: 8.5in; margin: 8px auto 64px; }
+/* Pages: sheets drawn behind the text, gaps pushed in by the pagination plugin.
+   Size, margins and colour come from the page setup (variables set by PagedSurface). */
+.ss-pages { position: relative; width: var(--ss-page-w, 8.5in); margin: 8px auto 64px; }
 .ss-sheet {
   position: absolute;
   left: 0;
   right: 0;
-  height: 11in;
-  background: #fff;
+  height: var(--ss-page-h, 11in);
+  background: var(--ss-page-color, #fff);
   box-shadow: 0 1px 3px 1px rgba(60,64,67,.15);
 }
 /* The side margins belong to the editor, so a click or drag anywhere across the line reaches the text, as in Docs */
-.ss-sheet-content { position: relative; padding: 1in 0 0; cursor: text; }
-.ss-sheet-content .ss-doc { min-height: 9in; padding: 0 1in; }
+.ss-sheet-content { position: relative; padding: var(--ss-m-top, 1in) 0 0; cursor: text; }
+.ss-sheet-content .ss-doc {
+  min-height: calc(var(--ss-page-h, 11in) - var(--ss-m-top, 1in) - var(--ss-m-bottom, 1in));
+  padding: 0 var(--ss-m-right, 1in) 0 var(--ss-m-left, 1in);
+}
 .ss-page-gap { display: block; pointer-events: none; user-select: none; }
 .ss-pageless .ss-sheet { height: auto; bottom: 0; }
-.ss-pageless .ss-sheet-content { padding-bottom: 1in; }
+.ss-pageless .ss-sheet-content { padding-bottom: var(--ss-m-bottom, 1in); }
 @media (max-width: 720px) {
   .ss-pages { width: auto; margin: 8px 8px 32px; }
   .ss-sheet-content { padding: 32px 0; }
@@ -505,7 +511,6 @@
 .ss-toolbar .ss-icon-btn[data-armed="true"] { background: var(--ss-pressed); color: var(--ss-on-pressed); }
 
 @media print {
-  @page { size: letter; margin: 1in; }
   html, body { background: #fff !important; }
   .ss-workspace { position: static !important; display: block !important; background: #fff !important; }
   .ss-workspace > header, .ss-noprint, .ss-ruler-row, .ss-workspace aside, .ss-workspace nav, .ss-snackbar { display: none !important; }
@@ -674,3 +679,40 @@
 .ss-prose code { padding: 0 4px; border-radius: 4px; background: var(--ss-soft); font-family: "Roboto Mono", Cousine, monospace; font-size: 13px; }
 .ss-prose pre { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--ss-soft); font-family: "Roboto Mono", Cousine, monospace; font-size: 12px; line-height: 18px; overflow-x: auto; white-space: pre; }
 .ss-prose strong { font-weight: 500; }
+
+/* Dialogs (Page setup), in Docs' style */
+.ss-dialog-scrim { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.32); }
+.ss-dialog {
+  width: 440px;
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 24px;
+  border-radius: 28px;
+  background: var(--ss-surface);
+  color: var(--ss-text);
+  box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 4px 8px 3px rgba(0,0,0,.15);
+  animation: ss-menu-in 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+.ss-dialog-title { margin: 0 0 12px; font-family: "Google Sans", Roboto, Arial, sans-serif; font-size: 22px; font-weight: 400; line-height: 28px; }
+.ss-dialog-tabs { display: flex; margin: 0 0 20px; border-bottom: 1px solid var(--ss-divider); }
+.ss-dialog-tab { position: relative; flex: 1; height: 44px; font-size: 14px; font-weight: 500; color: var(--ss-text-2); border-radius: 8px 8px 0 0; }
+.ss-dialog-tab:hover, .ss-dialog-tab:focus-visible { background: var(--ss-hover); }
+.ss-dialog-tab:focus { outline: none; }
+.ss-dialog-tab[data-active="true"] { color: var(--ss-blue); }
+.ss-dialog-tab[data-active="true"]::after { content: ""; position: absolute; left: 25%; right: 25%; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--ss-blue); }
+.ss-radio { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
+.ss-radio input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ss-radio-dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--ss-text-2); box-sizing: border-box; position: relative; }
+.ss-radio input:checked + .ss-radio-dot { border-color: var(--ss-blue); }
+.ss-radio input:checked + .ss-radio-dot::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--ss-blue); }
+.ss-radio input:focus-visible + .ss-radio-dot { box-shadow: 0 0 0 8px rgba(11, 87, 208, 0.12); }
+.ss-field-sub { display: block; margin-bottom: 4px; font-size: 12px; color: var(--ss-text-2); }
+.ss-field-error { margin: 8px 0 0; font-size: 12px; color: var(--ss-danger); }
+.ss-input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--ss-outline); border-radius: 4px; background: var(--ss-surface); font: inherit; color: var(--ss-text); }
+.ss-input:focus { outline: none; border: 2px solid var(--ss-blue); padding: 0 11px; }
+.ss-color-select { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 6px 0 10px; border: 1px solid var(--ss-outline); border-radius: 4px; background: var(--ss-surface); color: var(--ss-text-2); }
+.ss-color-select:hover { border-color: var(--ss-text); }
+.ss-color-dot { width: 20px; height: 20px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.2); }
+.ss-btn-quiet { color: var(--ss-text-2); }
+.ss-btn-quiet:hover:not(:disabled) { background: var(--ss-hover); }
