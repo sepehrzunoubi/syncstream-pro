@@ -98,6 +98,8 @@ export interface ParagraphFormat {
   list?: ListType;
   /** Exact indents in points, from a paragraph of an existing Google Doc (overrides indent/firstLine) */
   exact?: { start: number; first: number };
+  /** Space above and below the paragraph in points; absent leaves Docs' own */
+  space?: { above: number; below: number };
 }
 
 export interface RunFormat {
@@ -244,14 +246,19 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   const indent = typeof a.indent === "number" ? Math.max(0, Math.min(MAX_INDENT, Math.round(a.indent))) : 0;
   const spacing = typeof a.lineSpacing === "number" && Number.isFinite(a.lineSpacing) ? Math.max(50, Math.min(500, Math.round(a.lineSpacing))) : 115;
   const list = typeof a.list === "string" && LIST_TYPES.has(a.list) ? (a.list as ListType) : undefined;
-  if (list) return { style, align, indent: 0, firstLine: false, spacing, list };
-  const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing };
-  // Paragraphs read from Google Docs keep their exact indents
-  const box = a.box as { start?: unknown; first?: unknown } | null | undefined;
-  const exact = a.exact as { start?: unknown; first?: unknown } | null | undefined;
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(-1000, Math.min(1000, v)) : 0);
+  // Paragraphs read from Google Docs (or pasted from it) keep their exact indents and spacing
+  const box = a.box as { start?: unknown; first?: unknown; above?: unknown; below?: unknown } | null | undefined;
+  const exact = a.exact as { start?: unknown; first?: unknown } | null | undefined;
+  const rawSpace = (box && typeof box === "object" ? box : (a.space as { above?: unknown; below?: unknown } | null | undefined)) ?? null;
+  const space = rawSpace && (typeof rawSpace.above === "number" || typeof rawSpace.below === "number")
+    ? { above: Math.max(0, num(rawSpace.above)), below: Math.max(0, num(rawSpace.below)) }
+    : undefined;
+  if (list) return { style, align, indent: 0, firstLine: false, spacing, list, ...(space ? { space } : {}) };
+  const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing };
   if (box && typeof box === "object") p.exact = { start: num(box.start), first: num(box.start) + num(box.first) };
   else if (exact && typeof exact === "object") p.exact = { start: num(exact.start), first: num(exact.first) };
+  if (space) p.space = space;
   return p;
 }
 
@@ -401,6 +408,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           lineSpacing: (p as ParagraphFormat).spacing,
           list: (p as ParagraphFormat).list,
           exact: (p as ParagraphFormat).exact,
+          space: (p as ParagraphFormat).space,
         }
       : undefined
   ));
@@ -455,7 +463,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   if (images.length) format.images = images;
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
-    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, exact: rawBase.exact });
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, exact: rawBase.exact, space: rawBase.space });
   }
   return { ok: true, format };
 }
@@ -635,6 +643,11 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style:
       fields.push("indentStart", "indentFirstLine");
     }
   }
+  if (b.space && (a.space?.above !== b.space.above || a.space?.below !== b.space.below)) {
+    style.spaceAbove = { magnitude: b.space.above, unit: "PT" };
+    style.spaceBelow = { magnitude: b.space.below, unit: "PT" };
+    fields.push("spaceAbove", "spaceBelow");
+  }
   return fields.length ? { style, fields } : null;
 }
 
@@ -766,30 +779,21 @@ export function textRequest(textStyle: DocsRequest, startIndex: number, endIndex
 }
 
 export function paragraphRequest(p: ParagraphFormat, startIndex: number, endIndex: number): DocsRequest {
-  if (p.list) {
+  const paragraphStyle: Record<string, unknown> = { namedStyleType: NAMED_STYLES[p.style].docs, alignment: DOCS_ALIGN[p.align], lineSpacing: p.spacing };
+  const fields = ["namedStyleType", "alignment", "lineSpacing"];
+  if (!p.list) {
     // Bullets own the indentation of list items
-    return {
-      updateParagraphStyle: {
-        range: { startIndex, endIndex },
-        paragraphStyle: { namedStyleType: NAMED_STYLES[p.style].docs, alignment: DOCS_ALIGN[p.align], lineSpacing: p.spacing },
-        fields: "namedStyleType,alignment,lineSpacing",
-      },
-    };
+    const indent = effectiveIndent(p);
+    paragraphStyle.indentStart = { magnitude: indent.start, unit: "PT" };
+    paragraphStyle.indentFirstLine = { magnitude: indent.first, unit: "PT" };
+    fields.push("indentStart", "indentFirstLine");
   }
-  const indent = effectiveIndent(p);
-  return {
-    updateParagraphStyle: {
-      range: { startIndex, endIndex },
-      paragraphStyle: {
-        namedStyleType: NAMED_STYLES[p.style].docs,
-        alignment: DOCS_ALIGN[p.align],
-        indentStart: { magnitude: indent.start, unit: "PT" },
-        indentFirstLine: { magnitude: indent.first, unit: "PT" },
-        lineSpacing: p.spacing,
-      },
-      fields: "namedStyleType,alignment,indentStart,indentFirstLine,lineSpacing",
-    },
-  };
+  if (p.space) {
+    paragraphStyle.spaceAbove = { magnitude: p.space.above, unit: "PT" };
+    paragraphStyle.spaceBelow = { magnitude: p.space.below, unit: "PT" };
+    fields.push("spaceAbove", "spaceBelow");
+  }
+  return { updateParagraphStyle: { range: { startIndex, endIndex }, paragraphStyle, fields: fields.join(",") } };
 }
 
 // ── Back to the editor ──────────────────────────────────────────────────────
@@ -805,9 +809,12 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
   let pos = 0;
   text.split("\n").forEach((line, li) => {
     const p = fmt.paragraphs[li] ?? DEFAULT_PARAGRAPH;
+    const box = p.exact || p.space
+      ? { ...(p.exact && !p.list ? { start: p.exact.start, first: p.exact.first - p.exact.start } : {}), above: p.space?.above ?? null, below: p.space?.below ?? null }
+      : null;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null },
+      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, box },
       content: [],
     };
     const end = pos + line.length;

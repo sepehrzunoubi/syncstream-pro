@@ -4,7 +4,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useRouter } from "next/navigation";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
-import { editorExtensions, flattenPastedLists, inlinePastedStyles } from "./extensions";
+import { editorExtensions, flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
 import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
@@ -193,13 +193,28 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     autofocus: "end",
     editorProps: {
       attributes: { class: "ss-doc", spellcheck: "true", "aria-label": "Text to sync" },
-      transformPastedHTML: (html) => inlinePastedStyles(flattenPastedLists(html)),
-      handlePaste: (_view, event) => {
+      transformPastedHTML: (html) => inlinePastedStyles(flattenPastedLists(pastedEmptyLines(html))),
+      handlePaste: (view, event, slice) => {
         const files = imageFilesOf(event.clipboardData?.files);
-        if (!files.length) return false;
-        event.preventDefault();
-        imageFilesRef.current(files);
-        return true;
+        if (files.length) {
+          event.preventDefault();
+          imageFilesRef.current(files);
+          return true;
+        }
+        // Pasting whole paragraphs into an empty one (or over whole paragraphs) keeps the first
+        // pasted paragraph's formatting, as Docs does; ProseMirror would keep the paragraph being replaced
+        const { $from, $to } = view.state.selection;
+        const first = slice.content.firstChild;
+        const target = $from.parent;
+        const wholeParagraphs = $from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size;
+        if (wholeParagraphs && slice.openStart > 0 && first?.type.name === "paragraph" && target.type.name === "paragraph" && !target.attrs.locked) {
+          const tr = view.state.tr.setNodeMarkup($from.before(), undefined, { ...first.attrs, locked: false, span: null, bid: null, kind: null });
+          tr.replaceSelection(slice).scrollIntoView();
+          view.dispatch(tr.setMeta("paste", true).setMeta("uiEvent", "paste"));
+          event.preventDefault();
+          return true;
+        }
+        return false;
       },
       handleDrop: (view, event, _slice, moved) => {
         if (moved) return false;

@@ -1,4 +1,6 @@
 import { Extension, InputRule, type Editor } from "@tiptap/core";
+import { Plugin } from "@tiptap/pm/state";
+import { DOMSerializer, type DOMOutputSpec, type Node as PMNode } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
 import Paragraph from "@tiptap/extension-paragraph";
 import { TextStyle, Color } from "@tiptap/extension-text-style";
@@ -39,6 +41,22 @@ declare module "@tiptap/core" {
 
 const TAG_STYLE: Record<string, NamedStyle> = { H1: "h1", H2: "h2", H3: "h3", H4: "h3", H5: "h3", H6: "h3" };
 
+/**
+ * The exact indents and spacing of a pasted paragraph, in points, as Google
+ * Docs and other editors put them in the clipboard. Paragraphs SyncStream
+ * rendered itself with indent steps say so with data attributes and keep
+ * those instead.
+ */
+function pastedBox(el: HTMLElement): { start: number; first: number; above: number | null; below: number | null } | null {
+  if (el.hasAttribute("data-indent") || el.hasAttribute("data-first-line") || el.hasAttribute("data-list")) return null;
+  const s = el.style;
+  if (!s.marginLeft && !s.paddingLeft && !s.textIndent && !s.marginTop && !s.marginBottom) return null;
+  const pt = (v: string) => { const n = cssLengthToPt(v); return n == null ? null : Math.max(-1000, Math.min(1000, Math.round(n * 2) / 2)); };
+  const start = pt(s.marginLeft) ?? pt(s.paddingLeft) ?? 0;
+  const first = pt(s.textIndent) ?? 0;
+  return { start: Math.max(0, start), first, above: pt(s.marginTop), below: pt(s.marginBottom) };
+}
+
 /** Paragraphs carry the Google Docs paragraph properties we support. */
 const DocParagraph = Paragraph.extend({
   parseHTML() {
@@ -52,6 +70,9 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => {
           const data = el.getAttribute("data-style");
           if (data && data in NAMED_STYLES) return data;
+          // Google Docs copies its Title and Subtitle styles as classes
+          if (el.classList.contains("title")) return "title";
+          if (el.classList.contains("subtitle")) return "subtitle";
           return TAG_STYLE[el.tagName] ?? "normal";
         },
         renderHTML: (a: { styleName?: string }) => (a.styleName && a.styleName !== "normal" ? { "data-style": a.styleName } : {}),
@@ -61,15 +82,15 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => {
           const data = el.getAttribute("data-indent");
           if (data) return Math.min(MAX_INDENT, Math.max(0, parseInt(data, 10) || 0));
-          const pt = cssLengthToPt(el.style.marginLeft) ?? cssLengthToPt(el.style.paddingLeft) ?? 0;
-          return Math.min(MAX_INDENT, Math.max(0, Math.round(pt / INDENT_PT)));
+          // Pasted indents are kept exactly, in `box`
+          return 0;
         },
         renderHTML: (a: { indent?: number }) =>
           a.indent ? { "data-indent": String(a.indent), style: `margin-left: ${(a.indent * INDENT_PT) / 72}in` } : {},
       },
       firstLine: {
         default: false,
-        parseHTML: (el: HTMLElement) => el.hasAttribute("data-first-line") || (cssLengthToPt(el.style.textIndent) ?? 0) > 1,
+        parseHTML: (el: HTMLElement) => el.hasAttribute("data-first-line"),
         renderHTML: (a: { firstLine?: boolean }) => (a.firstLine ? { "data-first-line": "", style: `text-indent: ${INDENT_PT / 72}in` } : {}),
       },
       list: {
@@ -104,7 +125,7 @@ const DocParagraph = Paragraph.extend({
       /** Exact indents and spacing of a paragraph read from Docs, in points */
       box: {
         default: null,
-        parseHTML: () => null,
+        parseHTML: (el: HTMLElement) => pastedBox(el),
         renderHTML: (a: { box?: { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null; list?: string | null }) => {
           const b = a.box;
           if (!b) return {};
@@ -300,7 +321,8 @@ const DocFormat = Extension.create({
         const atStart = selection.empty && selection.$from.parentOffset === 0;
         if (atStart) {
           const attrs = paragraphs[0]?.attrs ?? {};
-          return attrs.firstLine ? editor.commands.indent() : editor.commands.setFirstLine(true);
+          const box = attrs.box as { first?: number } | null;
+          return attrs.firstLine || (box?.first ?? 0) > 0 ? editor.commands.indent() : editor.commands.setFirstLine(true);
         }
         return editor.commands.insertContent("\t");
       },
@@ -320,6 +342,27 @@ const DocFormat = Extension.create({
     };
   },
 });
+
+/**
+ * Google Docs copies an empty paragraph as a bare <br> between paragraphs,
+ * and browsers add one after the copied content. The first becomes an empty
+ * paragraph (which syncs as a new line); the trailing one is dropped.
+ */
+export function pastedEmptyLines(html: string): string {
+  if (typeof DOMParser === "undefined" || !/<br\b/i.test(html)) return html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const br of Array.from(doc.querySelectorAll("br"))) {
+    const parent = br.parentElement;
+    if (!parent) continue;
+    const BLOCK = "p, h1, h2, h3, h4, h5, h6, div, ul, ol, table, blockquote";
+    const blocks = Array.from(parent.children).some((c) => c.matches(BLOCK) || c.querySelector(BLOCK));
+    if (!blocks) continue; // a line break inside a paragraph
+    const last = !br.nextElementSibling && !(br.nextSibling?.textContent ?? "").trim();
+    if (last || br.classList.contains("Apple-interchange-newline")) br.remove();
+    else br.replaceWith(doc.createElement("p"));
+  }
+  return doc.body.innerHTML;
+}
 
 /**
  * Pasted HTML lists become list paragraphs (Docs stores lists as a property
@@ -379,6 +422,45 @@ const DocImage = Image.extend({
   resize: { enabled: true, directions: ["top-left", "top-right", "bottom-left", "bottom-right"], minWidth: 32, minHeight: 32, alwaysPreserveAspectRatio: true },
 });
 
+const DocHighlight = Highlight.extend({
+  parseHTML() {
+    return [
+      ...(this.parent?.() ?? []),
+      // A style rule, so it applies alongside the span rules of other marks
+      {
+        style: "background-color",
+        getAttrs: (value: string | HTMLElement) => {
+          const bg = typeof value === "string" ? value : "";
+          // Not transparent: the keyword, or an rgba() with alpha 0
+          return bg && !/^(transparent|inherit|initial|unset|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(\.0+)?\s*\))$/i.test(bg) ? { color: bg } : false;
+        },
+      },
+    ];
+  },
+}).configure({ multicolor: true });
+
+/** The copied HTML Docs and other editors understand: real heading tags, sizes for Title and Subtitle */
+const ClipboardHTML = Extension.create({
+  name: "clipboardHTML",
+  addProseMirrorPlugins() {
+    const { schema } = this.editor;
+    const base = DOMSerializer.fromSchema(schema);
+    const HEADING_TAG: Record<string, string> = { h1: "h1", h2: "h2", h3: "h3" };
+    const paragraph = (node: PMNode): DOMOutputSpec => {
+      const spec = base.nodes.paragraph(node);
+      if (!Array.isArray(spec)) return spec;
+      const [, attrs, ...rest] = spec as [string, Record<string, string>, ...unknown[]];
+      const style = node.attrs.styleName as string;
+      const out = { ...attrs };
+      const size = style === "title" || style === "subtitle" ? NAMED_STYLES[style].size : null;
+      if (size) out.style = [out.style, `font-size: ${size}pt`].filter(Boolean).join("; ");
+      return [HEADING_TAG[style] ?? "p", out, ...rest] as DOMOutputSpec;
+    };
+    const serializer = new DOMSerializer({ ...base.nodes, paragraph }, base.marks);
+    return [new Plugin({ props: { clipboardSerializer: serializer } })];
+  },
+});
+
 export const editorExtensions = [
   StarterKit.configure({
     paragraph: false,
@@ -397,16 +479,17 @@ export const editorExtensions = [
   TextStyle,
   FontAttributes,
   Color,
-  Highlight.configure({ multicolor: true }),
+  DocHighlight,
   DocImage,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
   Pagination,
   SyncAdd,
   DocSync,
+  ClipboardHTML,
 ];
 
-type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string };
+type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; backgroundColor?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string };
 
 /** What an element says about each inherited text property, from its tag and its own style */
 function ownStyle(el: HTMLElement): InlineStyle {
@@ -416,14 +499,16 @@ function ownStyle(el: HTMLElement): InlineStyle {
   if (tag === "I" || tag === "EM") out.fontStyle = "italic";
   if (tag === "U") out.textDecoration = "underline";
   if (tag === "S" || tag === "STRIKE" || tag === "DEL") out.textDecoration = "line-through";
+  // A value that defers to the parent says nothing; keep looking up
+  const set = (v: string) => (v && !/^(inherit|initial|unset)$/i.test(v) ? v : undefined);
   const s = el.style;
-  if (s.fontFamily) out.fontFamily = s.fontFamily;
-  if (s.fontSize) out.fontSize = s.fontSize;
-  if (s.color) out.color = s.color;
-  if (s.fontWeight) out.fontWeight = s.fontWeight;
-  if (s.fontStyle) out.fontStyle = s.fontStyle;
-  const deco = s.textDecorationLine || s.textDecoration;
-  if (deco) out.textDecoration = deco;
+  out.fontFamily = set(s.fontFamily);
+  out.fontSize = set(s.fontSize);
+  out.color = set(s.color);
+  out.backgroundColor = set(s.backgroundColor) && !/^transparent$/i.test(s.backgroundColor) ? s.backgroundColor : undefined;
+  out.fontWeight = set(s.fontWeight) ?? out.fontWeight;
+  out.fontStyle = set(s.fontStyle) ?? out.fontStyle;
+  out.textDecoration = set(s.textDecorationLine || s.textDecoration) ?? out.textDecoration;
   return out;
 }
 
@@ -440,11 +525,12 @@ export function inlinePastedStyles(html: string): string {
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
   while (walker.nextNode()) texts.push(walker.currentNode as Text);
-  const keys: (keyof InlineStyle)[] = ["fontFamily", "fontSize", "color", "fontWeight", "fontStyle", "textDecoration"];
+  const keys: (keyof InlineStyle)[] = ["fontFamily", "fontSize", "color", "backgroundColor", "fontWeight", "fontStyle", "textDecoration"];
   const css: Record<keyof InlineStyle, string> = {
     fontFamily: "font-family",
     fontSize: "font-size",
     color: "color",
+    backgroundColor: "background-color",
     fontWeight: "font-weight",
     fontStyle: "font-style",
     textDecoration: "text-decoration",

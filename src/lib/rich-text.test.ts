@@ -186,3 +186,28 @@ test("colours, highlight, links, lists and images convert and validate", async (
 });
 
 import { richToEditorJSON as richToEditorJSONFor } from "./rich-text";
+
+test("pasted paragraphs keep exact indents and spacing, and send them to Docs", async () => {
+  const { paragraphFromAttrs, paragraphRequest, paragraphDelta, richToEditorJSON } = await import("./rich-text");
+  // What the editor holds for a paragraph pasted from Docs: margin-left 72pt, text-indent 36pt, 10pt after
+  const para = paragraphFromAttrs({ styleName: "normal", lineSpacing: 200, box: { start: 72, first: 36, above: 0, below: 10 } });
+  assert.deepEqual(para.exact, { start: 72, first: 108 });
+  assert.deepEqual(para.space, { above: 0, below: 10 });
+  const req = paragraphRequest(para, 1, 10).updateParagraphStyle as { paragraphStyle: Record<string, unknown>; fields: string };
+  assert.deepEqual(req.paragraphStyle.spaceBelow, { magnitude: 10, unit: "PT" });
+  assert.deepEqual(req.paragraphStyle.indentStart, { magnitude: 72, unit: "PT" });
+  assert.match(req.fields, /spaceAbove,spaceBelow/);
+  // Spacing is sent only when it changes
+  const same = paragraphFromAttrs({ styleName: "normal", lineSpacing: 200, box: { start: 72, first: 36, above: 0, below: 10 } });
+  assert.equal(paragraphDelta(para, same), null);
+  const wider = paragraphFromAttrs({ styleName: "normal", lineSpacing: 200, box: { start: 72, first: 36, above: 0, below: 18 } });
+  assert.deepEqual(paragraphDelta(para, wider)?.fields, ["spaceAbove", "spaceBelow"]);
+  // A paragraph with no spacing of its own leaves Docs' alone
+  const plain = paragraphFromAttrs({ styleName: "normal" });
+  assert.equal(plain.space, undefined);
+  assert.doesNotMatch((paragraphRequest(plain, 1, 10).updateParagraphStyle as { fields: string }).fields, /space/);
+  // And it all comes back to the editor as the same box
+  const json = richToEditorJSON("x", { v: 1, paragraphs: [para], runs: [{ len: 1 }] });
+  assert.deepEqual(json.content?.[0].attrs?.box, { start: 72, first: 36, above: 0, below: 10 });
+  assert.deepEqual(parseFormat("x", { v: 1, paragraphs: [para], runs: [{ len: 1 }] }), { ok: true, format: { v: 1, paragraphs: [para], runs: [{ len: 1 }] } });
+});
