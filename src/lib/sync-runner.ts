@@ -497,6 +497,14 @@ class Context {
     };
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
+      if (ch === "\u000C") {
+        // A page break and the newline Docs inserts with it (the source has both)
+        flush();
+        requests.push({ insertPageBreak: { location: { index: pos } } });
+        pos += 2;
+        if (text[i + 1] === "\n") i++;
+        continue;
+      }
       const image = ch === OBJ && sourceOffset != null && fx ? fx.imageAt(sourceOffset + i) : undefined;
       if (!image) { buf += ch; continue; }
       flush();

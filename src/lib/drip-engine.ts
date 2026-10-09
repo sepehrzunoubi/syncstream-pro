@@ -291,7 +291,7 @@ export function buildDripPlan(text: string, options: PlanOptions = {}): DripPlan
     const wordPart = c.text.trimEnd();
     let typoChars: string | undefined;
     let holdMs: number | undefined;
-    if (wordPart.length >= 3 && !c.text.includes(OBJ) && charsSinceTypo + c.text.length >= nextTypoAt) {
+    if (wordPart.length >= 3 && !c.text.includes(OBJ) && !c.text.includes("\u000C") && charsSinceTypo + c.text.length >= nextTypoAt) {
       typoChars = distortText(rng, wordPart);
       holdMs = rng.int(600, 2_000);
       charsSinceTypo = 0;

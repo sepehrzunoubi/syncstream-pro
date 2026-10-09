@@ -14,6 +14,8 @@ const ALLOWED = new Set([
   "createParagraphBullets",
   "deleteParagraphBullets",
   "updateDocumentStyle",
+  "insertPageBreak",
+  "insertSectionBreak",
 ]);
 const MAX_REQUESTS = 2000;
 

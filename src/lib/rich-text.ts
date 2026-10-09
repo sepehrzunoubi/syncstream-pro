@@ -14,6 +14,11 @@ export type ListType = "bullet" | "ordered" | "check";
 
 /** Placeholder character for an inline image in the source text (one Docs index, like the image) */
 export const OBJ = "\uFFFC";
+/**
+ * A page break in the source text (one Docs index). It is always followed by
+ * a newline, the two being what insertPageBreak puts in the document.
+ */
+export const PAGE_BREAK = "\u000C";
 
 export const LIST_PRESETS: Record<ListType, string> = {
   bullet: "BULLET_DISC_CIRCLE_SQUARE",
@@ -205,7 +210,7 @@ export function normalizeText(s: string): string {
     .replace(/\r\n?/g, "\n")
     .replace(/[\u2028\u2029]/g, "\n")
     // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uE000-\uF8FF]/g, "");
+    .replace(/[\u0000-\u0008\u000B\u000E-\u001F\uE000-\uF8FF]/g, "");
 }
 
 export function plainFormat(text: string): RichFormat {
@@ -407,7 +412,9 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
   };
 
   const visitInline = (node: EditorNode, para: ParagraphFormat, state: { line: ReturnType<typeof newLine> }) => {
-    if (node.type === "image") {
+    if (node.type === "pageBreak") {
+      state.line.pieces.push({ text: PAGE_BREAK, style: styleFromMarks(node.marks) });
+    } else if (node.type === "image") {
       const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
       if (/^https?:\/\//i.test(src)) {
         const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) || 0 : 0);
@@ -417,7 +424,7 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
       }
     } else if (node.type === "text" && typeof node.text === "string") {
       const style = styleFromMarks(node.marks);
-      const parts = normalizeText(node.text).replace(/\uFFFC/g, "").split("\n");
+      const parts = normalizeText(node.text).replace(/[\uFFFC\u000C]/g, "").split("\n");
       parts.forEach((part, idx) => {
         if (idx > 0) state.line = newLine({ ...para });
         if (part) state.line.pieces.push({ text: part, style });
@@ -999,13 +1006,16 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       if (run.link) marks.push({ type: "link", attrs: { href: run.link } });
       if (run.bg) marks.push({ type: "highlight", attrs: { color: run.bg } });
       if (run.font || run.size || run.color) marks.push({ type: "textStyle", attrs: { fontFamily: run.font ?? null, fontSize: run.size ?? null, color: run.color ?? null } });
-      // Images are single placeholder characters; emit them as image nodes
+      // Images and page breaks are single placeholder characters; emit them as nodes
       let cursor = at;
       for (let k = at; k < segEnd; k++) {
-        if (text[k] !== OBJ) continue;
+        if (text[k] !== OBJ && text[k] !== PAGE_BREAK) continue;
         if (k > cursor) node.content!.push(marks.length ? { type: "text", text: text.slice(cursor, k), marks } : { type: "text", text: text.slice(cursor, k) });
-        const im = fmt.images?.find((x) => x.at === k);
-        if (im) node.content!.push({ type: "image", attrs: { src: im.src, width: im.w ? Math.round(im.w / 0.75) : null, height: im.h ? Math.round(im.h / 0.75) : null } });
+        if (text[k] === PAGE_BREAK) node.content!.push({ type: "pageBreak" });
+        else {
+          const im = fmt.images?.find((x) => x.at === k);
+          if (im) node.content!.push({ type: "image", attrs: { src: im.src, width: im.w ? Math.round(im.w / 0.75) : null, height: im.h ? Math.round(im.h / 0.75) : null } });
+        }
         cursor = k + 1;
       }
       if (segEnd > cursor) node.content!.push(marks.length ? { type: "text", text: text.slice(cursor, segEnd), marks } : { type: "text", text: text.slice(cursor, segEnd) });

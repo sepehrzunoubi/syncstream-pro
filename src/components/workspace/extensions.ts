@@ -1,5 +1,5 @@
-import { Extension, InputRule, Mark, type Editor } from "@tiptap/core";
-import { Plugin } from "@tiptap/pm/state";
+import { Extension, InputRule, Mark, Node, type Editor } from "@tiptap/core";
+import { Plugin, TextSelection } from "@tiptap/pm/state";
 import { DOMSerializer, type DOMOutputSpec, type Node as PMNode } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
 import Paragraph from "@tiptap/extension-paragraph";
@@ -56,6 +56,10 @@ declare module "@tiptap/core" {
       setListPreset: (preset: string) => ReturnType;
       /** Exact indents in points (the ruler): text start, first line offset, right indent */
       setIndents: (indents: { start?: number; first?: number; end?: number }) => ReturnType;
+      /** Docs' Ctrl+Enter: the text after the cursor starts on the next page */
+      insertPageBreak: () => ReturnType;
+      /** A section break after the current paragraph (saved to the document right away) */
+      insertSectionBreak: (type: "next" | "continuous") => ReturnType;
     };
   }
 }
@@ -168,6 +172,13 @@ const DocParagraph = Paragraph.extend({
         keepOnSplit: false,
         parseHTML: () => null,
         renderHTML: (a: { kind?: string | null }) => (a.kind ? { "data-kind": a.kind } : {}),
+      },
+      /** A section break's kind: "next" (next page) or "continuous" */
+      sectionType: {
+        default: null,
+        keepOnSplit: false,
+        parseHTML: () => null,
+        renderHTML: (a: { sectionType?: string | null }) => (a.sectionType ? { "data-section": a.sectionType } : {}),
       },
       /** Which Docs list a paragraph belongs to, its level, and what Docs draws for it (labels are decorations) */
       listId: { default: null, parseHTML: () => null, rendered: false },
@@ -448,6 +459,20 @@ const DocFormat = Extension.create({
         if (dispatch) dispatch(tr);
         return true;
       },
+      insertPageBreak: () => ({ chain, state }) => {
+        if (state.selection.$from.parent.attrs.locked) return false;
+        return chain().insertContent({ type: "pageBreak" }).splitBlock().run();
+      },
+      insertSectionBreak: (type) => ({ tr, state, dispatch }) => {
+        const { $to } = state.selection;
+        if ($to.parent.attrs.locked) return false;
+        const node = state.schema.nodes.paragraph.create({ locked: true, kind: "section", sectionType: type });
+        const at = $to.after();
+        tr.insert(at, node);
+        tr.setSelection(TextSelection.near(tr.doc.resolve(at + node.nodeSize), 1));
+        if (dispatch) dispatch(tr.scrollIntoView());
+        return true;
+      },
       stepFontSize: (dir) => ({ editor, chain }) => {
         const ts = editor.getAttributes("textStyle");
         const style = (editor.getAttributes("paragraph").styleName as NamedStyle) ?? "normal";
@@ -534,6 +559,7 @@ const DocFormat = Extension.create({
       "Mod-Alt-4": ({ editor }) => editor.commands.setNamedStyle("h4"),
       "Mod-Alt-5": ({ editor }) => editor.commands.setNamedStyle("h5"),
       "Mod-Alt-6": ({ editor }) => editor.commands.setNamedStyle("h6"),
+      "Mod-Enter": ({ editor }) => editor.commands.insertPageBreak(),
       "Mod-.": ({ editor }) => editor.commands.toggleMark("superscript"),
       "Mod-,": ({ editor }) => editor.commands.toggleMark("subscript"),
       "Mod-Shift-.": ({ editor }) => editor.commands.stepFontSize(1),
@@ -638,6 +664,17 @@ const DocHighlight = Highlight.extend({
   },
 }).configure({ multicolor: true });
 
+/** A page break: what follows starts on the next page. One Docs index, like an image. */
+const PageBreak = Node.create({
+  name: "pageBreak",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  parseHTML: () => [{ tag: "span[data-page-break]" }],
+  renderHTML: () => ["span", { "data-page-break": "", class: "ss-page-break", contenteditable: "false" }, ["span", { class: "ss-page-break-label" }, "Page break"]],
+});
+
 /** Superscript and subscript, one or the other, as Docs' Format > Text has them */
 const Superscript = Mark.create({
   name: "superscript",
@@ -695,6 +732,7 @@ export const editorExtensions = [
   DocHighlight,
   Superscript,
   Subscript,
+  PageBreak,
   DocImage,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,

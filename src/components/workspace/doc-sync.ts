@@ -108,8 +108,7 @@ export const DocSync = Extension.create({
 
   addKeyboardShortcuts() {
     // Google Docs doesn't accept soft line breaks through its API, so Shift+Enter starts a new line like Enter
-    const newLine = () => this.editor.commands.splitBlock();
-    return { "Shift-Enter": newLine, "Mod-Enter": newLine };
+    return { "Shift-Enter": () => this.editor.commands.splitBlock() };
   },
 
   addCommands() {
@@ -177,7 +176,7 @@ export const DocSync = Extension.create({
           // Text and images glow; a line break or an empty line is an edit to the document
           for (const [from, to] of ranges) {
             tr.doc.nodesBetween(from, Math.min(to, tr.doc.content.size), (node, pos) => {
-              if (node.isText || node.type.name === "image") tr.addMark(Math.max(pos, from), Math.min(pos + node.nodeSize, to), type.create());
+              if (node.isText || node.type.name === "image" || node.type.name === "pageBreak") tr.addMark(Math.max(pos, from), Math.min(pos + node.nodeSize, to), type.create());
             });
           }
           if (!tr.docChanged) return null;

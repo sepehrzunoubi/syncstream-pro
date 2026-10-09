@@ -19,6 +19,7 @@ import {
   DEFAULT_PARAGRAPH,
   LINK_COLOR,
   OBJ,
+  PAGE_BREAK,
   presetOf,
   paragraphFromAttrs,
   paragraphDelta,
@@ -44,6 +45,8 @@ export type Tok =
   | { k: "c"; c: string; marks: Marks; pending: boolean }
   | { k: "img"; attrs: Record<string, unknown>; marks: Marks; pending: boolean }
   | { k: "br"; marks: Marks; pending: boolean }
+  /** A page break (one Docs index), always right before its paragraph's end */
+  | { k: "pb"; marks: Marks; pending: boolean }
   /** End of a paragraph; carries the paragraph's attributes, like the newline does in Docs */
   | { k: "nl"; attrs: Record<string, unknown> }
   /** Something shown but not editable (a table, a section break): `span` Docs indices */
@@ -51,8 +54,8 @@ export type Tok =
 
 const isPendingMarks = (marks: Marks | undefined) => !!marks?.some((m) => m.type === PENDING_MARK);
 const withoutPending = (marks: Marks | undefined): Marks => (marks ?? []).filter((m) => m.type !== PENDING_MARK);
-/** Only text and images are additions; line breaks on their own are edits to the document */
-const isPending = (t: Tok) => (t.k === "c" || t.k === "img") && t.pending;
+/** Only text, images and page breaks are additions; line breaks on their own are edits to the document */
+const isPending = (t: Tok) => (t.k === "c" || t.k === "img" || t.k === "pb") && t.pending;
 
 /** Size of a token in Docs indices */
 function sizeOf(t: Tok): number {
@@ -76,6 +79,8 @@ export function tokenize(doc: EditorNode | null | undefined): Tok[] {
         out.push({ k: "img", attrs: child.attrs ?? {}, marks, pending });
       } else if (child.type === "hardBreak") {
         out.push({ k: "br", marks, pending });
+      } else if (child.type === "pageBreak") {
+        out.push({ k: "pb", marks, pending });
       }
     }
     out.push({ k: "nl", attrs: node.attrs ?? {} });
@@ -105,6 +110,7 @@ export function untokenize(tokens: Tok[]): EditorNode {
     flushText();
     if (t.k === "img") inline.push(t.marks.length ? { type: "image", attrs: t.attrs, marks: t.marks } : { type: "image", attrs: t.attrs });
     else if (t.k === "br") inline.push(t.marks.length ? { type: "hardBreak", marks: t.marks } : { type: "hardBreak" });
+    else if (t.k === "pb") inline.push(t.marks.length ? { type: "pageBreak", marks: t.marks } : { type: "pageBreak" });
     else if (t.k === "nl") {
       content.push({ type: "paragraph", attrs: t.attrs, content: inline });
       inline = [];
@@ -122,7 +128,7 @@ export function untokenize(tokens: Tok[]): EditorNode {
 export function signature(doc: EditorNode | null | undefined): string {
   return tokenize(doc)
     .filter((t) => !isPending(t))
-    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "nl" ? "\n" : `\u0000${sizeOf(t)}\u0000`))
+    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "nl" ? "\n" : `\u0000${sizeOf(t)}\u0000`))
     .join("");
 }
 
@@ -348,7 +354,7 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
     if (i < 0) continue;
     const b = base[i];
     const t = target[j];
-    if ((b.k === "c" || b.k === "br" || b.k === "img") && (t.k === "c" || t.k === "br" || t.k === "img")) {
+    if ((b.k === "c" || b.k === "br" || b.k === "img" || b.k === "pb") && (t.k === "c" || t.k === "br" || t.k === "img" || t.k === "pb")) {
       const d = textStyleDiff(styleFromMarks(withoutPending(b.marks)), styleFromMarks(withoutPending(t.marks)));
       if (!d) { flushRun(); continue; }
       const key = JSON.stringify(d);
@@ -404,13 +410,27 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
     const at = index[r.bs];
     if (r.be > r.bs) contentRequests.push({ deleteContentRange: { range: { startIndex: at, endIndex: index[r.be] } } });
     if (r.pending || r.te === r.ts) continue;
-    // Text that came back without being an addition (undoing a deletion): put it back now
-    const inserted = target.slice(r.ts, r.te).filter((t) => t.k !== "block");
+    // Text that came back without being an addition (undoing a deletion): put it back now.
+    // New section breaks and page breaks are inserted as Docs inserts them (each with its newline).
+    const inserted = target.slice(r.ts, r.te).filter((t) => t.k !== "block" || isNewSection(t));
     let text = "";
     const styled: { from: number; to: number; style: DocsRequest }[] = [];
     let pos = at;
     for (let q = 0; q < inserted.length; q++) {
       const t = inserted[q];
+      if (t.k === "block") {
+        if (text) { contentRequests.push({ insertText: { location: { index: pos }, text } }); pos += text.length; text = ""; }
+        contentRequests.push({ insertSectionBreak: { location: { index: pos }, sectionType: t.node.attrs?.sectionType === "continuous" ? "CONTINUOUS" : "NEXT_PAGE" } });
+        pos += 2; // a newline and the break
+        continue;
+      }
+      if (t.k === "pb") {
+        if (text) { contentRequests.push({ insertText: { location: { index: pos }, text } }); pos += text.length; text = ""; }
+        contentRequests.push({ insertPageBreak: { location: { index: pos } } });
+        pos += 2; // the break and the newline Docs adds with it
+        if (inserted[q + 1]?.k === "nl") q++;
+        continue;
+      }
       if (t.k === "img") {
         if (text) { contentRequests.push({ insertText: { location: { index: pos }, text } }); pos += text.length; text = ""; }
         if (typeof t.attrs.src === "string" && /^https:\/\//.test(t.attrs.src)) {
@@ -455,9 +475,14 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
 }
 
 function stripPending(t: Tok): Tok {
-  if (t.k === "c" || t.k === "img" || t.k === "br") return { ...t, marks: withoutPending(t.marks), pending: false };
+  if (t.k === "c" || t.k === "img" || t.k === "br" || t.k === "pb") return { ...t, marks: withoutPending(t.marks), pending: false };
+  // A section break just inserted covers its newline and itself until the document is read again
+  if (isNewSection(t)) return { k: "block", node: { ...t.node, attrs: { ...t.node.attrs, span: 2 } } };
   return t;
 }
+
+/** A section break made in the editor, not yet in the document */
+const isNewSection = (t: Tok): t is Extract<Tok, { k: "block" }> => t.k === "block" && t.node.attrs?.kind === "section" && !t.node.attrs?.bid;
 
 function nextNl(tokens: Tok[], from: number): Extract<Tok, { k: "nl" }> | undefined {
   for (let q = from; q < tokens.length; q++) {
@@ -544,6 +569,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     if (t.k === "block") continue;
     const style = styleFromMarks(withoutPending(t.marks));
     lastStyle = style;
+    if (t.k === "pb") { text += PAGE_BREAK; push(1, style); continue; }
     if (t.k === "img") {
       const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) || 0 : 0);
       const src = typeof t.attrs.src === "string" ? t.attrs.src : "";

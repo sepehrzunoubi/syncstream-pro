@@ -23,6 +23,7 @@ class FakeDoc implements DocsApi {
   tokensSeen = new Set<string>();
   /** Accept inserts anywhere (syncs into an existing document) */
   anywhere = false;
+  pageBreaks = 0;
 
   async snapshot(token: string) {
     this.tokensSeen.add(token);
@@ -61,6 +62,14 @@ class FakeDoc implements DocsApi {
           const pEnd = end < 0 ? this.text.length : end + 1;
           if (p + 1 < endIndex && pEnd + 1 > startIndex) this.text = this.text.slice(0, p) + this.text.slice(p).replace(/^\t+/, "");
         }
+      }
+      if (r.insertPageBreak?.location) {
+        // Like Docs: a page break followed by a newline
+        const i = r.insertPageBreak.location.index;
+        this.text = this.text.slice(0, i - 1) + "\u000C\n" + this.text.slice(i - 1);
+        this.pageBreaks++;
+        first = false;
+        continue;
       }
       if (!ins) { this.styling.push(r); continue; }
       const index = ins.location!.index;
@@ -728,4 +737,16 @@ test("nested list items are typed at their level: tabs set the level and Docs re
   assert.equal(creates[0].bulletPreset, "BULLET_DISC_CIRCLE_SQUARE");
   // The last re-creation covers the whole list plus the three tabs Docs removes
   assert.deepEqual(creates[creates.length - 1].range, { startIndex: 1, endIndex: text.length + 1 + 3 });
+});
+
+test("a page break in the text is typed with insertPageBreak, which adds its newline", async () => {
+  const content = [{ type: "paragraph", content: [{ type: "text", text: "Intro" }, { type: "pageBreak" }] }, { type: "paragraph", content: [{ type: "text", text: "Next page" }] }];
+  const { h, text, batches } = await formattedHarness(content, [
+    { kind: "insert", text: "Intro\u000C\n", delayMs: 0, activity: "Typing" },
+    { kind: "insert", text: "Next page", delayMs: 400, activity: "Typing" },
+  ]);
+  assert.equal(text, "Intro\u000C\nNext page");
+  assert.equal(h.doc.text, text, "the break and its newline occupy the two indices the source counts");
+  const kinds = batches[0].reqs.map((r) => Object.keys(r)[0]);
+  assert.ok(batches[0].text === "Intro" && h.doc.pageBreaks === 1 && !kinds.includes("insertText"), "one insertText for Intro then insertPageBreak");
 });

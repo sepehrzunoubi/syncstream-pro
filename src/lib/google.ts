@@ -127,8 +127,9 @@ export function snapshotOf(data: docs_v1.Schema$Document, tailChars = 400): DocS
   for (const element of content) {
     for (const el of element.paragraph?.elements ?? []) {
       if (el.textRun?.content) text += el.textRun.content;
-      // An inline image occupies one index, like the placeholder in our source text
+      // An inline image or page break occupies one index, like the placeholder in our source text
       else if (el.inlineObjectElement) text += "\uFFFC";
+      else if (el.pageBreak) text += "\u000C";
     }
   }
   const chars = indexedText(data);

@@ -398,6 +398,13 @@
 /* Parts of the document the editor can't change: tables, smart chips, section breaks */
 .ss-doc p[data-locked] { cursor: default; color: #3c4043; box-shadow: -10px 0 0 #fff, -12px 0 0 #dadce0; }
 .ss-doc p[data-kind="section"] { height: 0; margin: 10pt 0; border-top: 1px dashed #dadce0; box-shadow: none; }
+/* A page break: invisible on pages (the text just moves), a labelled dashed line when pageless */
+.ss-doc .ss-page-break { display: inline-block; width: 0; height: 0; overflow: hidden; vertical-align: baseline; }
+.ss-doc .ss-page-break.ProseMirror-selectednode { outline: 2px solid var(--ss-blue); }
+.ss-pageless .ss-doc .ss-page-break { display: block; width: auto; height: auto; overflow: visible; margin: 6pt 0; border-top: 1px dashed #dadce0; text-align: center; }
+.ss-pageless .ss-doc .ss-page-break-label { position: relative; top: -9px; padding: 0 8px; background: var(--ss-page-color, #fff); font-size: 10px; color: var(--ss-text-3); }
+.ss-doc .ss-page-break-label { display: none; }
+.ss-pageless .ss-doc .ss-page-break-label { display: inline; }
 
 /* New text: glows until a sync types it into the Google Doc */
 .ss-doc.ss-glow .ss-add {

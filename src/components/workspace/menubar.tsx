@@ -165,6 +165,12 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item onSelect={() => window.dispatchEvent(new CustomEvent("ss-image-url"))}>By URL</Item>
         </Sub>
         <Item disabled={off} shortcut={`${mod}K`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-open-link"))}>Link</Item>
+        <Sep />
+        <Sub label="Break" disabled={off}>
+          <Item shortcut={`${mod}Enter`} onSelect={() => run((c) => c.insertPageBreak())}>Page break</Item>
+          <Item onSelect={() => run((c) => c.insertSectionBreak("next"))}>Section break (next page)</Item>
+          <Item onSelect={() => run((c) => c.insertSectionBreak("continuous"))}>Section break (continuous)</Item>
+        </Sub>
       </TopMenu>
 
       <TopMenu label="Format">

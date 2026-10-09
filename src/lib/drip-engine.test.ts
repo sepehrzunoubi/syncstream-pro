@@ -139,3 +139,17 @@ test("boundaries: no action crosses a jump to another spot", async () => {
     assert.equal(pos, text.length);
   }
 });
+
+test("a page break is never split from its newline, and never gets a typo", async () => {
+  const { buildDripPlan } = await import("./drip-engine");
+  const text = "First page ends here.\u000C\nSecond page starts here and goes on for a while.\u000C\nThird.";
+  for (let seed = 1; seed <= 40; seed++) {
+    const plan = buildDripPlan(text, { seed, breaks: [], typoFrequency: 1 });
+    for (const a of plan.actions) {
+      if (a.kind === "pause") continue;
+      assert.ok(!a.text.endsWith("\u000C"), `seed ${seed}: a chunk ends on the break`);
+      if (a.kind === "typo") assert.ok(!a.text.includes("\u000C"), `seed ${seed}: a typo over a break`);
+    }
+    assert.equal(plan.actions.filter((a) => a.kind !== "pause").map((a) => a.text).join(""), text);
+  }
+});

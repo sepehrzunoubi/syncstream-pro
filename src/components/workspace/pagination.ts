@@ -132,6 +132,8 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
   const flowTop = new Map<HTMLElement, number>();
   let lastBreakPara = -1;
   let ci = -1;
+  // After a page break, or a next-page section break, the next paragraph starts a page
+  let forceNext = false;
 
   for (const child of all) {
     // Our own gaps are not part of the flow
@@ -143,6 +145,13 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
     const top = toLocal(r.top) - removed;
     const bottom = toLocal(r.bottom) - removed - innerTotal;
     flowTop.set(child, top);
+    const forced = forceNext;
+    forceNext = !!child.querySelector("[data-page-break]") || (child.getAttribute("data-kind") === "section" && child.getAttribute("data-section") !== "continuous");
+    if (forced && top > pageStart + 1) {
+      breaks.push({ pos: view.posAtDOM(child, 0) - 1, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
+      pageStart = top;
+      lastBreakPara = ci;
+    }
     if (bottom - pageStart <= CONTENT_H + 0.5) { removed += innerTotal; continue; }
     const keep = keepOf(child);
     const fits = bottom - top <= CONTENT_H;

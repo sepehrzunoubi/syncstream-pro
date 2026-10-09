@@ -149,3 +149,25 @@ test("indenting a list item re-makes its whole list with each item at its level"
   assert.deepEqual(create.createParagraphBullets.range, { startIndex: 1, endIndex: 16 }, "the run plus the tab Docs will remove");
   assert.ok(requests.indexOf(tab) < requests.indexOf(create) && requests.indexOf(del) < requests.indexOf(tab));
 });
+
+test("page breaks and section breaks are saved as Docs inserts them", async () => {
+  const { directEdits, additions, signature } = await import("./doc-model");
+  const p = (content: Record<string, unknown>[], attrs: Record<string, unknown> = {}) => ({ type: "paragraph", attrs, content });
+  const t = (text: string) => ({ type: "text", text });
+  const base = { type: "doc", content: [p([t("one two")]), p([t("three")])] };
+  // Ctrl+Enter after "one": the paragraph splits with a page break at the end of the first half
+  const target = { type: "doc", content: [p([t("one"), { type: "pageBreak" }]), p([t(" two")]), p([t("three")])] };
+  const { requests, saved } = directEdits(base, target);
+  assert.deepEqual(requests, [{ insertPageBreak: { location: { index: 4 } } }]);
+  assert.equal(signature(saved), "one\u000C\n two\nthree\n");
+  // A section break after the first paragraph
+  const withSection = { type: "doc", content: [p([t("one two")]), p([], { locked: true, kind: "section", sectionType: "continuous" }), p([t("three")])] };
+  const r2 = directEdits(base, withSection);
+  assert.deepEqual(r2.requests, [{ insertSectionBreak: { location: { index: 9 }, sectionType: "CONTINUOUS" } }]);
+  assert.equal(r2.saved.content?.[1].attrs?.span, 2, "covers its newline and itself until the document is read again");
+  // A page break typed inside an addition travels with the text as a form feed and newline
+  const added = { type: "doc", content: [p([t("one two")]), p([t("three"), { type: "text", text: "new", marks: [{ type: "syncAdd" }] }, { type: "pageBreak", marks: [{ type: "syncAdd" }] }]), p([{ type: "text", text: "next page", marks: [{ type: "syncAdd" }] }])] };
+  const { segments } = additions(base, added);
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].text, "new\u000C\nnext page");
+});

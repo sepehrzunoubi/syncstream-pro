@@ -10,7 +10,7 @@
 
 import type { docs_v1 } from "googleapis";
 import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
-import { BORDER_SIDES, DEFAULT_FONT, NAMED_STYLES, OBJ, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
+import { BORDER_SIDES, DEFAULT_FONT, NAMED_STYLES, OBJ, PAGE_BREAK, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
 type Element = docs_v1.Schema$StructuralElement;
@@ -56,6 +56,7 @@ export function indexedText(doc: Doc): string {
           const at = pe.startIndex ?? 0;
           if (pe.textRun?.content) put(at, pe.textRun.content);
           else if (pe.inlineObjectElement) put(at, OBJ);
+          else if (pe.pageBreak) put(at, PAGE_BREAK);
         }
       } else if (el.table) {
         for (const row of el.table.tableRows ?? []) for (const cell of row.tableCells ?? []) walk(cell.content ?? []);
@@ -207,8 +208,10 @@ export function importDoc(doc: Doc): ImportedDoc {
         content.push(textNode(rl.title || rl.uri || "link", rl.uri ? [{ type: "link", attrs: { href: rl.uri } }] : []));
         hasContent = true;
         unsupported = true;
+      } else if (pe.pageBreak) {
+        content.push({ type: "pageBreak" });
       } else if (!pe.textRun) {
-        // Page breaks, footnote references, equations and the like: shown, not editable
+        // Footnote references, equations and the like: shown, not editable
         unsupported = true;
       }
     }
@@ -286,7 +289,8 @@ export function importDoc(doc: Doc): ImportedDoc {
       if (!cells.length) cells.push({ type: "paragraph", attrs: {}, content: [] });
       cells.forEach((c, k) => nodes.push(lock(c, k === 0 ? size : 0)));
     } else if (el.sectionBreak && i > 0) {
-      nodes.push(lock({ type: "paragraph", attrs: { kind: "section" }, content: [] }, size));
+      const sectionType = el.sectionBreak.sectionStyle?.sectionType === "CONTINUOUS" ? "continuous" : "next";
+      nodes.push(lock({ type: "paragraph", attrs: { kind: "section", sectionType }, content: [] }, size));
     }
   }
 
