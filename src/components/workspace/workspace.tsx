@@ -18,6 +18,7 @@ import { PagedSurface } from "./paged-surface";
 import { PageSetupDialog } from "./page-setup-dialog";
 import { installLineMetrics } from "./line-metrics";
 import { BordersDialog, CustomSpacingDialog } from "./format-dialogs";
+import { FindBar } from "./find-bar";
 import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
 import { ProgressMarks, progressKey } from "./pagination";
@@ -283,6 +284,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   const geometry = useMemo(() => pageGeometry(pageSetup), [pageSetup]);
   useEffect(() => { installLineMetrics(); }, []);
+  useEffect(() => {
+    const onHint = () => setSnack(`Use ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}V to paste, or ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}Shift+V to paste without formatting`);
+    window.addEventListener("ss-paste-hint", onHint);
+    return () => window.removeEventListener("ss-paste-hint", onHint);
+  }, []);
   // "Fit" zoom: shrink the page to the space between the side columns.
   // Below 720px the page reflows instead (see docs.css), so no scaling there.
   useEffect(() => {
@@ -996,6 +1002,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         </AnimatePresence>
 
         <main ref={canvasRef} className="ss-canvas min-w-0 flex-none lg:h-full lg:flex-1">
+          <FindBar editor={editor} />
           <div className="ss-ruler-row">
             <div style={{ zoom: scale }}>
               <Ruler editor={focusedJob ? viewer : editor} disabled={!!focusedJob} geometry={geometry} />

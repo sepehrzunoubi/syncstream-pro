@@ -747,4 +747,13 @@
 .ss-color-select:hover { border-color: var(--ss-text); }
 .ss-color-dot { width: 20px; height: 20px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.2); }
 .ss-btn-quiet { color: var(--ss-text-2); }
+/* Find */
+.ss-find-bar { position: absolute; top: 8px; right: 16px; z-index: 20; display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; border-radius: 8px; background: var(--ss-surface); box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 4px 8px 3px rgba(0,0,0,.15); }
+.ss-find-input { width: 220px; height: 32px; border: none; outline: none; background: transparent; font: inherit; color: var(--ss-text); }
+.ss-find-count { min-width: 64px; padding: 0 8px; font-size: 12px; color: var(--ss-text-3); text-align: right; white-space: nowrap; }
+.ss-find-none { color: var(--ss-danger); }
+.ss-doc .ss-find-match { background: #fff2a8; border-radius: 2px; }
+.ss-doc .ss-find-current { background: #f9ab00; border-radius: 2px; }
+.ss-checkbox { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.ss-checkbox input { width: 18px; height: 18px; accent-color: var(--ss-blue); }
 .ss-btn-quiet:hover:not(:disabled) { background: var(--ss-hover); }

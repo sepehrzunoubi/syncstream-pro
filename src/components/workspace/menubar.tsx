@@ -138,7 +138,15 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item disabled={off || !st?.canUndo} shortcut={`${mod}Z`} onSelect={() => run((c) => c.undo())}>Undo</Item>
         <Item disabled={off || !st?.canRedo} shortcut={`${mod}Y`} onSelect={() => run((c) => c.redo())}>Redo</Item>
         <Sep />
+        <Item disabled={off} shortcut={`${mod}X`} onSelect={() => { p.editor?.commands.focus(); document.execCommand("cut"); }}>Cut</Item>
+        <Item disabled={off} shortcut={`${mod}C`} onSelect={() => { p.editor?.commands.focus(); document.execCommand("copy"); }}>Copy</Item>
+        <Item disabled={off} shortcut={`${mod}V`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-paste-hint"))}>Paste</Item>
+        <Item disabled={off} shortcut={`${mod}Shift+V`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-paste-hint"))}>Paste without formatting</Item>
+        <Item disabled={off} onSelect={() => run((c) => c.deleteSelection())}>Delete</Item>
+        <Sep />
         <Item disabled={off} shortcut={`${mod}A`} onSelect={() => run((c) => c.selectAll())}>Select all</Item>
+        <Sep />
+        <Item disabled={off} shortcut={`${mod}H`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-find", { detail: "dialog" }))}>Find and replace</Item>
       </TopMenu>
 
       <TopMenu label="View">

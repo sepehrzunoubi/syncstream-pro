@@ -8,6 +8,7 @@ import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
 import { DocSync, SyncAdd } from "./doc-sync";
+import { Find } from "./find";
 import TextAlign from "@tiptap/extension-text-align";
 import {
   cssColorToHex,
@@ -701,6 +702,7 @@ export const editorExtensions = [
   SyncAdd,
   DocSync,
   ClipboardHTML,
+  Find,
 ];
 
 type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; backgroundColor?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string; verticalAlign?: string };
