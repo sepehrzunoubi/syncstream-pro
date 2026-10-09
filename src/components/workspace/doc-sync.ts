@@ -15,7 +15,7 @@ import { listLabels } from "@/lib/list-labels";
 import { AddMarkStep, AttrStep, RemoveMarkStep, ReplaceStep } from "@tiptap/pm/transform";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { EditorNode } from "@/lib/rich-text";
-import { PENDING_MARK } from "@/lib/doc-model";
+import { PENDING_MARK, groupColumns } from "@/lib/doc-model";
 
 /** Transactions that load a document: not additions, not undoable */
 export const LOAD_META = "ssLoad";
@@ -42,7 +42,7 @@ const isLocked = (node: PMNode) => node.attrs.locked === true;
 
 function lockedRanges(doc: PMNode): [number, number][] {
   const ranges: [number, number][] = [];
-  doc.forEach((node, pos) => { if (isLocked(node)) ranges.push([pos, pos + node.nodeSize]); });
+  doc.descendants((node, pos) => { if (isLocked(node)) { ranges.push([pos, pos + node.nodeSize]); return false; } return node.type.name === "columnSection"; });
   return ranges;
 }
 
@@ -87,7 +87,10 @@ export function setGlow(editor: Editor, glow: boolean) {
 /** List numbers as Docs shows them, drawn as decorations so they follow every edit */
 function labelDecorations(doc: PMNode): DecorationSet {
   const paras: { pos: number; node: PMNode }[] = [];
-  doc.forEach((node, pos) => paras.push({ pos, node }));
+  doc.forEach((node, pos) => {
+    if (node.type.name === "columnSection") node.forEach((child, offset) => paras.push({ pos: pos + 1 + offset, node: child }));
+    else paras.push({ pos, node });
+  });
   const labels = listLabels(paras.map(({ node }) => node.attrs as { list?: string; listId?: string; level?: number }));
   const decos: Decoration[] = [];
   paras.forEach(({ pos, node }, i) => {
@@ -147,6 +150,15 @@ export const DocSync = Extension.create({
         },
         // Whatever is typed or pasted becomes an addition; text dragged within the document keeps what it was
         appendTransaction(transactions, _old, newState) {
+          // A column layout change regroups the document's blocks into column sections
+          if (transactions.some((tr) => tr.getMeta("ssRegroup"))) {
+            const json = newState.doc.toJSON() as EditorNode;
+            const flat: EditorNode[] = [];
+            for (const n of json.content ?? []) { if (n.type === "columnSection") flat.push(...(n.content ?? [])); else flat.push(n); }
+            const regrouped = newState.schema.nodeFromJSON({ type: "doc", content: groupColumns(flat) });
+            const tr = newState.tr.replaceWith(0, newState.doc.content.size, regrouped.content).setMeta("ssAddMarked", true).setMeta("addToHistory", false);
+            return tr;
+          }
           const type = pendingType(newState);
           if (!type) return null;
           const ranges: [number, number][] = [];

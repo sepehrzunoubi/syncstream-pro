@@ -171,3 +171,18 @@ test("headers, footers and footnotes are read as their own segments", async () =
   assert.deepEqual(body.content?.[1], { type: "footnoteRef", attrs: { fid: "kix.fn1", n: "1" } });
   assert.equal(body.attrs?.locked, undefined, "a paragraph with a footnote reference stays editable");
 });
+
+test("section breaks are read with their column layout, the first as a hidden marker", async () => {
+  const { importDoc } = await import("./doc-import");
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex)], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  const cols = { columnProperties: [{ width: { magnitude: 225, unit: "PT" }, paddingEnd: { magnitude: 18, unit: "PT" } }, { width: { magnitude: 225, unit: "PT" }, paddingEnd: { magnitude: 0, unit: "PT" } }], columnSeparatorStyle: "BETWEEN_EACH_COLUMN", sectionType: "CONTINUOUS" };
+  const doc = { revisionId: "r", body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: {} } }, para("Title\n", 1), { startIndex: 7, endIndex: 9, sectionBreak: { sectionStyle: cols } }, para("Body\n", 9)] } };
+  const { nodes } = importDoc(doc as never);
+  assert.equal(nodes[0].content?.[0].text, "Title", "a one-column first section needs no marker");
+  assert.deepEqual(nodes[1].attrs, { kind: "section", sectionType: "continuous", columns: 2, spacing: 18, line: true, locked: true, span: 2, bid: "b1" });
+  // A first section in columns gets a hidden marker that occupies no indices
+  const twoColFirst = { ...doc, body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: cols } }, para("Title\n", 1)] } };
+  const { nodes: n2 } = importDoc(twoColFirst as never);
+  assert.deepEqual(n2[0].attrs, { kind: "section", first: true, sectionType: "continuous", columns: 2, spacing: 18, line: true, locked: true, span: 0, bid: "b1" });
+});

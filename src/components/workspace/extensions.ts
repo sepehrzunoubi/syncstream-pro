@@ -64,6 +64,8 @@ declare module "@tiptap/core" {
       insertSectionBreak: (type: "next" | "continuous") => ReturnType;
       /** Docs' Ctrl+Alt+F: a footnote reference here; Docs creates the footnote when it is saved */
       insertFootnote: () => ReturnType;
+      /** Format > Columns for the section the selection is in; textWidth in points */
+      setColumns: (layout: { columns: number; spacing?: number; line?: boolean; textWidth: number }) => ReturnType;
     };
   }
 }
@@ -184,6 +186,12 @@ const DocParagraph = Paragraph.extend({
         parseHTML: () => null,
         renderHTML: (a: { sectionType?: string | null }) => (a.sectionType ? { "data-section": a.sectionType } : {}),
       },
+      /** The document's first section has a hidden marker; its columns live here too */
+      first: { default: null, keepOnSplit: false, parseHTML: () => null, renderHTML: (a: { first?: boolean | null }) => (a.first ? { "data-first": "" } : {}) },
+      columns: { default: null, keepOnSplit: false, parseHTML: () => null, rendered: false },
+      spacing: { default: null, keepOnSplit: false, parseHTML: () => null, rendered: false },
+      line: { default: null, keepOnSplit: false, parseHTML: () => null, rendered: false },
+      textWidth: { default: null, keepOnSplit: false, parseHTML: () => null, rendered: false },
       /** Which Docs list a paragraph belongs to, its level, and what Docs draws for it (labels are decorations) */
       listId: { default: null, parseHTML: () => null, rendered: false },
       level: {
@@ -467,6 +475,24 @@ const DocFormat = Extension.create({
         if (state.selection.$from.parent.attrs.locked) return false;
         return chain().insertContent({ type: "pageBreak" }).splitBlock().run();
       },
+      setColumns: (layout) => ({ tr, state, dispatch }) => {
+        // The section marker before the selection (the first section's hidden one is made if missing)
+        const { $from } = state.selection;
+        const top = $from.depth ? $from.before(1) : $from.pos;
+        let markerPos: number | null = null;
+        state.doc.forEach((node, pos) => { if (pos <= top && node.type.name === "paragraph" && node.attrs.kind === "section") markerPos = pos; });
+        const attrs = { columns: Math.max(1, Math.min(3, layout.columns)), spacing: layout.spacing ?? 36, line: layout.line ?? false, textWidth: layout.textWidth };
+        if (markerPos == null) {
+          const marker = state.schema.nodes.paragraph.create({ locked: true, kind: "section", first: true, span: 0, sectionType: "next", ...attrs });
+          tr.insert(0, marker);
+        } else {
+          const node = state.doc.nodeAt(markerPos)!;
+          tr.setNodeMarkup(markerPos, undefined, { ...node.attrs, ...attrs });
+        }
+        tr.setMeta("ssRegroup", true);
+        if (dispatch) dispatch(tr);
+        return true;
+      },
       insertFootnote: () => ({ chain, state }) => {
         if (state.selection.$from.parent.attrs.locked || state.selection.$from.parent.type.name !== "paragraph") return false;
         return chain().insertContent({ type: "footnoteRef", attrs: { fid: null } }).run();
@@ -714,6 +740,25 @@ const DocTableCell = TableCell.extend({
 // Header cells from pasted HTML become ordinary cells (Docs has none)
 const DocTableHeader = TableHeader.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("cid"), ...spanAttr }; } });
 
+/**
+ * The blocks of a section laid out in columns. Only a view: the document
+ * model sees its children as ordinary blocks after the section break.
+ */
+const ColumnSection = Node.create({
+  name: "columnSection",
+  group: "block",
+  content: "(paragraph | table)+",
+  addAttributes() {
+    return {
+      columns: { default: 2, parseHTML: () => null, rendered: false },
+      spacing: { default: 36, parseHTML: () => null, rendered: false },
+      line: { default: false, parseHTML: () => null, rendered: false },
+    };
+  },
+  parseHTML: () => [{ tag: "div[data-columns]" }],
+  renderHTML: ({ node }) => ["div", { "data-columns": String(node.attrs.columns), class: "ss-section-cols", style: `--ss-cols: ${node.attrs.columns}; --ss-col-gap: ${node.attrs.spacing}pt; --ss-col-rule: ${node.attrs.line ? "1px solid #000" : "none"}` }, 0],
+});
+
 /** A footnote's reference in the text: a superscript number. Its text lives in the footnote editor. */
 const FootnoteRef = Node.create({
   name: "footnoteRef",
@@ -822,6 +867,7 @@ export const editorExtensions = [
   Subscript,
   PageBreak,
   FootnoteRef,
+  ColumnSection,
   DocTable,
   DocTableRow,
   DocTableCell,

@@ -223,3 +223,32 @@ test("a header's edits are saved in its own segment, from index 0, never as addi
     assert.equal((body.range ?? body.location)?.segmentId, "kix.h1");
   }
 });
+
+test("columns: sections group into column sections for the editor and restyle the section in Docs", async () => {
+  const { tokenize, untokenize, directEdits } = await import("./doc-model");
+  const p = (text: string) => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] });
+  const first = (columns: number) => ({ type: "paragraph", attrs: { kind: "section", first: true, locked: true, span: 0, bid: "b0", columns, spacing: 36, line: false, textWidth: 468 }, content: [] });
+  const brk = (columns: number) => ({ type: "paragraph", attrs: { kind: "section", locked: true, span: 2, bid: "b1", columns, spacing: 18, line: true, textWidth: 468 }, content: [] });
+  const flat = { type: "doc", content: [first(1), p("Title"), brk(2), p("Left"), p("Right")] };
+  const grouped = untokenize(tokenize(flat));
+  assert.equal(grouped.content?.length, 4);
+  assert.equal(grouped.content?.[3].type, "columnSection");
+  assert.deepEqual(grouped.content?.[3].attrs, { columns: 2, spacing: 18, line: true });
+  assert.equal(grouped.content?.[3].content?.length, 2);
+  assert.deepEqual(tokenize(grouped), tokenize(flat), "the grouping changes nothing in the document");
+  // Setting the first section to two columns: updateSectionStyle over its content, up to the break
+  const twoCols = { type: "doc", content: [first(2), p("Title"), brk(2), p("Left"), p("Right")] };
+  const { requests } = directEdits(flat, twoCols);
+  assert.deepEqual(requests, [{
+    updateSectionStyle: {
+      range: { startIndex: 1, endIndex: 7 },
+      sectionStyle: { columnProperties: [{ width: { magnitude: 216, unit: "PT" }, paddingEnd: { magnitude: 36, unit: "PT" } }, { width: { magnitude: 216, unit: "PT" }, paddingEnd: { magnitude: 0, unit: "PT" } }], columnSeparatorStyle: "NONE" },
+      fields: "columnProperties,columnSeparatorStyle",
+    },
+  }]);
+  // Back to one column in the second section: an empty column list
+  const oneCol = { type: "doc", content: [first(1), p("Title"), { ...brk(1), attrs: { ...brk(1).attrs, columns: 1 } }, p("Left"), p("Right")] };
+  const r2 = directEdits(flat, oneCol).requests[0].updateSectionStyle as { range: { startIndex: number; endIndex: number }; sectionStyle: { columnProperties: unknown[] } };
+  assert.deepEqual(r2.range, { startIndex: 9, endIndex: 20 });
+  assert.deepEqual(r2.sectionStyle.columnProperties, []);
+});

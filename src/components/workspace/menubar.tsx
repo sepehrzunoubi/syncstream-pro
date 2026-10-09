@@ -101,6 +101,7 @@ interface DocsMenubarProps {
   onCustomSpacing: () => void;
   onBorders: () => void;
   onHeaderFooter: (which: "header" | "footer") => void;
+  onColumns: (columns: number | "options") => void;
   /** Headers, footers and footnotes need an open Google Doc */
   docOpen: boolean;
 }
@@ -133,6 +134,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         list: (para.list as string | null) ?? null,
         preset: (para.preset as string | null) ?? null,
         inTable: e.isActive("table"),
+        columns: (e.getAttributes("columnSection").columns as number | undefined) ?? 1,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
       };
@@ -266,6 +268,13 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item checkable checked={st?.list === "check"} shortcut={`${mod}Shift+9`} onSelect={() => run((c) => c.toggleList("check"))}>Checklist</Item>
           <Item checkable checked={st?.list === "bullet"} shortcut={`${mod}Shift+8`} onSelect={() => run((c) => c.toggleList("bullet"))}>Bulleted list</Item>
           <Item checkable checked={st?.list === "ordered"} shortcut={`${mod}Shift+7`} onSelect={() => run((c) => c.toggleList("ordered"))}>Numbered list</Item>
+        </Sub>
+        <Sub label="Columns" disabled={off || !p.docOpen}>
+          {[1, 2, 3].map((n) => (
+            <Item key={n} checkable checked={st?.columns === n} onSelect={() => p.onColumns(n)}>{n === 1 ? "One column" : n === 2 ? "Two columns" : "Three columns"}</Item>
+          ))}
+          <Sep />
+          <Item onSelect={() => p.onColumns("options")}>More options</Item>
         </Sub>
         <Sub label="Line & paragraph spacing" disabled={off}>
           {LINE_SPACINGS.map((ls) => (

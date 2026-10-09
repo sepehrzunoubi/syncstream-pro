@@ -357,9 +357,17 @@ export function importDoc(doc: Doc): ImportedDoc {
       cellParagraphs([el], cells);
       if (!cells.length) cells.push({ type: "paragraph", attrs: {}, content: [] });
       cells.forEach((c, k) => nodes.push(lock(c, k === 0 ? size : 0)));
-    } else if (el.sectionBreak && i > 0) {
-      const sectionType = el.sectionBreak.sectionStyle?.sectionType === "CONTINUOUS" ? "continuous" : "next";
-      nodes.push(lock({ type: "paragraph", attrs: { kind: "section", sectionType }, content: [] }, size));
+    } else if (el.sectionBreak) {
+      const style = el.sectionBreak.sectionStyle ?? {};
+      const cols = style.columnProperties ?? [];
+      const columns = Math.max(1, cols.length);
+      const spacing = columns > 1 ? pt(cols[0]?.paddingEnd) ?? 36 : 36;
+      const line = style.columnSeparatorStyle === "BETWEEN_EACH_COLUMN";
+      const sectionType = style.sectionType === "CONTINUOUS" ? "continuous" : "next";
+      // The document's first section break is index 0, which the body's indices already start after:
+      // it only needs a (hidden) marker when it lays its section out in columns
+      if (i === 0) { if (columns > 1) nodes.push(lock({ type: "paragraph", attrs: { kind: "section", first: true, sectionType, columns, spacing, line }, content: [] }, 0)); }
+      else nodes.push(lock({ type: "paragraph", attrs: { kind: "section", sectionType, columns, spacing, line }, content: [] }, size));
     }
   }
 

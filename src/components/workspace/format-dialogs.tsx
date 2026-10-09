@@ -139,3 +139,46 @@ export function BordersDialog({ editor, open, onClose }: { editor: Editor | null
     </Dialog>
   );
 }
+
+/** Format > Columns > More options */
+export function ColumnsDialog({ editor, open, onClose, textWidth }: { editor: Editor | null; open: boolean; onClose: () => void; textWidth: number }) {
+  const [columns, setColumns] = useState(1);
+  const [spacing, setSpacing] = useState("0.5");
+  const [line, setLine] = useState(false);
+  useEffect(() => {
+    if (!open || !editor) return;
+    const a = editor.getAttributes("columnSection");
+    setColumns((a.columns as number | undefined) ?? 1);
+    setSpacing(String(Math.round((((a.spacing as number | undefined) ?? 36) / 72) * 100) / 100));
+    setLine(a.line === true);
+  }, [open, editor]);
+  const ok = Number.isFinite(num(spacing)) && num(spacing) >= 0;
+  const apply = () => {
+    if (!editor || !ok) return;
+    editor.chain().focus().setColumns({ columns, spacing: num(spacing) * 72, line, textWidth }).run();
+    onClose();
+  };
+  return (
+    <Dialog open={open} title="Column options" onClose={onClose} onSubmit={apply} width={360} footer={
+      <>
+        <span className="flex-1" />
+        <button type="button" className="ss-btn ss-btn-text" onClick={onClose}>Cancel</button>
+        <button type="submit" className="ss-btn ss-btn-filled" disabled={!ok}>Apply</button>
+      </>
+    }>
+      <div className="flex flex-col gap-5">
+        <label className="block">
+          <span className="ss-field-label">Number of columns</span>
+          <select className="ss-select" value={String(columns)} onChange={(e) => setColumns(parseInt(e.target.value, 10))}>
+            {[1, 2, 3].map((n) => <option key={n} value={String(n)}>{n}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="ss-field-label">Spacing (inches)</span>
+          <input className="ss-input" inputMode="decimal" value={spacing} onChange={(e) => setSpacing(e.target.value)} aria-label="Spacing in inches" style={{ width: 120 }} />
+        </label>
+        <label className="ss-checkbox"><input type="checkbox" checked={line} onChange={(e) => setLine(e.target.checked)} /> Line between columns</label>
+      </div>
+    </Dialog>
+  );
+}

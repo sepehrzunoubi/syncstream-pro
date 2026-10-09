@@ -99,7 +99,13 @@ export function tokenize(doc: EditorNode | null | undefined): Tok[] {
     }
     out.push({ k: "nl", attrs: node.attrs ?? {} });
   };
+  const blocks: EditorNode[] = [];
+  // A column section only groups what follows a section break; its children are the document's blocks
   for (const node of doc?.content ?? []) {
+    if (node.type === "columnSection") blocks.push(...(node.content ?? []));
+    else blocks.push(node);
+  }
+  for (const node of blocks) {
     if (node.type !== "table") { paragraph(node); continue; }
     // A table: its start, then each row's start, each cell's start and content, with ends after each
     const tid = typeof node.attrs?.tid === "string" ? node.attrs.tid : `new${++newTableSeq}`;
@@ -173,8 +179,49 @@ export function untokenize(tokens: Tok[]): EditorNode {
   flushInline();
   while (stack.length > 1) { const cell = stack.pop()!; if (!cell.length) cell.push({ type: "paragraph", attrs: {}, content: [] }); }
   if (!root.length) root.push({ type: "paragraph" });
-  return { type: "doc", content: root };
+  return { type: "doc", content: groupColumns(root) };
 }
+
+const isSectionMarker = (n: EditorNode) => n.type === "paragraph" && n.attrs?.kind === "section";
+
+/** The blocks after a section break with columns go in a column section, up to the next break */
+export function groupColumns(blocks: EditorNode[]): EditorNode[] {
+  const out: EditorNode[] = [];
+  let open: EditorNode | null = null;
+  for (const b of blocks) {
+    if (isSectionMarker(b)) {
+      open = null;
+      out.push(b);
+      const columns = typeof b.attrs?.columns === "number" ? b.attrs.columns : 1;
+      if (columns > 1) {
+        open = { type: "columnSection", attrs: { columns, spacing: typeof b.attrs?.spacing === "number" ? b.attrs.spacing : 36, line: b.attrs?.line === true }, content: [] };
+        out.push(open);
+      }
+      continue;
+    }
+    if (open) open.content!.push(b);
+    else out.push(b);
+  }
+  return out.filter((n) => n.type !== "columnSection" || (n.content?.length ?? 0) > 0);
+}
+
+/** The column layout of a section, as updateSectionStyle wants it */
+export function sectionStyleRequest(attrs: Record<string, unknown>, startIndex: number, endIndex: number): DocsRequest {
+  const columns = Math.max(1, Math.min(3, typeof attrs.columns === "number" ? attrs.columns : 1));
+  const spacing = typeof attrs.spacing === "number" ? attrs.spacing : 36;
+  const textWidth = typeof attrs.textWidth === "number" ? attrs.textWidth : 468;
+  const width = Math.max(36, (textWidth - spacing * (columns - 1)) / columns);
+  const columnProperties = Array.from({ length: columns }, (_, i) => ({ width: { magnitude: Math.round(width * 100) / 100, unit: "PT" }, paddingEnd: { magnitude: i < columns - 1 ? spacing : 0, unit: "PT" } }));
+  return {
+    updateSectionStyle: {
+      range: { startIndex, endIndex },
+      sectionStyle: { columnProperties: columns > 1 ? columnProperties : [], columnSeparatorStyle: columns > 1 && attrs.line === true ? "BETWEEN_EACH_COLUMN" : "NONE" },
+      fields: "columnProperties,columnSeparatorStyle",
+    },
+  };
+}
+
+const columnKey = (attrs: Record<string, unknown> | undefined) => JSON.stringify([attrs?.columns ?? 1, attrs?.spacing ?? 36, attrs?.line === true]);
 
 /** The document's characters and structure, ignoring formatting: equal when two copies read the same */
 export function signature(doc: EditorNode | null | undefined): string {
@@ -488,6 +535,28 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const structure = tableStructureRequests(base, target, index);
   if (structure.length) return { requests: structure, saved: baseDoc, structural: true };
 
+  // Column layouts: a section whose marker's columns changed is restyled over its content
+  const sectionRequests: DocsRequest[] = [];
+  if (firstIndex === 1) {
+    const markers = target.map((t, j) => ({ t, j })).filter(({ t }) => t.k === "block" && t.node.attrs?.kind === "section");
+    for (const { t, j } of markers) {
+      const node = (t as Extract<Tok, { k: "block" }>).node;
+      const i = match[j];
+      const baseAttrs = i >= 0 && base[i].k === "block" ? (base[i] as Extract<Tok, { k: "block" }>).node.attrs : undefined;
+      const changed = i >= 0 ? columnKey(baseAttrs) !== columnKey(node.attrs) : node.attrs?.first === true && (node.attrs?.columns as number ?? 1) > 1;
+      if (!changed) continue;
+      // The section runs from just after its break to the next one (or the end)
+      let start = i >= 0 ? index[i] + sizeOf(base[i]) : 1;
+      let end = index[base.length];
+      for (let q = (i >= 0 ? i : -1) + 1; q < base.length; q++) {
+        const b = base[q];
+        if (b.k === "block" && b.node.attrs?.kind === "section" && !b.node.attrs?.first) { end = index[q]; break; }
+      }
+      if (end <= start) { start = Math.max(1, end - 1); }
+      sectionRequests.push(sectionStyleRequest(node.attrs ?? {}, start, end));
+    }
+  }
+
   // Paragraph starts in the base, for paragraph ranges
   const paraStart = new Array<number>(base.length);
   let start = 0;
@@ -626,7 +695,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     for (const st of styled) contentRequests.push(textRequest(st.style, st.from, st.to));
   }
 
-  const requests = [...styleRequests, ...listRequests, ...contentRequests];
+  const requests = [...sectionRequests, ...styleRequests, ...listRequests, ...contentRequests];
 
   // What the base becomes: the target without additions, with paragraph
   // changes that wait for an addition still at their saved values
@@ -656,8 +725,8 @@ function stripPending(t: Tok): Tok {
   return t;
 }
 
-/** A section break made in the editor, not yet in the document */
-const isNewSection = (t: Tok): t is Extract<Tok, { k: "block" }> => t.k === "block" && t.node.attrs?.kind === "section" && !t.node.attrs?.bid;
+/** A section break made in the editor, not yet in the document (the first section's hidden marker is never inserted) */
+const isNewSection = (t: Tok): t is Extract<Tok, { k: "block" }> => t.k === "block" && t.node.attrs?.kind === "section" && !t.node.attrs?.bid && !t.node.attrs?.first;
 
 function nextNl(tokens: Tok[], from: number): Extract<Tok, { k: "nl" }> | undefined {
   for (let q = from; q < tokens.length; q++) {

@@ -17,7 +17,7 @@ import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
 import { PageSetupDialog } from "./page-setup-dialog";
 import { installLineMetrics } from "./line-metrics";
-import { BordersDialog, CustomSpacingDialog } from "./format-dialogs";
+import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
 import { FindBar } from "./find-bar";
 import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
@@ -28,7 +28,7 @@ import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat } from "@/lib/rich-text";
 import { loadDocument } from "./doc-sync";
-import { additions, directEdits, hasPending, rebase, segmentEdits, signature, PENDING_MARK } from "@/lib/doc-model";
+import { additions, directEdits, groupColumns, hasPending, rebase, segmentEdits, signature, PENDING_MARK } from "@/lib/doc-model";
 import { useSegmentEditor } from "./segment-editor";
 import type { HeaderFooters } from "./paged-surface";
 import type { Editor } from "@tiptap/react";
@@ -185,6 +185,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const [spacingOpen, setSpacingOpen] = useState(false);
   const [bordersOpen, setBordersOpen] = useState(false);
+  const [columnsOpen, setColumnsOpen] = useState(false);
   // Headers and footers: each a Docs segment with the content as last saved
   type Segment = { id: string; base: EditorNode[] };
   const [segments, setSegments] = useState<{ header: Segment | null; footer: Segment | null; firstPageHeader: Segment | null; firstPageFooter: Segment | null }>({ header: null, footer: null, firstPageHeader: null, firstPageFooter: null });
@@ -297,6 +298,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, []);
 
   const geometry = useMemo(() => pageGeometry(pageSetup), [pageSetup]);
+  /** Width of the text area in points, for column widths */
+  const textWidthPt = pageSize(pageSetup).w - pageSetup.margins.left - pageSetup.margins.right;
   useEffect(() => { installLineMetrics(); }, []);
   useEffect(() => {
     const onHint = () => setSnack(`Use ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}V to paste, or ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}Shift+V to paste without formatting`);
@@ -404,7 +407,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       const data = (await res.json()) as { nodes?: EditorNode[]; revisionId?: string };
       if (!Array.isArray(data.nodes) || docContentRef.current?.docId !== docId) return;
       if (data.revisionId) revisionRef.current = data.revisionId;
-      const fresh: EditorNode = { type: "doc", content: data.nodes };
+      const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
       if (signature(fresh) === signature(baseRef.current)) return;
       console.warn("Google Docs applied an edit differently than expected; reloading the document");
       baseRef.current = fresh;
@@ -488,7 +491,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       const next: Record<string, EditorNode[]> = {};
       for (const [id, v] of Object.entries(fns)) { const s = seg(v); if (s) next[id] = s.base; }
       setFootnotes(next);
-      const fresh: EditorNode = { type: "doc", content: data.nodes };
+      const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
       let target = fresh;
       if (keep) target = rebase(fresh, keep);
       else {
@@ -1111,6 +1114,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onCustomSpacing={() => setSpacingOpen(true)}
             onBorders={() => setBordersOpen(true)}
             onHeaderFooter={(which) => { void openHeaderFooter(which); }}
+            onColumns={(n) => { if (n === "options") setColumnsOpen(true); else editor?.chain().focus().setColumns({ columns: n, textWidth: textWidthPt }).run(); }}
             docOpen={docContent?.status === "ready"}
           />
         }
@@ -1248,6 +1252,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       />
       <CustomSpacingDialog editor={editor} open={spacingOpen} onClose={() => setSpacingOpen(false)} />
       <BordersDialog editor={editor} open={bordersOpen} onClose={() => setBordersOpen(false)} />
+      <ColumnsDialog editor={editor} open={columnsOpen} onClose={() => setColumnsOpen(false)} textWidth={textWidthPt} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
       <AnimatePresence>

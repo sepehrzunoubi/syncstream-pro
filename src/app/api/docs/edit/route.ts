@@ -21,6 +21,7 @@ const ALLOWED = new Set([
   "deleteHeader",
   "deleteFooter",
   "createFootnote",
+  "updateSectionStyle",
 ]);
 const MAX_REQUESTS = 2000;
 

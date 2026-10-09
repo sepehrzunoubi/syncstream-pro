@@ -175,8 +175,8 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = []):
       nextPage();
       return true;
     };
-    // A table moves to the next page whole (Docs breaks tables by row; cells here stay together)
-    if (child.classList.contains("tableWrapper") || child.tagName === "TABLE") {
+    // A table moves to the next page whole (Docs breaks tables by row; cells here stay together); so does a column section
+    if (child.classList.contains("tableWrapper") || child.tagName === "TABLE" || child.classList.contains("ss-section-cols")) {
       if (top > pageStart + 1 && fits) { breakBefore(ci); removed += innerTotal; continue; }
       removed += innerTotal;
       continue;
@@ -379,7 +379,8 @@ export function tokenPositions(doc: Parameters<typeof DecorationSet.create>[0]):
     });
     out.push(pos + node.nodeSize - 1); // the paragraph's end
   };
-  doc.forEach((node, pos) => {
+  const block = (node: N, pos: number) => {
+    if (node.type.name === "columnSection") { node.forEach((child, offset) => block(child, pos + 1 + offset)); return; }
     if (node.type.name !== "table") { paragraph(node, pos); return; }
     out.push(pos); // table start
     node.forEach((row, rowOffset) => {
@@ -395,7 +396,8 @@ export function tokenPositions(doc: Parameters<typeof DecorationSet.create>[0]):
       out.push(rowPos + row.nodeSize - 1); // row end
     });
     out.push(pos + node.nodeSize - 1); // table end
-  });
+  };
+  doc.forEach(block);
   return out;
 }
 

@@ -398,6 +398,10 @@
 /* Parts of the document the editor can't change: tables, smart chips, section breaks */
 .ss-doc p[data-locked] { cursor: default; color: #3c4043; box-shadow: -10px 0 0 #fff, -12px 0 0 #dadce0; }
 .ss-doc p[data-kind="section"] { height: 0; margin: 10pt 0; border-top: 1px dashed #dadce0; box-shadow: none; }
+.ss-doc p[data-kind="section"][data-first] { display: none; }
+/* Columns, as Docs lays a section out */
+.ss-doc .ss-section-cols { column-count: var(--ss-cols, 2); column-gap: var(--ss-col-gap, 36pt); column-rule: var(--ss-col-rule, none); column-fill: balance; }
+.ss-doc .ss-section-cols > p { break-inside: avoid-column; }
 /* A page break: invisible on pages (the text just moves), a labelled dashed line when pageless */
 .ss-doc .ss-page-break { display: inline-block; width: 0; height: 0; overflow: hidden; vertical-align: baseline; }
 .ss-doc .ss-page-break.ProseMirror-selectednode { outline: 2px solid var(--ss-blue); }
