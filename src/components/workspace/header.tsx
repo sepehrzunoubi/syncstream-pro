@@ -30,6 +30,8 @@ interface HeaderProps {
   menubar: React.ReactNode;
   /** The Sync / Style engine switch */
   tabs?: React.ReactNode;
+  /** Rename the open Google Doc (its Drive name) */
+  onRename?: (name: string) => Promise<boolean>;
 }
 
 export function Header(props: HeaderProps) {
@@ -37,6 +39,20 @@ export function Header(props: HeaderProps) {
   const selected = docs.find((d) => d.id === selectedDocId);
   const docId = mode === "job" ? jobDocId : selectedDocId;
   const title = mode === "job" ? jobDocName ?? "Untitled document" : selected?.name ?? "Choose a Google Doc";
+  const [renaming, setRenaming] = React.useState<string | null>(null);
+  const renameRef = React.useRef<HTMLInputElement>(null);
+  const wasRenaming = React.useRef(false);
+  React.useEffect(() => {
+    const now = renaming != null;
+    if (now && !wasRenaming.current) { renameRef.current?.focus(); renameRef.current?.select(); }
+    wasRenaming.current = now;
+  }, [renaming]);
+  const canRename = mode === "draft" && !!selected && !!props.onRename;
+  const finishRename = async () => {
+    const name = (renaming ?? "").trim();
+    setRenaming(null);
+    if (name && name !== selected?.name && props.onRename) await props.onRename(name);
+  };
 
   return (
     <header className="flex h-16 flex-none items-center gap-2 pl-2 pr-4">
@@ -48,9 +64,19 @@ export function Header(props: HeaderProps) {
 
       <div className="min-w-0 flex-1 pl-1">
         <div className="flex h-7 items-center gap-1">
-          {mode === "draft" ? (
+          {renaming != null ? (
+            <input
+              ref={renameRef}
+              className="ss-title-input"
+              value={renaming}
+              aria-label="Document name"
+              onChange={(e) => setRenaming(e.target.value)}
+              onBlur={() => { void finishRename(); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void finishRename(); } else if (e.key === "Escape") setRenaming(null); }}
+            />
+          ) : mode === "draft" ? (
             <Menu label="Target Google Doc" className="w-[min(480px,calc(100vw-16px))]" trigger={
-              <button className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[18px] leading-6 hover:bg-[var(--ss-hover)]">
+              <button className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[18px] leading-6 hover:bg-[var(--ss-hover)]" onDoubleClick={() => { if (canRename) setRenaming(selected!.name); }}>
                 <span className="truncate">{title}</span>
                 <Icon name="arrow_drop_down" className="flex-none text-[var(--ss-text-2)]" />
               </button>
@@ -70,6 +96,11 @@ export function Header(props: HeaderProps) {
             </Menu>
           ) : (
             <span className="truncate px-1.5 text-[18px] leading-6">{title}</span>
+          )}
+          {canRename && renaming == null && (
+            <button className="ss-icon-btn h-8 w-8 rounded-full" onClick={() => setRenaming(selected!.name)} title="Rename" aria-label="Rename document">
+              <Icon name="edit" size={18} />
+            </button>
           )}
           {docId && (
             <a

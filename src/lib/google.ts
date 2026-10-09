@@ -187,6 +187,15 @@ export async function editDocumentWithReplies(accessToken: string, documentId: s
   return { revisionId: res.data.writeControl?.requiredRevisionId ?? "", replies: (res.data.replies ?? []) as Record<string, unknown>[] };
 }
 
+/** Rename a Google Doc (its Drive file name) */
+export async function renameDoc(accessToken: string, documentId: string, name: string): Promise<string> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const drive = google.drive({ version: "v3", auth: client });
+  const res = await withRetry(() => drive.files.update({ fileId: documentId, requestBody: { name }, fields: "name" }));
+  return res.data.name ?? name;
+}
+
 /** The document as Google lays it out: Drive's PDF export */
 export async function exportPdf(accessToken: string, documentId: string): Promise<Uint8Array> {
   const client = getOAuth2Client();

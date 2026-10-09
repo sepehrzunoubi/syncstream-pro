@@ -22,6 +22,8 @@ import { tokenPositions } from "./pagination";
 import { tokenize } from "@/lib/doc-model";
 import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
 import { FindBar } from "./find-bar";
+import { Outline } from "./outline";
+import { ContextMenu, ShortcutsDialog } from "./context-menu";
 import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
 import { ProgressMarks, progressKey } from "./pagination";
@@ -189,6 +191,21 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [spacingOpen, setSpacingOpen] = useState(false);
   const [bordersOpen, setBordersOpen] = useState(false);
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(true);
+  useEffect(() => {
+    const open = () => setShortcutsOpen(true);
+    window.addEventListener("ss-shortcuts", open);
+    return () => window.removeEventListener("ss-shortcuts", open);
+  }, []);
+  const renameDoc = useCallback(async (name: string): Promise<boolean> => {
+    const id = selectedDocId;
+    if (!id) return false;
+    const { ok, status, data } = await postJson<{ name: string }>("/api/docs/rename", { documentId: id, name });
+    if (!ok) { if (status === 401) setScopeError(true); setSnack(data.error || "Couldn't rename the document"); return false; }
+    setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, name: data.name ?? name } : d)));
+    return true;
+  }, [selectedDocId]);
   // Headers and footers: each a Docs segment with the content as last saved
   type Segment = { id: string; base: EditorNode[] };
   const [segments, setSegments] = useState<{ header: Segment | null; footer: Segment | null; firstPageHeader: Segment | null; firstPageFooter: Segment | null }>({ header: null, footer: null, firstPageHeader: null, firstPageFooter: null });
@@ -1083,6 +1100,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }
 
   const rail = (
+    <div className="flex h-full flex-col">
+    {outlineOpen && !focusedJob && <Outline editor={editor} />}
     <SyncRail
       jobs={jobs}
       focusedJobId={focusedJobId}
@@ -1090,6 +1109,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       onCompose={() => { setComposing(true); if (!wide) setRailOpen(false); }}
       onFocus={(id) => { setFocusedJobId(id); setComposing(false); if (!wide) setRailOpen(false); }}
     />
+    </div>
   );
 
   const docUrlId = focusedJob ? focusedJob.documentId : selectedDocId;
@@ -1133,6 +1153,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         onReauth={onReauth}
         onSignOut={onSignOut}
         tabs={<WorkspaceTabs active="sync" />}
+        onRename={renameDoc}
         menubar={
           <DocsMenubar
             editor={segmentEditor ?? editor}
@@ -1152,6 +1173,9 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onBorders={() => setBordersOpen(true)}
             onHeaderFooter={(which) => { void openHeaderFooter(which); }}
             onColumns={(n) => { if (n === "options") setColumnsOpen(true); else editor?.chain().focus().setColumns({ columns: n, textWidth: textWidthPt }).run(); }}
+            outlineOpen={outlineOpen}
+            onToggleOutline={() => setOutlineOpen((o) => !o)}
+            onShortcuts={() => setShortcutsOpen(true)}
             docOpen={docContent?.status === "ready"}
           />
         }
@@ -1290,6 +1314,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       <CustomSpacingDialog editor={editor} open={spacingOpen} onClose={() => setSpacingOpen(false)} />
       <BordersDialog editor={editor} open={bordersOpen} onClose={() => setBordersOpen(false)} />
       <ColumnsDialog editor={editor} open={columnsOpen} onClose={() => setColumnsOpen(false)} textWidth={textWidthPt} />
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <ContextMenu editor={focusedJob ? null : editor} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
       <AnimatePresence>

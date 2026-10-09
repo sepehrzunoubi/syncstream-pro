@@ -102,6 +102,9 @@ interface DocsMenubarProps {
   onBorders: () => void;
   onHeaderFooter: (which: "header" | "footer") => void;
   onColumns: (columns: number | "options") => void;
+  outlineOpen: boolean;
+  onToggleOutline: () => void;
+  onShortcuts: () => void;
   /** Headers, footers and footnotes need an open Google Doc */
   docOpen: boolean;
 }
@@ -183,6 +186,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           ))}
         </Sub>
         <Item checkable checked={p.railOpen} onSelect={p.onToggleRail}>Show syncs</Item>
+        <Item checkable checked={p.outlineOpen} onSelect={p.onToggleOutline}>Show outline</Item>
       </TopMenu>
 
       <TopMenu label="Insert">
@@ -291,6 +295,11 @@ export function DocsMenubar(p: DocsMenubarProps) {
         </Sub>
         <Sep />
         <Item disabled={off} shortcut={`${mod}\\`} onSelect={() => run((c) => c.clearFormatting())}>Clear formatting</Item>
+      </TopMenu>
+
+      <TopMenu label="Help">
+        <Item shortcut={`${mod}/`} onSelect={p.onShortcuts}>Keyboard shortcuts</Item>
+        <Item onSelect={() => window.open("https://support.google.com/docs", "_blank", "noopener")}>Docs Help</Item>
       </TopMenu>
     </MB.Root>
   );
