@@ -28,6 +28,7 @@ function useModKey() {
 interface ToolbarProps {
   editor: Editor | null;
   disabled?: boolean;
+  onCustomSpacing?: () => void;
   onInsertImages: (files: File[]) => void;
   onInsertImageUrl: (url: string) => void;
   /** A percentage, or "fit" to scale the page to the available width */
@@ -37,7 +38,7 @@ interface ToolbarProps {
 
 type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para: Record<string, unknown> } | null;
 
-export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl }: ToolbarProps) {
+export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl, onCustomSpacing }: ToolbarProps) {
   const mod = useModKey();
   const [spellcheck, setSpellcheck] = useState(true);
   const [painter, setPainter] = useState<Painter>(null);
@@ -55,8 +56,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       if (editor.state.selection.empty) return;
       let chain = editor.chain().focus().unsetFormattingMarks();
       for (const m of painter.marks) chain = chain.setMark(m.type, m.attrs);
-      const { styleName, textAlign, lineSpacing, indent, firstLine, list } = painter.para;
-      chain.updateAttributes("paragraph", { styleName, textAlign, lineSpacing, indent, firstLine, list }).run();
+      const { styleName, textAlign, lineSpacing, indent, firstLine, list, box, keep, borders, shading } = painter.para;
+      chain.updateAttributes("paragraph", { styleName, textAlign, lineSpacing, indent, firstLine, list, box, keep, borders, shading }).run();
       setPainter(null);
     }, 0);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPainter(null); };
@@ -96,6 +97,11 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
         indent: (para.indent as number) ?? 0,
+        above: ((para.box as { above?: number | null } | null)?.above ?? 0) > 0,
+        below: ((para.box as { below?: number | null } | null)?.below ?? 0) > 0,
+        keepNext: !!(para.keep as { withNext?: boolean } | null)?.withNext,
+        keepLines: !!(para.keep as { linesTogether?: boolean } | null)?.linesTogether,
+        singleLines: (para.keep as { singleLines?: boolean } | null)?.singleLines !== false,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
         color: (ts.color as string | undefined) ?? null,
@@ -270,6 +276,14 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
             {ls.label}
           </MenuItem>
         ))}
+        <MenuSeparator />
+        <MenuItem onSelect={() => run((c) => c.setParagraphSpace({ above: s?.above ? 0 : 10 }))}>{s?.above ? "Remove space before paragraph" : "Add space before paragraph"}</MenuItem>
+        <MenuItem onSelect={() => run((c) => c.setParagraphSpace({ below: s?.below ? 0 : 10 }))}>{s?.below ? "Remove space after paragraph" : "Add space after paragraph"}</MenuItem>
+        <MenuItem onSelect={() => onCustomSpacing?.()}>Custom spacing</MenuItem>
+        <MenuSeparator />
+        <MenuItem checkable checked={s?.keepNext} onSelect={() => run((c) => c.setKeep({ withNext: !s?.keepNext }))}>Keep with next</MenuItem>
+        <MenuItem checkable checked={s?.keepLines} onSelect={() => run((c) => c.setKeep({ linesTogether: !s?.keepLines }))}>Keep lines together</MenuItem>
+        <MenuItem checkable checked={s?.singleLines} onSelect={() => run((c) => c.setKeep({ singleLines: !s?.singleLines }))}>Prevent single lines</MenuItem>
         <MenuSeparator />
         <MenuItem checkable checked={s?.firstLine} shortcut="Tab" onSelect={() => run((c) => c.setFirstLine(!s?.firstLine))}>
           Indent first line

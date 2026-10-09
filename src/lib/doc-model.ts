@@ -283,6 +283,7 @@ function textStyleDiff(a: RunStyle, b: RunStyle): { textStyle: DocsRequest; fiel
   flag("i", "italic");
   flag("u", "underline");
   flag("s", "strikethrough");
+  if (!!a.sup !== !!b.sup || !!a.sub !== !!b.sub) { textStyle.baselineOffset = b.sup ? "SUPERSCRIPT" : b.sub ? "SUBSCRIPT" : "NONE"; fields.push("baselineOffset"); }
   if (a.font !== b.font) { if (b.font) textStyle.weightedFontFamily = { fontFamily: b.font, weight: 400 }; fields.push("weightedFontFamily"); }
   if (a.size !== b.size) { if (b.size) textStyle.fontSize = { magnitude: b.size, unit: "PT" }; fields.push("fontSize"); }
   if (a.color !== b.color) { if (b.color) textStyle.foregroundColor = rgb(b.color); fields.push("foregroundColor"); }

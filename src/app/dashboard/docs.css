@@ -309,9 +309,13 @@
 
 /* Document typography: what Google Docs renders for the same formatting */
 .ss-doc {
+  /* Docs lays text out without kerning or ligatures */
+  font-kerning: none;
+  font-variant-ligatures: none;
   font-family: Arial, Arimo, "Liberation Sans", sans-serif;
   font-size: 11pt;
-  line-height: 1.38;
+  --ss-spacing: 1.15;
+  line-height: calc(var(--ss-spacing) * var(--ss-nlh, 1.15));
   color: #000;
   outline: none;
   user-select: text;
@@ -328,6 +332,14 @@
 .ss-doc p[data-style="h1"] { font-size: 20pt; margin-top: 20pt; margin-bottom: 6pt; }
 .ss-doc p[data-style="h2"] { font-size: 16pt; margin-top: 18pt; margin-bottom: 6pt; }
 .ss-doc p[data-style="h3"] { font-size: 14pt; color: #434343; margin-top: 16pt; margin-bottom: 4pt; }
+.ss-doc p[data-style="h4"] { font-size: 12pt; color: #666666; margin-top: 14pt; margin-bottom: 4pt; }
+.ss-doc p[data-style="h5"] { font-size: 11pt; color: #666666; margin-top: 12pt; margin-bottom: 4pt; }
+.ss-doc p[data-style="h6"] { font-size: 11pt; color: #666666; font-style: italic; margin-top: 12pt; margin-bottom: 4pt; }
+/* A border between paragraphs that share one (Docs draws it once, between them) */
+.ss-doc p[data-between] + p[data-between] { border-top: var(--ss-between); padding-top: var(--ss-between-pad, 0); }
+.ss-doc sup, .ss-doc sub { font-size: 0.6em; line-height: 0; }
+.ss-doc sup { vertical-align: super; }
+.ss-doc sub { vertical-align: sub; }
 .ss-doc p:first-child { margin-top: 0; }
 .ss-doc strong { font-weight: 700; }
 .ss-doc ::selection { background: #d3e3fd; }

@@ -125,14 +125,44 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
   let removed = 0;
   let pageStart = 0;
 
-  for (const child of Array.from(dom.children) as HTMLElement[]) {
+  const all = Array.from(dom.children) as HTMLElement[];
+  const children = all.filter((c) => !c.classList.contains("ss-page-gap"));
+  const keepOf = (el: HTMLElement | undefined) => (el?.getAttribute("data-keep") ?? "").split(" ");
+  // Paragraph tops in flow space, so a break can be moved up to an earlier paragraph
+  const flowTop = new Map<HTMLElement, number>();
+  let lastBreakPara = -1;
+  let ci = -1;
+
+  for (const child of all) {
+    // Our own gaps are not part of the flow
     if (child.classList.contains("ss-page-gap")) { removed += gapSize(child); continue; }
+    ci++;
     const inner = Array.from(child.querySelectorAll(".ss-page-gap"));
     const innerTotal = inner.reduce((s, g) => s + gapSize(g), 0);
     const r = child.getBoundingClientRect();
     const top = toLocal(r.top) - removed;
     const bottom = toLocal(r.bottom) - removed - innerTotal;
+    flowTop.set(child, top);
     if (bottom - pageStart <= CONTENT_H + 0.5) { removed += innerTotal; continue; }
+    const keep = keepOf(child);
+    const fits = bottom - top <= CONTENT_H;
+    // Keep with next: a paragraph that would end a page moves to the next one with its follower
+    const breakBefore = (k: number): boolean => {
+      let q = k;
+      while (q > lastBreakPara + 1 && keepOf(children[q - 1]).includes("next") && (flowTop.get(children[q - 1]) ?? 0) > pageStart + 1) q--;
+      const el = children[q];
+      const t = flowTop.get(el) ?? top;
+      if (t <= pageStart + 1) return false;
+      const pos = view.posAtDOM(el, 0) - 1;
+      breaks.push({ pos, height: Math.round((CONTENT_H - (t - pageStart) + BETWEEN) * 2) / 2, block: true });
+      pageStart = t;
+      lastBreakPara = q;
+      return true;
+    };
+    // Keep lines together: the whole paragraph goes to the next page
+    if (keep.includes("lines") && fits && breakBefore(ci)) {
+      if (bottom - pageStart <= CONTENT_H + 0.5) { removed += innerTotal; continue; }
+    }
 
     const gapTops = inner.map((g) => ({ top: toLocal(g.getBoundingClientRect().top), size: gapSize(g) }));
     const lines = linesOf(child, toLocal).map((l) => {
@@ -141,23 +171,31 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
     });
     // An empty paragraph (a new line with nothing typed yet) has no text to measure: its box is its one line
     if (!lines.length) lines.push({ top: toLocal(r.top), bottom: toLocal(r.bottom), first: null as unknown as Fragment, ft: top, fb: bottom });
+    // Prevent single lines (Docs' default): never leave one line alone on either page
+    const singleLines = !keep.includes("single") && lines.length >= 2;
     for (let i = 0; i < lines.length; i++) {
       const L = lines[i];
       if (L.fb - pageStart <= CONTENT_H + 0.5) continue;
-      if (i === 0) {
-        const pos = view.posAtDOM(child, 0) - 1;
-        if (top > pageStart + 1) {
-          breaks.push({ pos, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
+      let at = i;
+      if (singleLines && at === 1 && fits) at = 0; // an orphan: move the whole paragraph
+      else if (singleLines && at === 1 && lines.length >= 4) at = 2;
+      if (singleLines && at === lines.length - 1 && at >= 2) at = lines.length - 2; // a widow: take one more line along
+      if (at === 0) {
+        if (!breakBefore(ci) && top > pageStart + 1) {
+          breaks.push({ pos: view.posAtDOM(child, 0) - 1, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
           pageStart = top;
         }
       } else {
-        const breakTop = (lines[i - 1].fb + L.ft) / 2;
-        const pos = lineStartPos(view, L, toLocal);
+        const Lb = lines[at];
+        const breakTop = (lines[at - 1].fb + Lb.ft) / 2;
+        const pos = lineStartPos(view, Lb, toLocal);
         if (pos != null && breakTop > pageStart + 1) {
           breaks.push({ pos, height: Math.round((CONTENT_H - (breakTop - pageStart) + BETWEEN) * 2) / 2, block: false });
           pageStart = breakTop;
+          lastBreakPara = ci;
         }
       }
+      if (at > i) i = at;
     }
     removed += innerTotal;
   }

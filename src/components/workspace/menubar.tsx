@@ -15,7 +15,7 @@ function useMod() {
 
 function Item({ children, onSelect, shortcut, disabled, checked, checkable }: { children: React.ReactNode; onSelect?: () => void; shortcut?: string; disabled?: boolean; checked?: boolean; checkable?: boolean }) {
   return (
-    <MB.Item className="ss-menu-item" onSelect={onSelect} disabled={disabled}>
+    <MB.Item className="ss-menu-item" onSelect={onSelect} disabled={disabled} onMouseDown={keepSelection}>
       <span className="ss-check">{checkable && checked ? <Icon name="check" size={18} /> : null}</span>
       <span className="min-w-0 truncate">{children}</span>
       {shortcut && <span className="ss-shortcut">{shortcut}</span>}
@@ -26,7 +26,7 @@ function Item({ children, onSelect, shortcut, disabled, checked, checkable }: { 
 function Sub({ label, children, disabled }: { label: string; children: React.ReactNode; disabled?: boolean }) {
   return (
     <MB.Sub>
-      <MB.SubTrigger className="ss-menu-item" disabled={disabled}>
+      <MB.SubTrigger className="ss-menu-item" disabled={disabled} onMouseDown={keepSelection}>
         <span className="ss-check" />
         <span className="min-w-0 truncate">{label}</span>
         <span className="ss-sub-arrow"><Icon name="arrow_drop_down" className="-rotate-90" /></span>
@@ -43,7 +43,7 @@ function Sub({ label, children, disabled }: { label: string; children: React.Rea
 function TopMenu({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <MB.Menu>
-      <MB.Trigger className="ss-menubar-trigger">{label}</MB.Trigger>
+      <MB.Trigger className="ss-menubar-trigger" onMouseDown={keepSelection}>{label}</MB.Trigger>
       <MB.Portal>
         <MB.Content className="ss-menu min-w-[240px]" align="start" sideOffset={2} collisionPadding={8} onCloseAutoFocus={(e) => e.preventDefault()}>
           {children}
@@ -54,6 +54,8 @@ function TopMenu({ label, children }: { label: string; children: React.ReactNode
 }
 
 const Sep = () => <MB.Separator className="ss-menu-sep" />;
+/** Menus never take the editor's selection: a mousedown on them would collapse it before the command runs */
+const keepSelection = (e: React.MouseEvent) => e.preventDefault();
 
 interface DocsMenubarProps {
   editor: Editor | null;
@@ -70,6 +72,8 @@ interface DocsMenubarProps {
   docUrl: string | null;
   onSignOut: () => void;
   onPageSetup: () => void;
+  onCustomSpacing: () => void;
+  onBorders: () => void;
 }
 
 export function DocsMenubar(p: DocsMenubarProps) {
@@ -79,11 +83,20 @@ export function DocsMenubar(p: DocsMenubarProps) {
     selector: ({ editor: e }) => {
       if (!e) return null;
       const para = e.getAttributes("paragraph");
+      const box = para.box as { above?: number | null; below?: number | null } | null;
+      const keep = (para.keep as { withNext?: boolean; linesTogether?: boolean; singleLines?: boolean } | null) ?? {};
       return {
         bold: e.isActive("bold"),
         italic: e.isActive("italic"),
         underline: e.isActive("underline"),
         strike: e.isActive("strike"),
+        sup: e.isActive("superscript"),
+        sub: e.isActive("subscript"),
+        above: box?.above ?? 0,
+        below: box?.below ?? 0,
+        keepNext: !!keep.withNext,
+        keepLines: !!keep.linesTogether,
+        singleLines: keep.singleLines !== false,
         style: (para.styleName as NamedStyle) ?? "normal",
         align: (para.textAlign as string) ?? "left",
         spacing: (para.lineSpacing as number) ?? 115,
@@ -144,9 +157,23 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item checkable checked={st?.bold} shortcut={`${mod}B`} onSelect={() => run((c) => c.toggleBold())}>Bold</Item>
           <Item checkable checked={st?.italic} shortcut={`${mod}I`} onSelect={() => run((c) => c.toggleItalic())}>Italic</Item>
           <Item checkable checked={st?.underline} shortcut={`${mod}U`} onSelect={() => run((c) => c.toggleUnderline())}>Underline</Item>
-          <Item checkable checked={st?.strike} shortcut={`${mod}Shift+S`} onSelect={() => run((c) => c.toggleStrike())}>Strikethrough</Item>
+          <Item checkable checked={st?.strike} shortcut={`${mod}Shift+X`} onSelect={() => run((c) => c.toggleStrike())}>Strikethrough</Item>
+          <Item checkable checked={st?.sup} shortcut={`${mod}.`} onSelect={() => run((c) => c.toggleMark("superscript"))}>Superscript</Item>
+          <Item checkable checked={st?.sub} shortcut={`${mod},`} onSelect={() => run((c) => c.toggleMark("subscript"))}>Subscript</Item>
+          <Sep />
+          <Sub label="Size">
+            <Item shortcut={`${mod}Shift+.`} onSelect={() => run((c) => c.stepFontSize(1))}>Increase font size</Item>
+            <Item shortcut={`${mod}Shift+,`} onSelect={() => run((c) => c.stepFontSize(-1))}>Decrease font size</Item>
+          </Sub>
+          <Sub label="Capitalization">
+            <Item onSelect={() => run((c) => c.setCapitalization("lower"))}>lowercase</Item>
+            <Item onSelect={() => run((c) => c.setCapitalization("upper"))}>UPPERCASE</Item>
+            <Item onSelect={() => run((c) => c.setCapitalization("title"))}>Title Case</Item>
+          </Sub>
         </Sub>
         <Sub label="Paragraph styles" disabled={off}>
+          <Item onSelect={p.onBorders}>Borders and shading</Item>
+          <Sep />
           {NAMED_STYLE_ORDER.map((s) => (
             <Item key={s} checkable checked={st?.style === s} onSelect={() => run((c) => c.setNamedStyle(s))}>{NAMED_STYLES[s].label}</Item>
           ))}
@@ -169,6 +196,14 @@ export function DocsMenubar(p: DocsMenubarProps) {
           {LINE_SPACINGS.map((ls) => (
             <Item key={ls.value} checkable checked={st?.spacing === ls.value} onSelect={() => run((c) => c.setLineSpacing(ls.value))}>{ls.label}</Item>
           ))}
+          <Sep />
+          <Item onSelect={() => run((c) => c.setParagraphSpace({ above: st?.above ? 0 : 10 }))}>{st?.above ? "Remove space before paragraph" : "Add space before paragraph"}</Item>
+          <Item onSelect={() => run((c) => c.setParagraphSpace({ below: st?.below ? 0 : 10 }))}>{st?.below ? "Remove space after paragraph" : "Add space after paragraph"}</Item>
+          <Item onSelect={p.onCustomSpacing}>Custom spacing</Item>
+          <Sep />
+          <Item checkable checked={st?.keepNext} onSelect={() => run((c) => c.setKeep({ withNext: !st?.keepNext }))}>Keep with next</Item>
+          <Item checkable checked={st?.keepLines} onSelect={() => run((c) => c.setKeep({ linesTogether: !st?.keepLines }))}>Keep lines together</Item>
+          <Item checkable checked={st?.singleLines} onSelect={() => run((c) => c.setKeep({ singleLines: !st?.singleLines }))}>Prevent single lines</Item>
         </Sub>
         <Sep />
         <Item disabled={off} shortcut={`${mod}\\`} onSelect={() => run((c) => c.clearFormatting())}>Clear formatting</Item>

@@ -152,7 +152,7 @@ export const DocSync = Extension.create({
           if (!type) return null;
           const ranges: [number, number][] = [];
           transactions.forEach((tr, t) => {
-            if (!tr.docChanged || tr.getMeta(LOAD_META) || tr.getMeta("history$") || tr.getMeta("ssAddMarked")) return;
+            if (!tr.docChanged || tr.getMeta(LOAD_META) || tr.getMeta("history$") || tr.getMeta("ssAddMarked") || tr.getMeta("ssDirect")) return;
             if (tr.getMeta("uiEvent") === "drop" && draggingInside) return;
             tr.steps.forEach((step, i) => {
               if (!(step instanceof ReplaceStep) || step.slice.size === 0) return;

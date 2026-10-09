@@ -1,4 +1,4 @@
-import { Extension, InputRule, type Editor } from "@tiptap/core";
+import { Extension, InputRule, Mark, type Editor } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { DOMSerializer, type DOMOutputSpec, type Node as PMNode } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
@@ -10,18 +10,25 @@ import { Pagination } from "./pagination";
 import { DocSync, SyncAdd } from "./doc-sync";
 import TextAlign from "@tiptap/extension-text-align";
 import {
+  cssColorToHex,
   cssFontToFamily,
   cssLengthToPt,
-  cssLineHeight,
   fontStack,
+  FONT_SIZES,
   INDENT_PT,
   LINE_SPACINGS,
   MAX_INDENT,
   NAMED_STYLES,
   roundSize,
+  type Border,
+  type Borders,
+  type KeepOptions,
   type ListType,
   type NamedStyle,
 } from "@/lib/rich-text";
+
+/** Transactions that change text as a direct edit (find and replace, capitalisation): not additions */
+export const DIRECT_META = "ssDirect";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -33,13 +40,50 @@ declare module "@tiptap/core" {
       outdent: () => ReturnType;
       setFirstLine: (on: boolean) => ReturnType;
       setLineSpacing: (spacing: number) => ReturnType;
+      /** Space above and below the paragraph, in points */
+      setParagraphSpace: (space: { above?: number; below?: number }) => ReturnType;
+      setKeep: (keep: Partial<KeepOptions>) => ReturnType;
+      setBorders: (borders: Borders | null, shading: string | null) => ReturnType;
+      /** Change the case of the selected text (a direct edit, not an addition) */
+      setCapitalization: (mode: "lower" | "upper" | "title") => ReturnType;
+      stepFontSize: (dir: 1 | -1) => ReturnType;
       clearFormatting: () => ReturnType;
       toggleList: (type: ListType) => ReturnType;
     };
   }
 }
 
-const TAG_STYLE: Record<string, NamedStyle> = { H1: "h1", H2: "h2", H3: "h3", H4: "h3", H5: "h3", H6: "h3" };
+const TAG_STYLE: Record<string, NamedStyle> = { H1: "h1", H2: "h2", H3: "h3", H4: "h4", H5: "h5", H6: "h6" };
+
+/** Docs' line height: the spacing times the font's natural line height (measured per font, see lineMetrics) */
+const lineHeightCss = (spacing: number) => `--ss-spacing: ${Math.round((spacing / 100) * 1000) / 1000}; line-height: calc(var(--ss-spacing) * var(--ss-nlh, 1.15))`;
+
+/** Borders and shading of a pasted paragraph, from its CSS */
+function pastedBorders(el: HTMLElement): Borders | null {
+  const out: Borders = {};
+  const s = el.style;
+  const sides: [keyof Borders, string, string][] = [["top", s.borderTopWidth, s.borderTopStyle], ["bottom", s.borderBottomWidth, s.borderBottomStyle], ["left", s.borderLeftWidth, s.borderLeftStyle], ["right", s.borderRightWidth, s.borderRightStyle]];
+  for (const [side, w, style] of sides) {
+    const width = cssLengthToPt(w) ?? 0;
+    if (width <= 0 || style === "none" || style === "hidden") continue;
+    const color = cssColorToHex(side === "top" ? s.borderTopColor : side === "bottom" ? s.borderBottomColor : side === "left" ? s.borderLeftColor : s.borderRightColor) ?? "#000000";
+    const pad = cssLengthToPt(side === "top" ? s.paddingTop : side === "bottom" ? s.paddingBottom : side === "left" ? s.paddingLeft : s.paddingRight) ?? 0;
+    out[side] = { width: Math.round(width * 100) / 100, color, dash: style === "dotted" ? "DOT" : style === "dashed" ? "DASH" : "SOLID", padding: Math.round(pad * 100) / 100 };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+const DASH_CSS: Record<Border["dash"], string> = { SOLID: "solid", DOT: "dotted", DASH: "dashed" };
+function bordersCss(b: Borders): string[] {
+  const css: string[] = [];
+  for (const side of ["top", "bottom", "left", "right"] as const) {
+    const x = b[side];
+    if (!x) continue;
+    css.push(`border-${side}: ${x.width}pt ${DASH_CSS[x.dash]} ${x.color}`, `padding-${side}: ${x.padding}pt`);
+  }
+  if (b.between) css.push(`--ss-between: ${b.between.width}pt ${DASH_CSS[b.between.dash]} ${b.between.color}`, `--ss-between-pad: ${b.between.padding}pt`);
+  return css;
+}
 
 /**
  * The exact indents and spacing of a pasted paragraph, in points, as Google
@@ -147,6 +191,7 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => {
           const data = el.getAttribute("data-spacing");
           if (data) return parseInt(data, 10) || 115;
+          // Docs and browsers copy line spacing as 1.2 × the spacing
           const lh = parseFloat(el.style.lineHeight);
           if (!Number.isFinite(lh) || /px|pt|%/.test(el.style.lineHeight)) return 115;
           const pct = (lh / 1.2) * 100;
@@ -155,8 +200,29 @@ const DocParagraph = Paragraph.extend({
         },
         renderHTML: (a: { lineSpacing?: number }) => {
           const v = a.lineSpacing ?? 115;
-          return { "data-spacing": String(v), style: `line-height: ${cssLineHeight(v)}` };
+          return { "data-spacing": String(v), style: lineHeightCss(v) };
         },
+      },
+      /** Keep with next, keep lines together, prevent single lines */
+      keep: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: (a: { keep?: KeepOptions | null }) => {
+          const k = a.keep;
+          if (!k) return {};
+          const flags = [k.withNext ? "next" : "", k.linesTogether ? "lines" : "", k.singleLines === false ? "single" : ""].filter(Boolean);
+          return flags.length ? { "data-keep": flags.join(" ") } : {};
+        },
+      },
+      borders: {
+        default: null,
+        parseHTML: (el: HTMLElement) => (el.hasAttribute("data-spacing") ? null : pastedBorders(el)),
+        renderHTML: (a: { borders?: Borders | null }) => (a.borders ? { style: bordersCss(a.borders).join("; "), ...(a.borders.between ? { "data-between": "" } : {}) } : {}),
+      },
+      shading: {
+        default: null,
+        parseHTML: (el: HTMLElement) => (el.hasAttribute("data-spacing") ? null : cssColorToHex(el.style.backgroundColor) ?? null),
+        renderHTML: (a: { shading?: string | null }) => (a.shading ? { style: `background-color: ${a.shading}` } : {}),
       },
     };
   },
@@ -173,7 +239,7 @@ const FontAttributes = Extension.create({
           fontFamily: {
             default: null,
             parseHTML: (el: HTMLElement) => cssFontToFamily(el.style.fontFamily) ?? null,
-            renderHTML: (a: { fontFamily?: string | null }) => (a.fontFamily ? { style: `font-family: ${fontStack(a.fontFamily)}` } : {}),
+            renderHTML: (a: { fontFamily?: string | null }) => (a.fontFamily ? { style: `font-family: ${fontStack(a.fontFamily)}`, "data-font": a.fontFamily } : {}),
           },
           fontSize: {
             default: null,
@@ -264,10 +330,56 @@ const DocFormat = Extension.create({
         return true;
       },
       setLineSpacing: (spacing) => updateParagraphs(() => ({ lineSpacing: spacing })),
+      setParagraphSpace: (space) => updateParagraphs((a) => {
+        // Exact spacing lives in the box; keep the paragraph's indents as they are
+        const box = (a.box as { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null) ?? (a.list
+          ? { start: 36, marker: -18 }
+          : { start: stepsOf(a) * INDENT_PT, first: a.firstLine ? INDENT_PT : 0 });
+        return { box: { ...box, above: space.above ?? box.above ?? null, below: space.below ?? box.below ?? null }, ...(a.list ? {} : { indent: 0, firstLine: false }) };
+      }),
+      setKeep: (keep) => updateParagraphs((a) => {
+        const next = { ...((a.keep as KeepOptions | null) ?? {}), ...keep };
+        // Docs' defaults need no record
+        if (next.withNext === false) delete next.withNext;
+        if (next.linesTogether === false) delete next.linesTogether;
+        if (next.singleLines === true) delete next.singleLines;
+        return { keep: Object.keys(next).length ? next : null };
+      }),
+      setBorders: (borders, shading) => updateParagraphs(() => ({ borders, shading })),
+      setCapitalization: (mode) => ({ tr, state, dispatch }) => {
+        const { from, to } = state.selection;
+        if (from === to) return false;
+        const convert = (s: string) => {
+          if (mode === "lower") return s.toLowerCase();
+          if (mode === "upper") return s.toUpperCase();
+          return s.toLowerCase().replace(new RegExp("(^|[^\\p{L}\\p{N}'’])(\\p{L})", "gu"), (_m, before: string, ch: string) => before + ch.toUpperCase());
+        };
+        const edits: { from: number; to: number; text: string; marks: readonly import("@tiptap/pm/model").Mark[] }[] = [];
+        state.doc.nodesBetween(from, to, (node, pos) => {
+          if (!node.isText || !node.text) return;
+          const s = Math.max(from, pos);
+          const e = Math.min(to, pos + node.nodeSize);
+          const text = node.text.slice(s - pos, e - pos);
+          const next = convert(text);
+          if (next !== text) edits.push({ from: s, to: e, text: next, marks: node.marks });
+        });
+        if (!edits.length) return false;
+        for (const ed of edits.reverse()) tr.replaceWith(ed.from, ed.to, state.schema.text(ed.text, ed.marks));
+        tr.setMeta(DIRECT_META, true);
+        if (dispatch) dispatch(tr);
+        return true;
+      },
+      stepFontSize: (dir) => ({ editor, chain }) => {
+        const ts = editor.getAttributes("textStyle");
+        const style = (editor.getAttributes("paragraph").styleName as NamedStyle) ?? "normal";
+        const cur = (ts.fontSize as number) ?? NAMED_STYLES[style]?.size ?? 11;
+        const next = dir > 0 ? FONT_SIZES.find((x) => x > cur) ?? cur + 1 : [...FONT_SIZES].reverse().find((x) => x < cur) ?? Math.max(1, cur - 1);
+        return chain().setMark("textStyle", { fontSize: roundSize(next) }).run();
+      },
       clearFormatting: () => ({ chain }) =>
         chain()
           .unsetFormattingMarks()
-          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null })))
+          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null, keep: null, borders: null, shading: null })))
           .run(),
     };
   },
@@ -339,6 +451,13 @@ const DocFormat = Extension.create({
       "Mod-Alt-1": ({ editor }) => editor.commands.setNamedStyle("h1"),
       "Mod-Alt-2": ({ editor }) => editor.commands.setNamedStyle("h2"),
       "Mod-Alt-3": ({ editor }) => editor.commands.setNamedStyle("h3"),
+      "Mod-Alt-4": ({ editor }) => editor.commands.setNamedStyle("h4"),
+      "Mod-Alt-5": ({ editor }) => editor.commands.setNamedStyle("h5"),
+      "Mod-Alt-6": ({ editor }) => editor.commands.setNamedStyle("h6"),
+      "Mod-.": ({ editor }) => editor.commands.toggleMark("superscript"),
+      "Mod-,": ({ editor }) => editor.commands.toggleMark("subscript"),
+      "Mod-Shift-.": ({ editor }) => editor.commands.stepFontSize(1),
+      "Mod-Shift-,": ({ editor }) => editor.commands.stepFontSize(-1),
     };
   },
 });
@@ -439,6 +558,20 @@ const DocHighlight = Highlight.extend({
   },
 }).configure({ multicolor: true });
 
+/** Superscript and subscript, one or the other, as Docs' Format > Text has them */
+const Superscript = Mark.create({
+  name: "superscript",
+  excludes: "subscript",
+  parseHTML: () => [{ tag: "sup" }, { style: "vertical-align", getAttrs: (v: string | HTMLElement) => (v === "super" ? {} : false) }],
+  renderHTML: () => ["sup", 0],
+});
+const Subscript = Mark.create({
+  name: "subscript",
+  excludes: "superscript",
+  parseHTML: () => [{ tag: "sub" }, { style: "vertical-align", getAttrs: (v: string | HTMLElement) => (v === "sub" ? {} : false) }],
+  renderHTML: () => ["sub", 0],
+});
+
 /** The copied HTML Docs and other editors understand: real heading tags, sizes for Title and Subtitle */
 const ClipboardHTML = Extension.create({
   name: "clipboardHTML",
@@ -480,6 +613,8 @@ export const editorExtensions = [
   FontAttributes,
   Color,
   DocHighlight,
+  Superscript,
+  Subscript,
   DocImage,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
@@ -489,7 +624,7 @@ export const editorExtensions = [
   ClipboardHTML,
 ];
 
-type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; backgroundColor?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string };
+type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; backgroundColor?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string; verticalAlign?: string };
 
 /** What an element says about each inherited text property, from its tag and its own style */
 function ownStyle(el: HTMLElement): InlineStyle {
@@ -499,6 +634,8 @@ function ownStyle(el: HTMLElement): InlineStyle {
   if (tag === "I" || tag === "EM") out.fontStyle = "italic";
   if (tag === "U") out.textDecoration = "underline";
   if (tag === "S" || tag === "STRIKE" || tag === "DEL") out.textDecoration = "line-through";
+  if (tag === "SUP") out.verticalAlign = "super";
+  if (tag === "SUB") out.verticalAlign = "sub";
   // A value that defers to the parent says nothing; keep looking up
   const set = (v: string) => (v && !/^(inherit|initial|unset)$/i.test(v) ? v : undefined);
   const s = el.style;
@@ -509,6 +646,8 @@ function ownStyle(el: HTMLElement): InlineStyle {
   out.fontWeight = set(s.fontWeight) ?? out.fontWeight;
   out.fontStyle = set(s.fontStyle) ?? out.fontStyle;
   out.textDecoration = set(s.textDecorationLine || s.textDecoration) ?? out.textDecoration;
+  const va = set(s.verticalAlign);
+  if (va === "super" || va === "sub") out.verticalAlign = va;
   return out;
 }
 
@@ -525,7 +664,7 @@ export function inlinePastedStyles(html: string): string {
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
   while (walker.nextNode()) texts.push(walker.currentNode as Text);
-  const keys: (keyof InlineStyle)[] = ["fontFamily", "fontSize", "color", "backgroundColor", "fontWeight", "fontStyle", "textDecoration"];
+  const keys: (keyof InlineStyle)[] = ["fontFamily", "fontSize", "color", "backgroundColor", "fontWeight", "fontStyle", "textDecoration", "verticalAlign"];
   const css: Record<keyof InlineStyle, string> = {
     fontFamily: "font-family",
     fontSize: "font-size",
@@ -534,6 +673,7 @@ export function inlinePastedStyles(html: string): string {
     fontWeight: "font-weight",
     fontStyle: "font-style",
     textDecoration: "text-decoration",
+    verticalAlign: "vertical-align",
   };
   for (const text of texts) {
     if (!text.data || !text.parentElement) continue;

@@ -10,7 +10,7 @@
 
 import type { docs_v1 } from "googleapis";
 import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
-import { DEFAULT_FONT, NAMED_STYLES, OBJ, type Align, type EditorNode, type ListType, type NamedStyle } from "./rich-text";
+import { BORDER_SIDES, DEFAULT_FONT, NAMED_STYLES, OBJ, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
 type Element = docs_v1.Schema$StructuralElement;
@@ -75,9 +75,9 @@ const NAMED: Record<string, NamedStyle> = {
   HEADING_1: "h1",
   HEADING_2: "h2",
   HEADING_3: "h3",
-  HEADING_4: "h3",
-  HEADING_5: "h3",
-  HEADING_6: "h3",
+  HEADING_4: "h4",
+  HEADING_5: "h5",
+  HEADING_6: "h6",
 };
 const ALIGN: Record<string, Align | null> = { START: null, CENTER: "center", END: "right", JUSTIFIED: "justify" };
 const ORDERED = new Set(["DECIMAL", "ZERO_DECIMAL", "UPPER_ALPHA", "ALPHA", "UPPER_ROMAN", "ROMAN"]);
@@ -117,6 +117,8 @@ function textMarks(ts: TextStyle, style: NamedStyle): NonNullable<EditorNode["ma
   if (ts.italic) marks.push({ type: "italic" });
   if (ts.underline) marks.push({ type: "underline" });
   if (ts.strikethrough) marks.push({ type: "strike" });
+  if (ts.baselineOffset === "SUPERSCRIPT") marks.push({ type: "superscript" });
+  if (ts.baselineOffset === "SUBSCRIPT") marks.push({ type: "subscript" });
   if (ts.link?.url) marks.push({ type: "link", attrs: { href: ts.link.url } });
   const bg = hex(ts.backgroundColor);
   if (bg && bg !== "#ffffff") marks.push({ type: "highlight", attrs: { color: bg } });
@@ -216,6 +218,21 @@ export function importDoc(doc: Doc): ImportedDoc {
       : { start, first: first - start };
     const above = pt(ps.spaceAbove);
     const below = pt(ps.spaceBelow);
+    // Keep options as Docs has them (its own default for single lines is on)
+    const keep: KeepOptions = {};
+    if (ps.keepWithNext) keep.withNext = true;
+    if (ps.keepLinesTogether) keep.linesTogether = true;
+    if (ps.avoidWidowAndOrphan === false) keep.singleLines = false;
+    const borders: Borders = {};
+    const sides = { top: ps.borderTop, bottom: ps.borderBottom, left: ps.borderLeft, right: ps.borderRight, between: ps.borderBetween };
+    for (const side of BORDER_SIDES) {
+      const b = sides[side];
+      const width = pt(b?.width) ?? 0;
+      if (!b || width <= 0) continue;
+      const border: Border = { width, color: hex(b.color) ?? "#000000", dash: b.dashStyle === "DOT" || b.dashStyle === "DASH" ? b.dashStyle : "SOLID", padding: pt(b.padding) ?? 0 };
+      borders[side] = border;
+    }
+    const shading = hex(ps.shading?.backgroundColor);
     return {
       type: "paragraph",
       attrs: {
@@ -227,6 +244,9 @@ export function importDoc(doc: Doc): ImportedDoc {
         list,
         ...listAttrs,
         box: { ...box, above: above ?? null, below: below ?? null },
+        keep: Object.keys(keep).length ? keep : null,
+        borders: Object.keys(borders).length ? borders : null,
+        shading: shading && shading !== "#ffffff" ? shading : null,
         ...(unsupported ? { locked: true } : {}),
       },
       content,

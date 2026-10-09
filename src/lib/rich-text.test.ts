@@ -211,3 +211,41 @@ test("pasted paragraphs keep exact indents and spacing, and send them to Docs", 
   assert.deepEqual(json.content?.[0].attrs?.box, { start: 72, first: 36, above: 0, below: 10 });
   assert.deepEqual(parseFormat("x", { v: 1, paragraphs: [para], runs: [{ len: 1 }] }), { ok: true, format: { v: 1, paragraphs: [para], runs: [{ len: 1 }] } });
 });
+
+test("super/subscript, headings 4-6, keep options, borders and shading reach Docs and come back", async () => {
+  const { paragraphFromAttrs, paragraphRequest, paragraphDelta, resolveTextStyle, richToEditorJSON, richFromEditorJSON } = await import("./rich-text");
+  const doc: EditorNode = { type: "doc", content: [
+    p([t("x", { type: "superscript" }), t("y", { type: "subscript" }), t("z")], { styleName: "h5", keep: { withNext: true }, borders: { bottom: { width: 1.5, color: "#ff0000", dash: "DASH", padding: 2 } }, shading: "#fff2cc" }),
+  ] };
+  const { text, format } = richFromEditorJSON(doc);
+  assert.equal(text, "xyz");
+  assert.deepEqual(format.runs, [{ len: 1, sup: 1 }, { len: 1, sub: 1 }, { len: 1 }]);
+  const para = format.paragraphs[0];
+  assert.equal(para.style, "h5");
+  assert.deepEqual(para.keep, { withNext: true });
+  assert.deepEqual(para.borders, { bottom: { width: 1.5, color: "#ff0000", dash: "DASH", padding: 2 } });
+  assert.equal(para.shading, "#fff2cc");
+  assert.equal(resolveTextStyle({ sup: 1 }, para).baselineOffset, "SUPERSCRIPT");
+  assert.equal(resolveTextStyle({}, para).baselineOffset, "NONE");
+  const req = paragraphRequest(para, 1, 4).updateParagraphStyle as { paragraphStyle: Record<string, unknown>; fields: string };
+  assert.equal(req.paragraphStyle.namedStyleType, "HEADING_5");
+  assert.equal(req.paragraphStyle.keepWithNext, true);
+  assert.equal(req.paragraphStyle.avoidWidowAndOrphan, true, "Docs' default stays on");
+  assert.deepEqual((req.paragraphStyle.borderBottom as { width: unknown }).width, { magnitude: 1.5, unit: "PT" });
+  assert.deepEqual((req.paragraphStyle.borderTop as { width: unknown }).width, { magnitude: 0, unit: "PT" }, "other sides are cleared");
+  assert.match(req.fields, /keepWithNext,keepLinesTogether,avoidWidowAndOrphan/);
+  assert.match(req.fields, /borderTop,borderBottom,borderLeft,borderRight,borderBetween/);
+  assert.match(req.fields, /shading/);
+  // Only what changed is sent
+  const plain = paragraphFromAttrs({ styleName: "h5" });
+  const d = paragraphDelta(para, plain)!;
+  assert.ok(d.fields.includes("shading") && d.fields.includes("borderTop") && d.fields.includes("keepWithNext") && !d.fields.includes("namedStyleType"));
+  assert.equal(paragraphDelta(para, para), null);
+  // Round trip to the editor
+  const back = richToEditorJSON(text, format);
+  assert.deepEqual(back.content?.[0].attrs?.keep, { withNext: true });
+  assert.deepEqual(back.content?.[0].attrs?.borders, para.borders);
+  assert.equal(back.content?.[0].attrs?.shading, "#fff2cc");
+  assert.deepEqual(back.content?.[0].content?.[0].marks, [{ type: "superscript" }]);
+  assert.deepEqual(parseFormat(text, format), { ok: true, format });
+});

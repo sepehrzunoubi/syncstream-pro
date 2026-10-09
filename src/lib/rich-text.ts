@@ -8,7 +8,7 @@
 
 // ── Vocabulary (mirrors the Google Docs editor) ─────────────────────────────
 
-export type NamedStyle = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3";
+export type NamedStyle = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 export type Align = "left" | "center" | "right" | "justify";
 export type ListType = "bullet" | "ordered" | "check";
 
@@ -31,8 +31,28 @@ export const NAMED_STYLES: Record<NamedStyle, { label: string; size: number; doc
   h1: { label: "Heading 1", size: 20, docs: "HEADING_1" },
   h2: { label: "Heading 2", size: 16, docs: "HEADING_2" },
   h3: { label: "Heading 3", size: 14, docs: "HEADING_3" },
+  h4: { label: "Heading 4", size: 12, docs: "HEADING_4" },
+  h5: { label: "Heading 5", size: 11, docs: "HEADING_5" },
+  h6: { label: "Heading 6", size: 11, docs: "HEADING_6" },
 };
-export const NAMED_STYLE_ORDER: NamedStyle[] = ["normal", "title", "subtitle", "h1", "h2", "h3"];
+export const NAMED_STYLE_ORDER: NamedStyle[] = ["normal", "title", "subtitle", "h1", "h2", "h3", "h4", "h5", "h6"];
+
+/** A paragraph border, as in Docs' Borders and shading dialog */
+export interface Border {
+  /** Points */
+  width: number;
+  /** #rrggbb */
+  color: string;
+  dash: "SOLID" | "DOT" | "DASH";
+  /** Padding between the border and the text, in points */
+  padding: number;
+}
+export type BorderSide = "top" | "bottom" | "left" | "right" | "between";
+export const BORDER_SIDES: BorderSide[] = ["top", "bottom", "left", "right", "between"];
+export type Borders = Partial<Record<BorderSide, Border>>;
+export const BORDER_WIDTHS = [0, 0.75, 1, 1.5, 2.25, 3, 4.5, 6];
+/** Docs' paragraph keep options; "Prevent single lines" is on by default in Docs */
+export interface KeepOptions { withNext?: boolean; linesTogether?: boolean; singleLines?: boolean }
 
 export const DOCS_ALIGN: Record<Align, string> = { left: "START", center: "CENTER", right: "END", justify: "JUSTIFIED" };
 
@@ -100,6 +120,12 @@ export interface ParagraphFormat {
   exact?: { start: number; first: number };
   /** Space above and below the paragraph in points; absent leaves Docs' own */
   space?: { above: number; below: number };
+  /** Pagination: keep with next, keep lines together, prevent single lines (widow/orphan control) */
+  keep?: KeepOptions;
+  /** Borders and shading */
+  borders?: Borders;
+  /** Paragraph background, #rrggbb */
+  shading?: string;
 }
 
 export interface RunFormat {
@@ -108,6 +134,9 @@ export interface RunFormat {
   i?: 1;
   u?: 1;
   s?: 1;
+  /** Superscript or subscript */
+  sup?: 1;
+  sub?: 1;
   font?: string;
   /** Point size; when absent the paragraph's named-style size applies */
   size?: number;
@@ -254,12 +283,49 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   const space = rawSpace && (typeof rawSpace.above === "number" || typeof rawSpace.below === "number")
     ? { above: Math.max(0, num(rawSpace.above)), below: Math.max(0, num(rawSpace.below)) }
     : undefined;
-  if (list) return { style, align, indent: 0, firstLine: false, spacing, list, ...(space ? { space } : {}) };
-  const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing };
+  const extras: Partial<ParagraphFormat> = {};
+  if (space) extras.space = space;
+  const keep = parseKeep(a.keep);
+  if (keep) extras.keep = keep;
+  const borders = parseBorders(a.borders);
+  if (borders) extras.borders = borders;
+  const shading = typeof a.shading === "string" && /^#[0-9a-f]{6}$/i.test(a.shading) ? a.shading.toLowerCase() : undefined;
+  if (shading) extras.shading = shading;
+  if (list) return { style, align, indent: 0, firstLine: false, spacing, list, ...extras };
+  const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing, ...extras };
   if (box && typeof box === "object") p.exact = { start: num(box.start), first: num(box.start) + num(box.first) };
   else if (exact && typeof exact === "object") p.exact = { start: num(exact.start), first: num(exact.first) };
-  if (space) p.space = space;
   return p;
+}
+
+function parseKeep(raw: unknown): KeepOptions | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const k = raw as Record<string, unknown>;
+  const out: KeepOptions = {};
+  if (typeof k.withNext === "boolean") out.withNext = k.withNext;
+  if (typeof k.linesTogether === "boolean") out.linesTogether = k.linesTogether;
+  if (typeof k.singleLines === "boolean") out.singleLines = k.singleLines;
+  return Object.keys(out).length ? out : undefined;
+}
+
+export function parseBorder(raw: unknown): Border | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const b = raw as Record<string, unknown>;
+  const width = typeof b.width === "number" && Number.isFinite(b.width) ? Math.max(0, Math.min(72, b.width)) : 0;
+  const color = typeof b.color === "string" && /^#[0-9a-f]{6}$/i.test(b.color) ? b.color.toLowerCase() : "#000000";
+  const dash = b.dash === "DOT" || b.dash === "DASH" ? b.dash : "SOLID";
+  const padding = typeof b.padding === "number" && Number.isFinite(b.padding) ? Math.max(0, Math.min(72, b.padding)) : 0;
+  return { width, color, dash, padding };
+}
+
+function parseBorders(raw: unknown): Borders | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Borders = {};
+  for (const side of BORDER_SIDES) {
+    const b = parseBorder((raw as Record<string, unknown>)[side]);
+    if (b && b.width > 0) out[side] = b;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** Indent start and first line of a paragraph, in points */
@@ -276,6 +342,8 @@ export function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
     else if (m.type === "italic") s.i = 1;
     else if (m.type === "underline") s.u = 1;
     else if (m.type === "strike") s.s = 1;
+    else if (m.type === "superscript") s.sup = 1;
+    else if (m.type === "subscript") s.sub = 1;
     else if (m.type === "textStyle") {
       const font = typeof m.attrs?.fontFamily === "string" ? cssFontToFamily(m.attrs.fontFamily) : undefined;
       if (font) s.font = font;
@@ -296,7 +364,7 @@ export function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
 }
 
 export const sameStyle = (a: RunStyle, b: RunStyle) =>
-  a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.font === b.font && a.size === b.size &&
+  a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.sup === b.sup && a.sub === b.sub && a.font === b.font && a.size === b.size &&
   a.color === b.color && a.bg === b.bg && a.link === b.link;
 
 /** Convert editor JSON into source text plus formatting. */
@@ -409,6 +477,9 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           list: (p as ParagraphFormat).list,
           exact: (p as ParagraphFormat).exact,
           space: (p as ParagraphFormat).space,
+          keep: (p as ParagraphFormat).keep,
+          borders: (p as ParagraphFormat).borders,
+          shading: (p as ParagraphFormat).shading,
         }
       : undefined
   ));
@@ -430,6 +501,8 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
     if (run.i) clean.i = 1;
     if (run.u) clean.u = 1;
     if (run.s) clean.s = 1;
+    if (run.sup) clean.sup = 1;
+    else if (run.sub) clean.sub = 1;
     if (typeof run.font === "string" && isSafeFontName(run.font)) clean.font = run.font;
     if (typeof run.size === "number" && Number.isFinite(run.size) && run.size > 0) clean.size = roundSize(run.size);
     if (typeof run.color === "string" && /^#[0-9a-f]{6}$/i.test(run.color)) clean.color = run.color.toLowerCase();
@@ -463,7 +536,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   if (images.length) format.images = images;
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
-    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, exact: rawBase.exact, space: rawBase.space });
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading });
   }
   return { ok: true, format };
 }
@@ -648,7 +721,35 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style:
     style.spaceBelow = { magnitude: b.space.below, unit: "PT" };
     fields.push("spaceAbove", "spaceBelow");
   }
+  if (JSON.stringify(a.keep ?? null) !== JSON.stringify(b.keep ?? null)) addKeep(style, fields, b.keep);
+  if (JSON.stringify(a.borders ?? null) !== JSON.stringify(b.borders ?? null)) addBorders(style, fields, b.borders);
+  if (a.shading !== b.shading) addShading(style, fields, b.shading);
   return fields.length ? { style, fields } : null;
+}
+
+const KEEP_FIELDS: Record<keyof KeepOptions, string> = { withNext: "keepWithNext", linesTogether: "keepLinesTogether", singleLines: "avoidWidowAndOrphan" };
+function addKeep(style: DocsRequest, fields: string[], keep: KeepOptions | undefined) {
+  for (const key of Object.keys(KEEP_FIELDS) as (keyof KeepOptions)[]) {
+    // Docs' own default for single lines is on; the other two default to off
+    const value = keep?.[key] ?? (key === "singleLines");
+    style[KEEP_FIELDS[key]] = value;
+    fields.push(KEEP_FIELDS[key]);
+  }
+}
+const BORDER_FIELDS: Record<BorderSide, string> = { top: "borderTop", bottom: "borderBottom", left: "borderLeft", right: "borderRight", between: "borderBetween" };
+function docsBorder(b: Border | undefined): DocsRequest {
+  if (!b) return { width: { magnitude: 0, unit: "PT" }, padding: { magnitude: 0, unit: "PT" }, dashStyle: "SOLID", color: rgb("#000000") };
+  return { width: { magnitude: b.width, unit: "PT" }, padding: { magnitude: b.padding, unit: "PT" }, dashStyle: b.dash, color: rgb(b.color) };
+}
+function addBorders(style: DocsRequest, fields: string[], borders: Borders | undefined) {
+  for (const side of BORDER_SIDES) {
+    style[BORDER_FIELDS[side]] = docsBorder(borders?.[side]);
+    fields.push(BORDER_FIELDS[side]);
+  }
+}
+function addShading(style: DocsRequest, fields: string[], shading: string | undefined) {
+  style.shading = { backgroundColor: shading ? rgb(shading) : {} };
+  fields.push("shading");
 }
 
 /**
@@ -757,6 +858,7 @@ export function resolveTextStyle(run: RunStyle, para: ParagraphFormat): DocsRequ
     italic: !!run.i,
     underline: !!run.u || !!run.link,
     strikethrough: !!run.s,
+    baselineOffset: run.sup ? "SUPERSCRIPT" : run.sub ? "SUBSCRIPT" : "NONE",
     fontSize: { magnitude: run.size ?? NAMED_STYLES[para.style].size, unit: "PT" },
     weightedFontFamily: { fontFamily: run.font ?? DEFAULT_FONT, weight: 400 },
   };
@@ -773,7 +875,7 @@ export function textRequest(textStyle: DocsRequest, startIndex: number, endIndex
     updateTextStyle: {
       range: { startIndex, endIndex },
       textStyle,
-      fields: "bold,italic,underline,strikethrough,fontSize,weightedFontFamily,foregroundColor,backgroundColor,link",
+      fields: "bold,italic,underline,strikethrough,baselineOffset,fontSize,weightedFontFamily,foregroundColor,backgroundColor,link",
     },
   };
 }
@@ -793,6 +895,9 @@ export function paragraphRequest(p: ParagraphFormat, startIndex: number, endInde
     paragraphStyle.spaceBelow = { magnitude: p.space.below, unit: "PT" };
     fields.push("spaceAbove", "spaceBelow");
   }
+  if (p.keep) addKeep(paragraphStyle, fields, p.keep);
+  if (p.borders) addBorders(paragraphStyle, fields, p.borders);
+  if (p.shading) addShading(paragraphStyle, fields, p.shading);
   return { updateParagraphStyle: { range: { startIndex, endIndex }, paragraphStyle, fields: fields.join(",") } };
 }
 
@@ -814,7 +919,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       : null;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, box },
+      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null },
       content: [],
     };
     const end = pos + line.length;
@@ -828,6 +933,8 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       if (run.i) marks.push({ type: "italic" });
       if (run.u) marks.push({ type: "underline" });
       if (run.s) marks.push({ type: "strike" });
+      if (run.sup) marks.push({ type: "superscript" });
+      if (run.sub) marks.push({ type: "subscript" });
       if (run.link) marks.push({ type: "link", attrs: { href: run.link } });
       if (run.bg) marks.push({ type: "highlight", attrs: { color: run.bg } });
       if (run.font || run.size || run.color) marks.push({ type: "textStyle", attrs: { fontFamily: run.font ?? null, fontSize: run.size ?? null, color: run.color ?? null } });

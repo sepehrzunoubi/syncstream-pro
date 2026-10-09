@@ -16,6 +16,8 @@ import { SyncPanel, type BreaksMode } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
 import { PageSetupDialog } from "./page-setup-dialog";
+import { installLineMetrics } from "./line-metrics";
+import { BordersDialog, CustomSpacingDialog } from "./format-dialogs";
 import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
 import { ProgressMarks, progressKey } from "./pagination";
@@ -177,6 +179,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [pageless, setPageless] = useState(false);
   const [pageSetup, setPageSetup] = useState<PageSetup>(DEFAULT_PAGE_SETUP);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [spacingOpen, setSpacingOpen] = useState(false);
+  const [bordersOpen, setBordersOpen] = useState(false);
   const [draftLoaded, setDraftLoaded] = useState(false);
   const [docContent, setDocContent] = useState<DocContent | null>(null);
   const contentReq = useRef(0);
@@ -278,6 +282,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, []);
 
   const geometry = useMemo(() => pageGeometry(pageSetup), [pageSetup]);
+  useEffect(() => { installLineMetrics(); }, []);
   // "Fit" zoom: shrink the page to the space between the side columns.
   // Below 720px the page reflows instead (see docs.css), so no scaling there.
   useEffect(() => {
@@ -932,6 +937,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
             onSignOut={onSignOut}
             onPageSetup={() => setPageSetupOpen(true)}
+            onCustomSpacing={() => setSpacingOpen(true)}
+            onBorders={() => setBordersOpen(true)}
           />
         }
       />
@@ -944,6 +951,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           onZoom={setZoom}
           onInsertImages={insertImages}
           onInsertImageUrl={insertImageUrl}
+          onCustomSpacing={() => setSpacingOpen(true)}
         />
       </div>
 
@@ -1064,6 +1072,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         onApply={applyPageSetup}
         onSetDefault={setPageDefault}
       />
+      <CustomSpacingDialog editor={editor} open={spacingOpen} onClose={() => setSpacingOpen(false)} />
+      <BordersDialog editor={editor} open={bordersOpen} onClose={() => setBordersOpen(false)} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
       <AnimatePresence>

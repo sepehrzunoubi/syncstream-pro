@@ -2,9 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import * as DM from "@radix-ui/react-dropdown-menu";
-import { Icon } from "./icon";
-import { PALETTE } from "./color-menu";
+import { ColorSelect } from "./dialog";
 import { PAPERS, PAPER_ORDER, pageSize, type PageSetup, type PaperId } from "@/lib/page-setup";
 
 interface Props {
@@ -19,29 +17,6 @@ interface Props {
 
 const inches = (pt: number) => String(Math.round((pt / 72) * 100) / 100);
 const MARGIN_KEYS = ["top", "bottom", "left", "right"] as const;
-
-/** Page colour picker: a swatch with Docs' palette */
-function PageColor({ value, onChange, label }: { value: string | null; onChange: (c: string | null) => void; label: string }) {
-  return (
-    <DM.Root modal={false}>
-      <DM.Trigger asChild>
-        <button type="button" className="ss-color-select" aria-label={label}>
-          <span className="ss-color-dot" style={{ background: value ?? "#ffffff" }} />
-          <Icon name="arrow_drop_down" size={20} />
-        </button>
-      </DM.Trigger>
-      <DM.Portal>
-        <DM.Content className="ss-menu" sideOffset={4} align="start" collisionPadding={8} style={{ zIndex: 60 }} onCloseAutoFocus={(e) => e.preventDefault()}>
-          <div className="ss-palette" role="group" aria-label={label}>
-            {PALETTE.flat().map((hex) => (
-              <DM.Item key={hex} className="ss-swatch" data-on={(value ?? "#ffffff") === hex} style={{ background: hex }} aria-label={hex} onSelect={() => onChange(hex === "#ffffff" ? null : hex)} />
-            ))}
-          </div>
-        </DM.Content>
-      </DM.Portal>
-    </DM.Root>
-  );
-}
 
 /** Docs' Page setup dialog: pages or pageless, orientation, paper size, colour and margins. */
 export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSetDefault }: Props) {
@@ -129,7 +104,7 @@ export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSet
               </label>
               <div className="block">
                 <span className="ss-field-label">Page color</span>
-                <PageColor value={color} onChange={setColor} label="Page color" />
+                <ColorSelect value={color} onChange={setColor} label="Page color" />
               </div>
             </div>
             <fieldset>
@@ -150,7 +125,7 @@ export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSet
             <p className="text-[14px] leading-5 text-[var(--ss-text-2)]">Text and images fit the window, with no page breaks. Pages are kept in the Google Doc.</p>
             <div className="block">
               <span className="ss-field-label">Background color</span>
-              <PageColor value={color} onChange={setColor} label="Background color" />
+              <ColorSelect value={color} onChange={setColor} label="Background color" />
             </div>
           </div>
         )}
