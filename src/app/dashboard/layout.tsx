@@ -6,7 +6,7 @@ const FONTS_URL =
 
 /** Material Symbols, subset to the icons the toolbar and header use (names must stay sorted) */
 const ICONS_URL =
-  "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0&icon_names=add,arrow_drop_down,check,checklist,close,format_align_center,format_align_justify,format_align_left,format_align_right,format_bold,format_clear,format_color_reset,format_indent_decrease,format_indent_increase,format_italic,format_line_spacing,format_list_bulleted,format_list_numbered,format_paint,format_strikethrough,format_underlined,image,ink_highlighter,link,menu,open_in_new,play_arrow,print,redo,remove,shuffle,spellcheck,undo,upload&display=block";
+  "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0&icon_names=add,add_comment,arrow_drop_down,border_bottom,border_horizontal,border_left,border_right,border_top,check,checklist,close,edit,horizontal_rule,insert_page_break,keyboard_arrow_down,keyboard_arrow_up,keyboard_tab,more_vert,search,star,table,view_column,format_align_center,format_align_justify,format_align_left,format_align_right,format_bold,format_clear,format_color_reset,format_indent_decrease,format_indent_increase,format_italic,format_line_spacing,format_list_bulleted,format_list_numbered,format_paint,format_strikethrough,format_underlined,image,ink_highlighter,link,menu,open_in_new,play_arrow,print,redo,remove,shuffle,spellcheck,undo,upload&display=block";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (

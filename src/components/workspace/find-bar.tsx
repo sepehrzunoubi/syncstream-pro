@@ -56,14 +56,14 @@ export function FindBar({ editor }: { editor: Editor | null }) {
 
   if (mode === "bar") {
     return (
-      <div className="ss-find-bar" role="search" aria-label="Find in document">
+      <div className="ss-find-anchor"><div className="ss-find-bar" role="search" aria-label="Find in document">
         <input ref={inputRef} className="ss-find-input" placeholder="Find in document" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={onKey} aria-label="Find in document" />
         <span className={`ss-find-count ${query && !count ? "ss-find-none" : ""}`}>{counter}</span>
         <button type="button" className="ss-icon-btn" onClick={prev} disabled={!count} aria-label="Previous match" title="Previous match (Shift+Enter)"><Icon name="keyboard_arrow_up" /></button>
         <button type="button" className="ss-icon-btn" onClick={next} disabled={!count} aria-label="Next match" title="Next match (Enter)"><Icon name="keyboard_arrow_down" /></button>
         <button type="button" className="ss-icon-btn" onClick={() => { setMode("dialog"); setTimeout(() => inputRef.current?.focus(), 0); }} aria-label="More options" title="More options"><Icon name="more_vert" /></button>
         <button type="button" className="ss-icon-btn" onClick={close} aria-label="Close" title="Close"><Icon name="close" /></button>
-      </div>
+      </div></div>
     );
   }
   if (mode !== "dialog") return null;
