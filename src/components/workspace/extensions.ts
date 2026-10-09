@@ -9,6 +9,7 @@ import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
 import { DocSync, SyncAdd } from "./doc-sync";
 import { Find } from "./find";
+import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
 import TextAlign from "@tiptap/extension-text-align";
 import {
   cssColorToHex,
@@ -531,6 +532,7 @@ const DocFormat = Extension.create({
       },
       Tab: ({ editor }) => {
         const { selection } = editor.state;
+        if (editor.isActive("table")) return editor.commands.goToNextCell() || editor.commands.addRowAfter();
         // At the start of a list item, Tab nests it one level deeper, as in Docs
         if (selection.$from.parent.attrs.list && selection.$from.parentOffset === 0) return editor.commands.indent();
         const paragraphs = paragraphsInSelection(editor, selection.from, selection.to);
@@ -545,6 +547,7 @@ const DocFormat = Extension.create({
       },
       "Shift-Tab": ({ editor }) => {
         const { selection } = editor.state;
+        if (editor.isActive("table")) return editor.commands.goToPreviousCell();
         const attrs = paragraphsInSelection(editor, selection.from, selection.to)[0]?.attrs ?? {};
         if (attrs.firstLine && !attrs.list) return editor.commands.setFirstLine(false);
         return editor.commands.outdent();
@@ -675,6 +678,34 @@ const PageBreak = Node.create({
   renderHTML: () => ["span", { "data-page-break": "", class: "ss-page-break", contenteditable: "false" }, ["span", { class: "ss-page-break-label" }, "Page break"]],
 });
 
+/**
+ * Docs tables. A table, row or cell read from a document keeps its identity
+ * (tid, rid, cid) and the Docs indices its start occupies (span); ones made
+ * here have none until the document is read back.
+ */
+const idAttr = (name: string) => ({ [name]: { default: null, parseHTML: () => null, rendered: false } });
+const spanAttr = { span: { default: null, parseHTML: () => null, rendered: false }, endSpan: { default: null, parseHTML: () => null, rendered: false } };
+const DocTable = Table.extend({
+  addAttributes() { return { ...this.parent?.(), ...idAttr("tid"), ...spanAttr }; },
+}).configure({ resizable: false, HTMLAttributes: { class: "ss-table" } });
+const DocTableRow = TableRow.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("rid"), ...spanAttr }; } });
+const DocTableCell = TableCell.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      ...idAttr("cid"),
+      ...spanAttr,
+      background: {
+        default: null,
+        parseHTML: (el: HTMLElement) => cssColorToHex(el.style.backgroundColor) ?? null,
+        renderHTML: (a: { background?: string | null }) => (a.background ? { style: `background-color: ${a.background}` } : {}),
+      },
+    };
+  },
+});
+// Header cells from pasted HTML become ordinary cells (Docs has none)
+const DocTableHeader = TableHeader.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("cid"), ...spanAttr }; } });
+
 /** Superscript and subscript, one or the other, as Docs' Format > Text has them */
 const Superscript = Mark.create({
   name: "superscript",
@@ -733,6 +764,10 @@ export const editorExtensions = [
   Superscript,
   Subscript,
   PageBreak,
+  DocTable,
+  DocTableRow,
+  DocTableCell,
+  DocTableHeader,
   DocImage,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,

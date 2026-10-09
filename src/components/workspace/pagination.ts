@@ -168,6 +168,12 @@ function measure(view: EditorView, geom: PageGeometry): Break[] {
       lastBreakPara = q;
       return true;
     };
+    // A table moves to the next page whole (Docs breaks tables by row; cells here stay together)
+    if (child.classList.contains("tableWrapper") || child.tagName === "TABLE") {
+      if (top > pageStart + 1 && fits) { breakBefore(ci); removed += innerTotal; continue; }
+      removed += innerTotal;
+      continue;
+    }
     // Keep lines together: the whole paragraph goes to the next page
     if (keep.includes("lines") && fits && breakBefore(ci)) {
       if (bottom - pageStart <= CONTENT_H + 0.5) { removed += innerTotal; continue; }
@@ -344,15 +350,33 @@ export function offsetToPos(doc: Parameters<typeof DecorationSet.create>[0], off
 /** Position of each token, in the same order as doc-model's tokenize */
 export function tokenPositions(doc: Parameters<typeof DecorationSet.create>[0]): number[] {
   const out: number[] = [];
-  doc.forEach((node, pos) => {
+  type N = Parameters<typeof DecorationSet.create>[0];
+  const paragraph = (node: N, pos: number) => {
     if (node.attrs.locked) { out.push(pos); return; }
     let p = pos + 1;
     node.forEach((child) => {
       if (child.isText) for (let i = 0; i < child.text!.length; i++) out.push(p + i);
-      else if (child.type.name === "image" || child.type.name === "hardBreak") out.push(p);
+      else if (child.type.name === "image" || child.type.name === "hardBreak" || child.type.name === "pageBreak") out.push(p);
       p += child.nodeSize;
     });
     out.push(pos + node.nodeSize - 1); // the paragraph's end
+  };
+  doc.forEach((node, pos) => {
+    if (node.type.name !== "table") { paragraph(node, pos); return; }
+    out.push(pos); // table start
+    node.forEach((row, rowOffset) => {
+      const rowPos = pos + 1 + rowOffset;
+      out.push(rowPos);
+      row.forEach((cell, cellOffset) => {
+        const cellPos = rowPos + 1 + cellOffset;
+        out.push(cellPos);
+        if (cell.childCount === 0) out.push(cellPos + 1);
+        cell.forEach((p, pOffset) => paragraph(p, cellPos + 1 + pOffset));
+        out.push(cellPos + cell.nodeSize - 1); // cell end
+      });
+      out.push(rowPos + row.nodeSize - 1); // row end
+    });
+    out.push(pos + node.nodeSize - 1); // table end
   });
   return out;
 }

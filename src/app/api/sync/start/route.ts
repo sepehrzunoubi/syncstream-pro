@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { docs_v1 } from "googleapis";
 import {
   buildDripPlan,
   MAX_BREAK_MINUTES,
@@ -160,7 +161,14 @@ export async function POST(req: NextRequest) {
       if (typeof body.revisionId === "string" && body.revisionId && body.revisionId !== snap.revisionId) {
         return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });
       }
-      const paragraphs = (doc.body?.content ?? []).filter((el) => el.paragraph).map((el) => ({ start: el.startIndex ?? 0, end: el.endIndex ?? 0, bullet: el.paragraph!.bullet }));
+      const paragraphs: { start: number; end: number; bullet: docs_v1.Schema$Bullet | undefined }[] = [];
+      const collect = (elements: docs_v1.Schema$StructuralElement[]) => {
+        for (const el of elements) {
+          if (el.paragraph) paragraphs.push({ start: el.startIndex ?? 0, end: el.endIndex ?? 0, bullet: el.paragraph.bullet ?? undefined });
+          else if (el.table) for (const row of el.table.tableRows ?? []) for (const cell of row.tableCells ?? []) collect(cell.content ?? []);
+        }
+      };
+      collect(doc.body?.content ?? []);
       const paragraphFor = (at: number, mode: SegmentBody["mode"]) =>
         paragraphs.find((p) => (mode === "before" ? p.start === at : p.start <= at && at < p.end));
       if (segments.some((x) => !paragraphFor(x.at, x.mode))) return NextResponse.json({ error: DOC_CHANGED, code: "doc_changed" }, { status: 409 });

@@ -257,6 +257,55 @@ export function importDoc(doc: Doc): ImportedDoc {
     };
   };
 
+  /**
+   * A table as editable rows and cells. The Docs indices between one piece
+   * of content and the next (table, row and cell starts and ends) are kept
+   * as spans on the cell that follows them, or on the table's end, so the
+   * index of everything after the table stays right whatever Docs puts
+   * between cells.
+   */
+  const tableNode = (el: Element, tid: string): EditorNode => {
+    const table = el.table!;
+    const widths = (table.tableStyle?.tableColumnProperties ?? []).map((c) => pt(c.width));
+    // The index just after the last content read so far
+    let cursor = el.startIndex ?? 0;
+    const rowNodes: EditorNode[] = (table.tableRows ?? []).map((row, r) => {
+      const cellNodes: EditorNode[] = (row.tableCells ?? []).map((cell, c) => {
+        const content: EditorNode[] = [];
+        const firstContent = cell.content?.[0]?.startIndex ?? (cell.startIndex ?? cursor) + 1;
+        const span = Math.max(0, firstContent - cursor);
+        cursor = firstContent;
+        for (const inner of cell.content ?? []) {
+          if (inner.paragraph) content.push(paragraphNode(inner.paragraph));
+          else if (inner.table) {
+            // A table inside a table: shown, not editable
+            const flat: EditorNode[] = [];
+            cellParagraphs([inner], flat);
+            flat.forEach((p, k) => content.push(lock(p, k === 0 ? (inner.endIndex ?? 0) - (inner.startIndex ?? 0) : 0)));
+          }
+          cursor = inner.endIndex ?? cursor;
+        }
+        if (!content.length) { content.push({ type: "paragraph", attrs: {}, content: [] }); cursor = firstContent + 1; }
+        const style = cell.tableCellStyle ?? {};
+        const bg = hex(style.backgroundColor);
+        return {
+          type: "tableCell",
+          attrs: {
+            cid: `${tid}c${c}`,
+            span,
+            colspan: style.columnSpan ?? 1,
+            rowspan: style.rowSpan ?? 1,
+            colwidth: widths[c] ? [Math.round(widths[c]! / 0.75)] : null,
+            background: bg && bg !== "#ffffff" ? bg : null,
+          },
+          content,
+        };
+      });
+      return { type: "tableRow", attrs: { rid: `${tid}r${r}`, span: 0 }, content: cellNodes };
+    });
+    return { type: "table", attrs: { tid, span: 0, endSpan: Math.max(0, (el.endIndex ?? cursor) - cursor) }, content: rowNodes };
+  };
+
   const cellParagraphs = (elements: Element[], out: EditorNode[]) => {
     for (const el of elements) {
       if (el.paragraph) out.push(paragraphNode(el.paragraph));
@@ -281,11 +330,13 @@ export function importDoc(doc: Doc): ImportedDoc {
     if (el.paragraph) {
       const node = paragraphNode(el.paragraph);
       nodes.push(node.attrs?.locked ? lock(node, size) : node);
-    } else if (el.table || el.tableOfContents) {
+    } else if (el.table) {
+      nodes.push(tableNode(el, `t${++blockId}`));
+      hasContent = true;
+    } else if (el.tableOfContents) {
       // Shown cell by cell; the first carries the whole table's size
       const cells: EditorNode[] = [];
       cellParagraphs([el], cells);
-      if (el.table) hasContent = true;
       if (!cells.length) cells.push({ type: "paragraph", attrs: {}, content: [] });
       cells.forEach((c, k) => nodes.push(lock(c, k === 0 ? size : 0)));
     } else if (el.sectionBreak && i > 0) {

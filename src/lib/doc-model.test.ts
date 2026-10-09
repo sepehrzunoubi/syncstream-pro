@@ -171,3 +171,40 @@ test("page breaks and section breaks are saved as Docs inserts them", async () =
   assert.equal(segments.length, 1);
   assert.equal(segments[0].text, "new\u000C\nnext page");
 });
+
+test("tables: cells are editable paragraphs between structure tokens that keep Docs' indices", async () => {
+  const { tokenize, untokenize, directEdits, additions, signature } = await import("./doc-model");
+  const p = (text: string, marks?: { type: string }[]) => ({ type: "paragraph", attrs: {}, content: text ? [marks ? { type: "text", text, marks } : { type: "text", text }] : [] });
+  const cell = (cid: string, ...paras: Record<string, unknown>[]) => ({ type: "tableCell", attrs: { cid, span: 1 }, content: paras });
+  const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  const table = (tid: string, ...rows: Record<string, unknown>[]) => ({ type: "table", attrs: { tid, span: 1 }, content: rows });
+  // "Intro\n" (indices 1-6), table at 7: table(1) row(1) cell(1) "A\n"(2) cell(1) "B\n"(2) row(1) cell(1) "C\n" cell(1) "D\n", then "After\n"
+  const base = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A")), cell("c1", p("B"))), row("r1", cell("c0", p("C")), cell("c1", p("D")))), p("After")] };
+  const toks = tokenize(base);
+  assert.deepEqual(untokenize(toks), base, "a table survives the round trip");
+  assert.equal(signature(base), "Intro\n\u0000t1\u0000\u0000r1\u0000\u0000c1\u0000A\n\u0000c0\u0000\u0000c1\u0000B\n\u0000c0\u0000\u0000r0\u0000\u0000r1\u0000\u0000c1\u0000C\n\u0000c0\u0000\u0000c1\u0000D\n\u0000c0\u0000\u0000r0\u0000\u0000t0\u0000After\n");
+  // Typing in cell D (its text starts at index 7+1+1+1+2+1+2+1+1+2+1 = 20): a direct edit at that index
+  const edited = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A")), cell("c1", p("B"))), row("r1", cell("c0", p("C")), cell("c1", p("Dx")))), p("After")] };
+  const r1 = directEdits(base, edited);
+  assert.deepEqual(r1.requests.filter((r) => r.insertText), [{ insertText: { location: { index: 21 }, text: "x" } }]);
+  // An addition in cell B goes to index 13
+  const added = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A")), cell("c1", { type: "paragraph", attrs: {}, content: [{ type: "text", text: "B" }, { type: "text", text: "!", marks: [{ type: "syncAdd" }] }] })), row("r1", cell("c0", p("C")), cell("c1", p("D")))), p("After")] };
+  assert.deepEqual(additions(base, added).segments.map((s) => [s.at, s.text]), [[14, "!"]]);
+  // A new row after the first: one insertTableRow below row 0, and nothing else until the document is read back
+  const withRow = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A")), cell("c1", p("B"))), { type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: {}, content: [p("")] }, { type: "tableCell", attrs: {}, content: [p("")] }] }, row("r1", cell("c0", p("C")), cell("c1", p("D")))), p("After")] };
+  const r2 = directEdits(base, withRow);
+  assert.equal(r2.structural, true);
+  assert.deepEqual(r2.requests, [{ insertTableRow: { tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex: 0, columnIndex: 0 }, insertBelow: true } }]);
+  // A new column at the end, and a deleted row
+  const reshaped = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A")), cell("c1", p("B")), { type: "tableCell", attrs: {}, content: [p("")] })), p("After")] };
+  const r3 = directEdits(base, reshaped);
+  assert.deepEqual(r3.requests, [
+    { insertTableColumn: { tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex: 0, columnIndex: 1 }, insertRight: true } },
+    { deleteTableRow: { tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex: 1, columnIndex: 0 } } },
+  ]);
+  // A brand-new table before "After" is inserted empty at its index; a removed table is deleted whole
+  const fresh = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A")), cell("c1", p("B"))), row("r1", cell("c0", p("C")), cell("c1", p("D")))), { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: {}, content: [p("new")] }] }] }, p("After")] };
+  assert.deepEqual(directEdits(base, fresh).requests, [{ insertTable: { rows: 1, columns: 1, location: { index: 22 } } }]);
+  const gone = { type: "doc", content: [p("Intro"), p("After")] };
+  assert.deepEqual(directEdits(base, gone).requests, [{ deleteContentRange: { range: { startIndex: 7, endIndex: 22 } } }]);
+});

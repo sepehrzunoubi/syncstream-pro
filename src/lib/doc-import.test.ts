@@ -95,8 +95,10 @@ test("tables are locked and keep the indices after them right", () => {
   };
   const out = importDoc(doc);
   assert.equal(out.nodes.length, 3);
-  assert.equal(out.nodes[1].attrs?.locked, true);
-  assert.equal(out.nodes[1].attrs?.span, 8);
+  assert.equal(out.nodes[1].type, "table");
+  // The two indices before "Cel\n" and the two after it are kept as spans
+  assert.equal(out.nodes[1].content?.[0].content?.[0].attrs?.span, 2);
+  assert.equal(out.nodes[1].attrs?.endSpan, 2);
   // Text added at the end of "Bye" goes before its newline at index 15
   const base = { type: "doc", content: out.nodes };
   const target = { type: "doc", content: [out.nodes[0], out.nodes[1], { ...out.nodes[2], content: [...(out.nodes[2].content ?? []), { type: "text", text: "!", marks: [{ type: PENDING_MARK }] }] }] };
@@ -109,4 +111,37 @@ test("a list item added after a Docs item continues its numbering; a new list st
     listLabels([q, { list: null }, q, { ...q }, { list: null }, { list: "ordered" }, { list: "ordered" }, { list: "bullet" }]),
     ["1.", null, "2.", "3.", null, "1.", "2.", "\u25CF"]
   );
+});
+
+test("a Docs table is read as editable rows and cells with their index spans", async () => {
+  const { importDoc } = await import("./doc-import");
+  const { tokenize } = await import("./doc-model");
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex)], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  const cell = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + 1 + text.length, content: [para(text, startIndex + 1)], tableCellStyle: {} });
+  // Row 8..18 holds cells 9..12 and 13..18; the table runs to 19, one index past its row
+  const doc = {
+    revisionId: "r",
+    body: { content: [
+      { startIndex: 0, endIndex: 1, sectionBreak: {} },
+      para("Intro\n", 1),
+      { startIndex: 7, endIndex: 19, table: { rows: 1, columns: 2, tableRows: [{ startIndex: 8, endIndex: 18, tableCells: [cell("A\n", 9), cell("Bee\n", 12)] }], tableStyle: { tableColumnProperties: [{ width: { magnitude: 234, unit: "PT" } }, { width: { magnitude: 234, unit: "PT" } }] } } },
+      para("After\n", 19),
+    ] },
+  };
+  const { nodes } = importDoc(doc as never);
+  const table = nodes[1];
+  assert.equal(table.type, "table");
+  assert.equal(table.content?.[0].content?.[0].attrs?.span, 3, "table, row and cell starts before the first cell's text");
+  assert.equal(table.content?.[0].content?.[1].attrs?.span, 1, "one cell start before the second");
+  const cells = table.content?.[0].content ?? [];
+  assert.equal(cells.length, 2);
+  assert.equal(cells[1].content?.[0].content?.[0].text, "Bee");
+  assert.deepEqual(cells[0].attrs?.colwidth, [312]);
+  // Index arithmetic: "After" starts at 19 in the token model too
+  const toks = tokenize({ type: "doc", content: nodes });
+  let at = 1;
+  for (const t of toks) { if (t.k === "c" && t.c === "A" && at > 12) break; at += t.k === "st" ? t.span : t.k === "block" ? (t.node.attrs?.span as number) ?? 0 : 1; }
+  assert.equal(at, 19);
+  assert.equal(table.attrs?.endSpan, 2, "the row's and the table's ends");
 });

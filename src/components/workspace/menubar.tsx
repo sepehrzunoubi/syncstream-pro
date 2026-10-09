@@ -8,6 +8,26 @@ import { Icon } from "./icon";
 import { BULLET_PRESETS, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, type NamedStyle } from "@/lib/rich-text";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
 
+/** Docs' table picker: hover to size the table, click to insert */
+function TableGrid({ onPick }: { onPick: (rows: number, cols: number) => void }) {
+  const [hover, setHover] = useState<[number, number]>([0, 0]);
+  const SIZE = 10;
+  return (
+    <div className="ss-table-grid" role="group" aria-label="Table size" onMouseLeave={() => setHover([0, 0])}>
+      <div className="ss-table-grid-cells">
+        {Array.from({ length: SIZE * SIZE }, (_, i) => {
+          const r = Math.floor(i / SIZE) + 1;
+          const c = (i % SIZE) + 1;
+          return (
+            <MB.Item key={i} className="ss-table-grid-cell" data-on={r <= hover[0] && c <= hover[1]} onMouseEnter={() => setHover([r, c])} onFocus={() => setHover([r, c])} onSelect={() => onPick(r, c)} aria-label={`${c} by ${r}`} onMouseDown={keepSelection} />
+          );
+        })}
+      </div>
+      <div className="ss-table-grid-label">{hover[0] ? `${hover[1]} × ${hover[0]}` : "Table"}</div>
+    </div>
+  );
+}
+
 /** "1. a. i." or "● ○ ■": the first three levels of a Docs list style */
 function presetLabel(preset: string): string {
   return [0, 1, 2].map((level) => { const g = presetGlyph(preset, level); return typeof g === "string" ? g : g.format.replace(/%(\d)/g, (_m, d: string) => glyphNumber(1, Number(d) === level ? g.type : "DECIMAL")); }).join("  ");
@@ -109,6 +129,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         firstLine: !!para.firstLine,
         list: (para.list as string | null) ?? null,
         preset: (para.preset as string | null) ?? null,
+        inTable: e.isActive("table"),
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
       };
@@ -165,6 +186,9 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item onSelect={() => window.dispatchEvent(new CustomEvent("ss-image-url"))}>By URL</Item>
         </Sub>
         <Item disabled={off} shortcut={`${mod}K`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-open-link"))}>Link</Item>
+        <Sub label="Table" disabled={off}>
+          <TableGrid onPick={(rows, cols) => run((c) => c.insertTable({ rows, cols, withHeaderRow: false }))} />
+        </Sub>
         <Sep />
         <Sub label="Break" disabled={off}>
           <Item shortcut={`${mod}Enter`} onSelect={() => run((c) => c.insertPageBreak())}>Page break</Item>
@@ -174,6 +198,18 @@ export function DocsMenubar(p: DocsMenubarProps) {
       </TopMenu>
 
       <TopMenu label="Format">
+        {st?.inTable && (
+          <Sub label="Table">
+            <Item onSelect={() => run((c) => c.addRowBefore())}>Insert row above</Item>
+            <Item onSelect={() => run((c) => c.addRowAfter())}>Insert row below</Item>
+            <Item onSelect={() => run((c) => c.addColumnBefore())}>Insert column left</Item>
+            <Item onSelect={() => run((c) => c.addColumnAfter())}>Insert column right</Item>
+            <Sep />
+            <Item onSelect={() => run((c) => c.deleteRow())}>Delete row</Item>
+            <Item onSelect={() => run((c) => c.deleteColumn())}>Delete column</Item>
+            <Item onSelect={() => run((c) => c.deleteTable())}>Delete table</Item>
+          </Sub>
+        )}
         <Sub label="Text" disabled={off}>
           <Item checkable checked={st?.bold} shortcut={`${mod}B`} onSelect={() => run((c) => c.toggleBold())}>Bold</Item>
           <Item checkable checked={st?.italic} shortcut={`${mod}I`} onSelect={() => run((c) => c.toggleItalic())}>Italic</Item>

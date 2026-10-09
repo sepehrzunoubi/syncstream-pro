@@ -49,8 +49,14 @@ export type Tok =
   | { k: "pb"; marks: Marks; pending: boolean }
   /** End of a paragraph; carries the paragraph's attributes, like the newline does in Docs */
   | { k: "nl"; attrs: Record<string, unknown> }
-  /** Something shown but not editable (a table, a section break): `span` Docs indices */
-  | { k: "block"; node: EditorNode };
+  /** Something shown but not editable (a table of contents, a section break): `span` Docs indices */
+  | { k: "block"; node: EditorNode }
+  /**
+   * The structure of a table: where the table, each row and each cell start
+   * (each `span` Docs indices, as the document has them) and where they end
+   * (no indices). Cell contents are ordinary paragraphs between them.
+   */
+  | { k: "st"; kind: "table" | "row" | "cell" | "cellEnd" | "rowEnd" | "tableEnd"; span: number; id: string; attrs: Record<string, unknown> };
 
 const isPendingMarks = (marks: Marks | undefined) => !!marks?.some((m) => m.type === PENDING_MARK);
 const withoutPending = (marks: Marks | undefined): Marks => (marks ?? []).filter((m) => m.type !== PENDING_MARK);
@@ -60,15 +66,19 @@ const isPending = (t: Tok) => (t.k === "c" || t.k === "img" || t.k === "pb") && 
 /** Size of a token in Docs indices */
 function sizeOf(t: Tok): number {
   if (t.k === "block") return typeof t.node.attrs?.span === "number" ? (t.node.attrs.span as number) : 0;
+  if (t.k === "st") return t.span;
   return 1;
 }
 
+const spanOf = (attrs: Record<string, unknown> | undefined, key: string, fallback: number) => (typeof attrs?.[key] === "number" ? (attrs[key] as number) : fallback);
+let newTableSeq = 0;
+
 export function tokenize(doc: EditorNode | null | undefined): Tok[] {
   const out: Tok[] = [];
-  for (const node of doc?.content ?? []) {
+  const paragraph = (node: EditorNode) => {
     if (node.attrs?.locked) {
       out.push({ k: "block", node });
-      continue;
+      return;
     }
     for (const child of node.content ?? []) {
       const marks = child.marks ?? [];
@@ -84,6 +94,24 @@ export function tokenize(doc: EditorNode | null | undefined): Tok[] {
       }
     }
     out.push({ k: "nl", attrs: node.attrs ?? {} });
+  };
+  for (const node of doc?.content ?? []) {
+    if (node.type !== "table") { paragraph(node); continue; }
+    // A table: its start, then each row's start, each cell's start and content, with ends after each
+    const tid = typeof node.attrs?.tid === "string" ? node.attrs.tid : `new${++newTableSeq}`;
+    const rows = node.content ?? [];
+    out.push({ k: "st", kind: "table", span: spanOf(node.attrs, "span", 1), id: tid, attrs: node.attrs ?? {} });
+    rows.forEach((row, r) => {
+      out.push({ k: "st", kind: "row", span: spanOf(row.attrs, "span", 1), id: `${tid}:r${r}`, attrs: row.attrs ?? {} });
+      (row.content ?? []).forEach((cell, c) => {
+        out.push({ k: "st", kind: "cell", span: spanOf(cell.attrs, "span", 1), id: `${tid}:r${r}c${c}`, attrs: cell.attrs ?? {} });
+        const content = cell.content?.length ? cell.content : [{ type: "paragraph", attrs: {}, content: [] }];
+        for (const p of content) paragraph(p);
+        out.push({ k: "st", kind: "cellEnd", span: spanOf(cell.attrs, "endSpan", 0), id: `${tid}:r${r}c${c}/`, attrs: {} });
+      });
+      out.push({ k: "st", kind: "rowEnd", span: spanOf(row.attrs, "endSpan", 0), id: `${tid}:r${r}/`, attrs: {} });
+    });
+    out.push({ k: "st", kind: "tableEnd", span: spanOf(node.attrs, "endSpan", 0), id: `${tid}/`, attrs: {} });
   }
   return out;
 }
@@ -91,7 +119,12 @@ export function tokenize(doc: EditorNode | null | undefined): Tok[] {
 const marksKey = (m: Marks) => JSON.stringify(m);
 
 export function untokenize(tokens: Tok[]): EditorNode {
-  const content: EditorNode[] = [];
+  const root: EditorNode[] = [];
+  // Where blocks go: the document, or the open table cell
+  const stack: EditorNode[][] = [root];
+  const blocks = () => stack[stack.length - 1];
+  let table: EditorNode | null = null;
+  let row: EditorNode | null = null;
   let inline: EditorNode[] = [];
   let text = "";
   let textMarks: Marks | null = null;
@@ -99,6 +132,11 @@ export function untokenize(tokens: Tok[]): EditorNode {
     if (text) inline.push(textMarks && textMarks.length ? { type: "text", text, marks: textMarks } : { type: "text", text });
     text = "";
     textMarks = null;
+  };
+  const flushInline = () => {
+    flushText();
+    if (inline.length) blocks().push({ type: "paragraph", content: inline });
+    inline = [];
   };
   for (const t of tokens) {
     if (t.k === "c") {
@@ -112,23 +150,32 @@ export function untokenize(tokens: Tok[]): EditorNode {
     else if (t.k === "br") inline.push(t.marks.length ? { type: "hardBreak", marks: t.marks } : { type: "hardBreak" });
     else if (t.k === "pb") inline.push(t.marks.length ? { type: "pageBreak", marks: t.marks } : { type: "pageBreak" });
     else if (t.k === "nl") {
-      content.push({ type: "paragraph", attrs: t.attrs, content: inline });
+      blocks().push({ type: "paragraph", attrs: t.attrs, content: inline });
       inline = [];
     } else if (t.k === "block") {
-      content.push(t.node);
+      flushInline();
+      blocks().push(t.node);
+    } else if (t.k === "st") {
+      flushInline();
+      if (t.kind === "table") { table = { type: "table", attrs: { ...t.attrs, tid: t.id, span: t.span }, content: [] }; root.push(table); }
+      else if (t.kind === "row" && table) { row = { type: "tableRow", attrs: { ...t.attrs, span: t.span }, content: [] }; table.content!.push(row); }
+      else if (t.kind === "cell" && row) { const cell: EditorNode = { type: "tableCell", attrs: { ...t.attrs, span: t.span }, content: [] }; row.content!.push(cell); stack.push(cell.content!); }
+      else if (t.kind === "cellEnd") { if (stack.length > 1) { const cell = stack.pop()!; if (!cell.length) cell.push({ type: "paragraph", attrs: {}, content: [] }); const node = row?.content?.[row.content.length - 1]; if (node && t.span) node.attrs = { ...node.attrs, endSpan: t.span }; } }
+      else if (t.kind === "rowEnd") { if (row && t.span) row.attrs = { ...row.attrs, endSpan: t.span }; row = null; }
+      else if (t.kind === "tableEnd") { if (table && t.span) table.attrs = { ...table.attrs, endSpan: t.span }; table = null; }
     }
   }
-  flushText();
-  if (inline.length) content.push({ type: "paragraph", content: inline });
-  if (!content.length) content.push({ type: "paragraph" });
-  return { type: "doc", content };
+  flushInline();
+  while (stack.length > 1) { const cell = stack.pop()!; if (!cell.length) cell.push({ type: "paragraph", attrs: {}, content: [] }); }
+  if (!root.length) root.push({ type: "paragraph" });
+  return { type: "doc", content: root };
 }
 
 /** The document's characters and structure, ignoring formatting: equal when two copies read the same */
 export function signature(doc: EditorNode | null | undefined): string {
   return tokenize(doc)
     .filter((t) => !isPending(t))
-    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "nl" ? "\n" : `\u0000${sizeOf(t)}\u0000`))
+    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "nl" ? "\n" : t.k === "st" ? `\u0000${t.kind[0]}${t.span}\u0000` : `\u0000${sizeOf(t)}\u0000`))
     .join("");
 }
 
@@ -139,7 +186,7 @@ export function hasPending(doc: EditorNode | null | undefined): boolean {
 
 /** True when the document has text of its own (not only additions) */
 export function hasOriginalText(doc: EditorNode | null | undefined): boolean {
-  return tokenize(doc).some((t) => (t.k === "c" && !t.pending && t.c.trim() !== "") || (t.k === "img" && !t.pending) || t.k === "block");
+  return tokenize(doc).some((t) => (t.k === "c" && !t.pending && t.c.trim() !== "") || (t.k === "img" && !t.pending) || t.k === "block" || t.k === "st");
 }
 
 // ── Diff ────────────────────────────────────────────────────────────────────
@@ -150,6 +197,7 @@ function same(b: Tok, t: Tok): boolean {
     case "c": return b.c === (t as typeof b).c;
     case "img": return b.attrs.src === (t as typeof b).attrs.src;
     case "block": return b.node.attrs?.bid === (t as typeof b).node.attrs?.bid;
+    case "st": return b.kind === (t as typeof b).kind && b.id === (t as typeof b).id;
     default: return true;
   }
 }
@@ -234,7 +282,9 @@ function regionsOf(base: Tok[], target: Tok[], match: number[]): Region[] {
     const bs = i;
     i = Math.max(i, nextBase);
     if (j > ts || i > bs) {
-      regions.push({ bs, be: i, ts, te: j, pending: target.slice(ts, j).some(isPending) });
+      const added = target.slice(ts, j);
+      // Table structure is always a direct edit; the text inside a new table becomes an addition once the table exists
+      regions.push({ bs, be: i, ts, te: j, pending: added.some(isPending) && !added.some((t) => t.k === "st") && !base.slice(bs, i).some((t) => t.k === "st") });
     }
   }
   return regions;
@@ -272,10 +322,94 @@ function diff(base: Tok[], target: Tok[], forTyping = true) {
 function paragraphHasPending(target: Tok[], j: number): boolean {
   for (let q = j - 1; q >= 0; q--) {
     const t = target[q];
-    if (t.k === "nl" || t.k === "block") return false;
+    if (t.k === "nl" || t.k === "block" || t.k === "st") return false;
     if (isPending(t)) return true;
   }
   return false;
+}
+
+// ── Table structure ─────────────────────────────────────────────────────────
+
+interface TableShape { id: string; at: number; rows: { rid: string | null; cells: { cid: string | null }[] }[]; endAt: number }
+
+/** The tables of a token list: where each starts, and its rows and columns by identity */
+function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
+  const out: TableShape[] = [];
+  let cur: TableShape | null = null;
+  tokens.forEach((t, i) => {
+    if (t.k !== "st") return;
+    if (t.kind === "table") { cur = { id: t.id, at: index ? index[i] : i, rows: [], endAt: 0 }; out.push(cur); }
+    else if (t.kind === "row" && cur) cur.rows.push({ rid: typeof t.attrs.rid === "string" ? t.attrs.rid : null, cells: [] });
+    else if (t.kind === "cell" && cur) cur.rows[cur.rows.length - 1]?.cells.push({ cid: typeof t.attrs.cid === "string" ? t.attrs.cid : null });
+    else if (t.kind === "tableEnd" && cur) { cur.endAt = index ? index[i] : i; cur = null; }
+  });
+  return out;
+}
+
+/** Column identities of a table: the first cell with an id in each column */
+function columnIds(shape: TableShape): (string | null)[] {
+  const n = Math.max(0, ...shape.rows.map((r) => r.cells.length));
+  return Array.from({ length: n }, (_, c) => shape.rows.map((r) => r.cells[c]?.cid ?? null).find((x) => x) ?? null);
+}
+
+/**
+ * Requests that change table structure: whole tables added or removed, rows
+ * and columns added or removed. Later tables first, and within a table
+ * removals last to first, so indices stay valid. Text inside the tables is
+ * saved on the next round, once the document has been read back.
+ */
+function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): DocsRequest[] {
+  const requests: DocsRequest[] = [];
+  const baseTables = tablesOf(base, index);
+  const targetTables = tablesOf(target);
+  const byId = new Map(baseTables.map((t) => [t.id, t]));
+  // Where a new table goes: the Docs index of the first base token at or after it
+  const match = alignTokens(base, target);
+  const docIndexAt = (j: number) => {
+    for (let q = j; q < target.length; q++) if (match[q] >= 0) return index[match[q]];
+    return index[base.length];
+  };
+  const changes: { at: number; requests: DocsRequest[] }[] = [];
+  for (const t of targetTables) {
+    const b = byId.get(t.id);
+    if (!b) {
+      const rows = t.rows.length;
+      const columns = Math.max(1, ...t.rows.map((r) => r.cells.length));
+      changes.push({ at: docIndexAt(t.at), requests: [{ insertTable: { rows, columns, location: { index: docIndexAt(t.at) } } }] });
+      continue;
+    }
+    const reqs: DocsRequest[] = [];
+    const loc = (rowIndex: number, columnIndex: number) => ({ tableCellLocation: { tableStartLocation: { index: b.at }, rowIndex, columnIndex } });
+    // Columns: removed ones last to first, then new ones left to right
+    const baseCols = columnIds(b);
+    const targetCols = columnIds(t);
+    for (let c = baseCols.length - 1; c >= 0; c--) if (baseCols[c] && !targetCols.includes(baseCols[c])) reqs.push({ deleteTableColumn: loc(0, c) });
+    let kept = baseCols.filter((c) => c && targetCols.includes(c));
+    targetCols.forEach((cid, c) => {
+      if (cid && kept.includes(cid)) return;
+      // Insert next to the previous kept column (or before the first)
+      const prev = targetCols.slice(0, c).reverse().find((x) => x && kept.includes(x));
+      const idx = prev ? kept.indexOf(prev) : 0;
+      reqs.push({ insertTableColumn: { ...loc(0, Math.max(0, idx)), insertRight: !!prev } });
+      kept = prev ? [...kept.slice(0, idx + 1), cid ?? `col${c}`, ...kept.slice(idx + 1)] : [cid ?? `col${c}`, ...kept];
+    });
+    const baseRows = b.rows.map((r) => r.rid);
+    const targetRows = t.rows.map((r) => r.rid);
+    for (let r = baseRows.length - 1; r >= 0; r--) if (baseRows[r] && !targetRows.includes(baseRows[r])) reqs.push({ deleteTableRow: loc(r, 0) });
+    let keptRows = baseRows.filter((r) => r && targetRows.includes(r));
+    targetRows.forEach((rid, r) => {
+      if (rid && keptRows.includes(rid)) return;
+      const prev = targetRows.slice(0, r).reverse().find((x) => x && keptRows.includes(x));
+      const idx = prev ? keptRows.indexOf(prev) : 0;
+      reqs.push({ insertTableRow: { ...loc(Math.max(0, idx), 0), insertBelow: !!prev } });
+      keptRows = prev ? [...keptRows.slice(0, idx + 1), rid ?? `row${r}`, ...keptRows.slice(idx + 1)] : [rid ?? `row${r}`, ...keptRows];
+    });
+    if (reqs.length) changes.push({ at: b.at, requests: reqs });
+  }
+  for (const b of baseTables) if (!targetTables.some((t) => t.id === b.id)) changes.push({ at: b.at, requests: [{ deleteContentRange: { range: { startIndex: b.at, endIndex: b.endAt } } }] });
+  changes.sort((x, y) => y.at - x.at);
+  for (const c of changes) requests.push(...c.requests);
+  return requests;
 }
 
 // ── Direct edits ────────────────────────────────────────────────────────────
@@ -312,6 +446,8 @@ export interface DirectEdits {
   requests: DocsRequest[];
   /** The base once these edits are saved: the target without its additions */
   saved: EditorNode;
+  /** True when table structure changed: the document must be read back before anything else is saved */
+  structural?: boolean;
 }
 
 /** Requests that make the Google Doc match the editor, except for additions */
@@ -319,13 +455,16 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
   const base = tokenize(baseDoc);
   const target = tokenize(targetDoc);
   const { match, regions, index } = diff(base, target);
+  // Tables added, removed or reshaped come first, on their own: their indices are only known once Google has applied them
+  const structure = tableStructureRequests(base, target, index);
+  if (structure.length) return { requests: structure, saved: baseDoc, structural: true };
 
   // Paragraph starts in the base, for paragraph ranges
   const paraStart = new Array<number>(base.length);
   let start = 0;
   for (let i = 0; i < base.length; i++) {
     paraStart[i] = start;
-    if (base[i].k === "nl" || base[i].k === "block") start = i + 1;
+    if (base[i].k === "nl" || base[i].k === "block" || base[i].k === "st") start = i + 1;
   }
 
   const styleRequests: DocsRequest[] = [];
@@ -412,7 +551,7 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
     if (r.pending || r.te === r.ts) continue;
     // Text that came back without being an addition (undoing a deletion): put it back now.
     // New section breaks and page breaks are inserted as Docs inserts them (each with its newline).
-    const inserted = target.slice(r.ts, r.te).filter((t) => t.k !== "block" || isNewSection(t));
+    const inserted = target.slice(r.ts, r.te).filter((t) => (t.k !== "block" || isNewSection(t)) && t.k !== "st");
     let text = "";
     const styled: { from: number; to: number; style: DocsRequest }[] = [];
     let pos = at;
@@ -521,7 +660,7 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
   const segments: Segment[] = [];
   for (const r of regions) {
     if (!r.pending || r.te === r.ts) continue;
-    const atParagraphStart = r.bs === 0 || base[r.bs - 1].k === "nl" || base[r.bs - 1].k === "block";
+    const atParagraphStart = r.bs === 0 || base[r.bs - 1].k === "nl" || base[r.bs - 1].k === "block" || base[r.bs - 1].k === "st";
     const endsWithBreak = target[r.te - 1].k === "nl";
     const mode: Segment["mode"] = atParagraphStart && endsWithBreak ? "before" : "inline";
     const te = mode === "before" ? r.te - 1 : r.te;
@@ -566,7 +705,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
       lineStart = true;
       continue;
     }
-    if (t.k === "block") continue;
+    if (t.k === "block" || t.k === "st") continue;
     const style = styleFromMarks(withoutPending(t.marks));
     lastStyle = style;
     if (t.k === "pb") { text += PAGE_BREAK; push(1, style); continue; }
