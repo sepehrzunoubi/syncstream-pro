@@ -34,6 +34,9 @@ export function Menu({ trigger, children, align = "start", keepFocus, className,
 }
 
 interface MenuItemProps {
+  className?: string;
+  "aria-label"?: string;
+  "data-on"?: boolean;
   children: React.ReactNode;
   onSelect?: () => void;
   checked?: boolean;
@@ -45,9 +48,9 @@ interface MenuItemProps {
   style?: React.CSSProperties;
 }
 
-export function MenuItem({ children, onSelect, checked, checkable, shortcut, icon, disabled, style }: MenuItemProps) {
+export function MenuItem({ children, onSelect, checked, checkable, shortcut, icon, disabled, style, className, ...rest }: MenuItemProps) {
   return (
-    <DM.Item className="ss-menu-item" onSelect={onSelect} disabled={disabled} style={style}>
+    <DM.Item className={`ss-menu-item ${className ?? ""}`} onSelect={onSelect} disabled={disabled} style={style} {...rest}>
       {checkable && <span className="ss-check">{checked ? <Icon name="check" size={18} /> : null}</span>}
       {icon && <span className="flex w-5 justify-center text-[var(--ss-text-2)]">{icon}</span>}
       <span className="min-w-0 truncate">{children}</span>

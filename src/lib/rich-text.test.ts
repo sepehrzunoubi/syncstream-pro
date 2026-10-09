@@ -249,3 +249,29 @@ test("super/subscript, headings 4-6, keep options, borders and shading reach Doc
   assert.deepEqual(back.content?.[0].content?.[0].marks, [{ type: "superscript" }]);
   assert.deepEqual(parseFormat(text, format), { ok: true, format });
 });
+
+test("list levels and styles: bullets are created with leading tabs that Docs removes", async () => {
+  const { bulletRequests, SegmentFormat, paragraphFromAttrs, paragraphRequest, paragraphDelta, richToEditorJSON } = await import("./rich-text");
+  const reqs = bulletRequests([{ start: 1, end: 5, level: 0 }, { start: 5, end: 9, level: 2 }], "NUMBERED_DECIMAL_NESTED");
+  assert.deepEqual(reqs, [
+    { insertText: { location: { index: 5 }, text: "\t\t" } },
+    { createParagraphBullets: { range: { startIndex: 1, endIndex: 11 }, bulletPreset: "NUMBERED_DECIMAL_NESTED" } },
+  ]);
+  // A segment whose second line is one level deeper re-creates bullets for that line at its level
+  const fmt = { v: 1 as const, paragraphs: [paragraphFromAttrs({ list: "bullet" }), paragraphFromAttrs({ list: "bullet", level: 1, preset: "BULLET_STAR_CIRCLE_SQUARE" })], runs: [{ len: 7 }] };
+  const sf = new SegmentFormat("one\ntwo", fmt);
+  const r = sf.writeRequests(0, 7, 10, null);
+  const creates = r.requests.filter((q) => q.createParagraphBullets);
+  assert.equal(creates.length, 2);
+  assert.deepEqual(r.docList, { type: "bullet", start: 4, level: 1, preset: "BULLET_STAR_CIRCLE_SQUARE" });
+  assert.ok(r.requests.some((q) => (q.insertText as { text?: string } | undefined)?.text === "\t"));
+  // Right indent reaches Docs and comes back
+  const p = paragraphFromAttrs({ indentEnd: 54 });
+  assert.equal(p.end, 54);
+  assert.deepEqual((paragraphRequest(p, 1, 2).updateParagraphStyle as { paragraphStyle: { indentEnd: unknown } }).paragraphStyle.indentEnd, { magnitude: 54, unit: "PT" });
+  assert.deepEqual(paragraphDelta(paragraphFromAttrs({}), p)?.fields, ["indentEnd"]);
+  assert.equal(richToEditorJSON("x", { v: 1, paragraphs: [p], runs: [{ len: 1 }] }).content?.[0].attrs?.indentEnd, 54);
+  const li = richToEditorJSON("x", { v: 1, paragraphs: [fmt.paragraphs[1]], runs: [{ len: 1 }] }).content?.[0].attrs;
+  assert.equal(li?.level, 1);
+  assert.equal(li?.preset, "BULLET_STAR_CIRCLE_SQUARE");
+});

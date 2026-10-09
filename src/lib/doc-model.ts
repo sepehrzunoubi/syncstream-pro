@@ -15,10 +15,11 @@
  */
 
 import {
+  bulletRequests,
   DEFAULT_PARAGRAPH,
   LINK_COLOR,
-  LIST_PRESETS,
   OBJ,
+  presetOf,
   paragraphFromAttrs,
   paragraphDelta,
   resolveTextStyle,
@@ -322,13 +323,25 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
   }
 
   const styleRequests: DocsRequest[] = [];
-  const bulletRequests: DocsRequest[] = [];
+  const listRequests: DocsRequest[] = [];
   let run: { from: number; to: number; key: string; diff: NonNullable<ReturnType<typeof textStyleDiff>> } | null = null;
   const flushRun = () => {
     if (run) styleRequests.push({ updateTextStyle: { range: { startIndex: run.from, endIndex: run.to }, textStyle: run.diff.textStyle, fields: run.diff.fields.join(",") } });
     run = null;
   };
-  const creates: { from: number; to: number; preset: string }[] = [];
+  // Paragraphs whose bullets must be (re)made, with the list run each belongs to in the target
+  const changedLists = new Set<number>();
+  const runOf = (j: number): [number, number] => {
+    let s = j;
+    let e = j;
+    const kind = (q: number) => { const t = target[q]; return t.k === "nl" ? (paragraphFromAttrs(t.attrs).list ?? null) : null; };
+    const type = kind(j);
+    const nlBefore = (q: number) => { for (let k = q - 1; k >= 0; k--) { const t = target[k]; if (t.k === "nl") return k; if (t.k === "block") return -1; } return -1; };
+    const nlAfter = (q: number) => { for (let k = q + 1; k < target.length; k++) { const t = target[k]; if (t.k === "nl") return k; if (t.k === "block") return -1; } return -1; };
+    for (let k = nlBefore(s); k >= 0 && kind(k) === type; k = nlBefore(k)) s = k;
+    for (let k = nlAfter(e); k >= 0 && kind(k) === type; k = nlAfter(k)) e = k;
+    return [s, e];
+  };
 
   for (let j = 0; j < target.length; j++) {
     const i = match[j];
@@ -349,23 +362,41 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
       const pa = paragraphFromAttrs(b.attrs);
       const pb = paragraphFromAttrs(t.attrs);
       const range = { startIndex: index[paraStart[i]], endIndex: index[i] + 1 };
-      if ((pa.list ?? null) !== (pb.list ?? null)) {
-        if (pa.list) bulletRequests.push({ deleteParagraphBullets: { range } });
-        if (pb.list) creates.push({ from: range.startIndex, to: range.endIndex, preset: LIST_PRESETS[pb.list] });
+      const listChanged = (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
+      if (listChanged) {
+        if (pa.list && !pb.list) listRequests.push({ deleteParagraphBullets: { range } });
+        if (pb.list) changedLists.add(j);
       }
       const d = paragraphDelta(pa, pb);
       if (d) styleRequests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
     }
   }
   flushRun();
-  // Consecutive paragraphs turned into the same kind of list become one list
-  const merged: typeof creates = [];
-  for (const c of creates) {
-    const last = merged[merged.length - 1];
-    if (last && last.preset === c.preset && last.to === c.from) last.to = c.to;
-    else merged.push({ ...c });
+  // A changed list item is re-made together with its whole run (consecutive items of its kind), so the
+  // run stays one list with continuous numbering, each item at its own level. Runs are handled last
+  // to first: the tabs that set levels come and go inside each run's requests.
+  const runs: [number, number][] = [];
+  for (const j of Array.from(changedLists)) {
+    const r = runOf(j);
+    if (!runs.some(([s]) => s === r[0])) runs.push(r);
   }
-  for (const c of merged) bulletRequests.push({ createParagraphBullets: { range: { startIndex: c.from, endIndex: c.to }, bulletPreset: c.preset } });
+  runs.sort((a, b) => b[0] - a[0]);
+  for (const [s, e] of runs) {
+    const items: { start: number; end: number; level: number }[] = [];
+    let preset = "";
+    for (let q = s; q <= e; q++) {
+      const t = target[q];
+      if (t.k !== "nl" || match[q] < 0) continue; // only paragraphs the document already has
+      const i = match[q];
+      const pb = paragraphFromAttrs(t.attrs);
+      if (!pb.list) continue;
+      preset = presetOf(pb);
+      items.push({ start: index[paraStart[i]], end: index[i] + 1, level: pb.level ?? 0 });
+    }
+    if (!items.length) continue;
+    listRequests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
+    listRequests.push(...bulletRequests(items, preset));
+  }
 
   // Content changes from the end backwards, so earlier indices stay valid
   const contentRequests: DocsRequest[] = [];
@@ -400,7 +431,7 @@ export function directEdits(baseDoc: EditorNode, targetDoc: EditorNode): DirectE
     for (const st of styled) contentRequests.push(textRequest(st.style, st.from, st.to));
   }
 
-  const requests = [...styleRequests, ...bulletRequests, ...contentRequests];
+  const requests = [...styleRequests, ...listRequests, ...contentRequests];
 
   // What the base becomes: the target without additions, with paragraph
   // changes that wait for an addition still at their saved values

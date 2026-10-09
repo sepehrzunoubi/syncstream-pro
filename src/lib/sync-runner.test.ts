@@ -49,8 +49,19 @@ class FakeDoc implements DocsApi {
     this.calls.insert++;
     if (this.failNextInsertBeforeWrite) { this.failNextInsertBeforeWrite = false; throw new Error("network down"); }
     let first = true;
-    for (const r of requests as Record<string, { location?: { index: number }; text?: string; uri?: string }>[]) {
+    for (const r of requests as Record<string, { location?: { index: number }; text?: string; uri?: string; range?: { startIndex: number; endIndex: number } }>[]) {
       const ins = r.insertText ?? r.insertInlineImage;
+      if (r.createParagraphBullets?.range) {
+        // Like Docs: the leading tabs of each paragraph in the range set its level and are removed
+        const { startIndex, endIndex } = r.createParagraphBullets.range;
+        const starts: number[] = [];
+        for (let p = 0; p < this.text.length; p++) if (p === 0 || this.text[p - 1] === "\n") starts.push(p);
+        for (const p of starts.reverse()) {
+          const end = this.text.indexOf("\n", p);
+          const pEnd = end < 0 ? this.text.length : end + 1;
+          if (p + 1 < endIndex && pEnd + 1 > startIndex) this.text = this.text.slice(0, p) + this.text.slice(p).replace(/^\t+/, "");
+        }
+      }
       if (!ins) { this.styling.push(r); continue; }
       const index = ins.location!.index;
       if (first && !this.anywhere) assert.equal(index, this.text.length + 1, "runner must append at the end");
@@ -694,4 +705,27 @@ test("every typed character ends up in its font, typos and all", async () => {
     const wrong = Array.from(h.doc.text).map((ch, k) => (ch !== "\n" && fonts[k] !== "Times New Roman" ? k : -1)).filter((k) => k >= 0);
     assert.deepEqual(wrong.slice(0, 5), [], `seed ${seed}: characters not in Times New Roman at ${wrong.slice(0, 5)} ("${h.doc.text.slice(wrong[0], wrong[0] + 20)}")`);
   }
+});
+
+test("nested list items are typed at their level: tabs set the level and Docs removes them in the same batch", async () => {
+  const item = (text: string, level: number) => ({ type: "paragraph", attrs: { list: "bullet", level }, content: [{ type: "text", text }] });
+  const { h, text, batches } = await formattedHarness(
+    [item("one", 0), item("two", 1), item("three", 2), item("four", 0)],
+    [
+      { kind: "insert", text: "one\n", delayMs: 0, activity: "Typing" },
+      { kind: "insert", text: "two\nthr", delayMs: 400, activity: "Typing" },
+      { kind: "insert", text: "ee\nfour", delayMs: 400, activity: "Typing" },
+    ]
+  );
+  // No tab survives in the document, and every character landed where the source has it
+  assert.equal(h.doc.text, text);
+  assert.equal(text, "one\ntwo\nthree\nfour");
+  // Each line at a new level re-makes the list from its first item, every item with its level's tabs:
+  // batch 2 does it for "two" (1 tab) and again for "three" (1 + 2), batch 3 for "four" (0 + 1 + 2)
+  const tabs = batches.map((b) => (b.text.match(/\t/g) ?? []).length);
+  assert.deepEqual(tabs, [0, 4, 3]);
+  const creates = batches.flatMap((b) => b.reqs.filter((r) => r.createParagraphBullets).map((r) => r.createParagraphBullets));
+  assert.equal(creates[0].bulletPreset, "BULLET_DISC_CIRCLE_SQUARE");
+  // The last re-creation covers the whole list plus the three tabs Docs removes
+  assert.deepEqual(creates[creates.length - 1].range, { startIndex: 1, endIndex: text.length + 1 + 3 });
 });

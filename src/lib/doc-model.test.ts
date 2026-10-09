@@ -134,3 +134,18 @@ test("reopening shows Google's copy: only additions come back, not edits Google 
   );
   assert.deepEqual(rebase(google, shown), doc(p(["Why?", add(" Now")], { list: "ordered" }), p("Yes.End")));
 });
+
+test("indenting a list item re-makes its whole list with each item at its level", async () => {
+  const { directEdits } = await import("./doc-model");
+  const li = (text: string, level: number) => ({ type: "paragraph", attrs: { list: "bullet", level }, content: [{ type: "text", text }] });
+  const base = { type: "doc", content: [li("one", 0), li("two", 0), li("three", 0)] };
+  const target = { type: "doc", content: [li("one", 0), li("two", 1), li("three", 0)] };
+  const { requests } = directEdits(base, target);
+  const del = requests.find((r) => r.deleteParagraphBullets) as { deleteParagraphBullets: { range: { startIndex: number; endIndex: number } } };
+  assert.deepEqual(del.deleteParagraphBullets.range, { startIndex: 1, endIndex: 15 }, "the whole run");
+  const tab = requests.find((r) => r.insertText) as { insertText: { location: { index: number }; text: string } };
+  assert.deepEqual(tab.insertText, { location: { index: 5 }, text: "\t" }, "one tab in front of 'two'");
+  const create = requests.find((r) => r.createParagraphBullets) as { createParagraphBullets: { range: { startIndex: number; endIndex: number } } };
+  assert.deepEqual(create.createParagraphBullets.range, { startIndex: 1, endIndex: 16 }, "the run plus the tab Docs will remove");
+  assert.ok(requests.indexOf(tab) < requests.indexOf(create) && requests.indexOf(del) < requests.indexOf(tab));
+});

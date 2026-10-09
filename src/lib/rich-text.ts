@@ -20,6 +20,23 @@ export const LIST_PRESETS: Record<ListType, string> = {
   ordered: "NUMBERED_DECIMAL_ALPHA_ROMAN",
   check: "BULLET_CHECKBOX",
 };
+/** Docs' list styles (the bulletPreset of createParagraphBullets), as its toolbar menus order them */
+export const BULLET_PRESETS = [
+  "BULLET_DISC_CIRCLE_SQUARE", "BULLET_DIAMONDX_ARROW3D_SQUARE", "BULLET_CHECKBOX", "BULLET_ARROW_DIAMOND_DISC", "BULLET_STAR_CIRCLE_SQUARE",
+  "BULLET_ARROW3D_CIRCLE_SQUARE", "BULLET_LEFTTRIANGLE_DIAMOND_DISC", "BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE", "BULLET_DIAMOND_CIRCLE_SQUARE",
+];
+export const NUMBER_PRESETS = [
+  "NUMBERED_DECIMAL_ALPHA_ROMAN", "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS", "NUMBERED_DECIMAL_NESTED",
+  "NUMBERED_UPPERALPHA_ALPHA_ROMAN", "NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL", "NUMBERED_ZERODECIMAL_ALPHA_ROMAN",
+];
+const ALL_PRESETS = new Set<string>([...BULLET_PRESETS, ...NUMBER_PRESETS]);
+export const MAX_LIST_LEVEL = 8;
+/** The kind of list a preset makes */
+export function presetType(preset: string | null | undefined): ListType | null {
+  if (!preset || !ALL_PRESETS.has(preset)) return null;
+  return preset === "BULLET_CHECKBOX" ? "check" : preset.startsWith("BULLET") ? "bullet" : "ordered";
+}
+export const presetOf = (p: { list?: ListType; preset?: string }) => (p.preset && ALL_PRESETS.has(p.preset) ? p.preset : LIST_PRESETS[p.list ?? "bullet"]);
 const LIST_TYPES = new Set<string>(["bullet", "ordered", "check"]);
 /** Docs' default link colour */
 export const LINK_COLOR = "#1155cc";
@@ -116,8 +133,14 @@ export interface ParagraphFormat {
   spacing: number;
   /** Bulleted, numbered or checklist paragraph */
   list?: ListType;
+  /** Nesting level of a list item, 0 to 8 */
+  level?: number;
+  /** Docs list style (bulletPreset) of a list item */
+  preset?: string;
   /** Exact indents in points, from a paragraph of an existing Google Doc (overrides indent/firstLine) */
   exact?: { start: number; first: number };
+  /** Right indent in points */
+  end?: number;
   /** Space above and below the paragraph in points; absent leaves Docs' own */
   space?: { above: number; below: number };
   /** Pagination: keep with next, keep lines together, prevent single lines (widow/orphan control) */
@@ -291,7 +314,13 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   if (borders) extras.borders = borders;
   const shading = typeof a.shading === "string" && /^#[0-9a-f]{6}$/i.test(a.shading) ? a.shading.toLowerCase() : undefined;
   if (shading) extras.shading = shading;
-  if (list) return { style, align, indent: 0, firstLine: false, spacing, list, ...extras };
+  const end = typeof a.indentEnd === "number" && Number.isFinite(a.indentEnd) && a.indentEnd > 0 ? Math.min(1000, Math.round(a.indentEnd * 100) / 100) : undefined;
+  if (end) extras.end = end;
+  if (list) {
+    const level = typeof a.level === "number" && Number.isFinite(a.level) ? Math.max(0, Math.min(MAX_LIST_LEVEL, Math.round(a.level))) : 0;
+    const preset = typeof a.preset === "string" && ALL_PRESETS.has(a.preset) && presetType(a.preset) === list ? a.preset : undefined;
+    return { style, align, indent: 0, firstLine: false, spacing, list, ...(level ? { level } : {}), ...(preset ? { preset } : {}), ...extras };
+  }
   const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing, ...extras };
   if (box && typeof box === "object") p.exact = { start: num(box.start), first: num(box.start) + num(box.first) };
   else if (exact && typeof exact === "object") p.exact = { start: num(exact.start), first: num(exact.first) };
@@ -475,6 +504,9 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           firstLine: (p as ParagraphFormat).firstLine,
           lineSpacing: (p as ParagraphFormat).spacing,
           list: (p as ParagraphFormat).list,
+          level: (p as ParagraphFormat).level,
+          preset: (p as ParagraphFormat).preset,
+          indentEnd: (p as ParagraphFormat).end,
           exact: (p as ParagraphFormat).exact,
           space: (p as ParagraphFormat).space,
           keep: (p as ParagraphFormat).keep,
@@ -536,7 +568,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   if (images.length) format.images = images;
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
-    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading });
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading });
   }
   return { ok: true, format };
 }
@@ -546,7 +578,26 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
 export type DocsRequest = Record<string, unknown>;
 
 /** List state of the paragraph the next write appends to. A negative start is a list that is not ours. */
-export type DocListState = { type: ListType; start: number } | null;
+export type DocListState = { type: ListType; start: number; level?: number; preset?: string } | null;
+
+/**
+ * Bullets for paragraphs, each at its nesting level. Docs reads the level
+ * of a new bullet from the tabs in front of the paragraph and then removes
+ * them, so the tabs are inserted right before createParagraphBullets and
+ * are gone right after it: nothing else in the batch sees them.
+ */
+export function bulletRequests(paragraphs: { start: number; end: number; level: number }[], preset: string): DocsRequest[] {
+  if (!paragraphs.length) return [];
+  const requests: DocsRequest[] = [];
+  let tabs = 0;
+  for (const p of [...paragraphs].reverse()) {
+    if (p.level > 0) { requests.push({ insertText: { location: { index: p.start }, text: "\t".repeat(p.level) } }); tabs += p.level; }
+  }
+  requests.push({ createParagraphBullets: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end + tabs }, bulletPreset: preset } });
+  return requests;
+}
+const sameList = (a: DocListState, b: { list?: ListType; level?: number; preset?: string }) =>
+  !!a && !!b.list && a.type === b.list && (a.level ?? 0) === (b.level ?? 0) && (a.preset ?? LIST_PRESETS[a.type]) === presetOf(b);
 
 /** Precomputed lookups for turning text ranges into Docs formatting requests. */
 export class FormatIndex {
@@ -622,10 +673,18 @@ export class FormatIndex {
         const listStart = this.listStartOf(p);
         // A paragraph opened inside someone else's list first leaves it
         if (docList && docList.start < 0) requests.push({ deleteParagraphBullets: { range: { startIndex: at(pStart), endIndex: at(segEnd) } } });
-        if (!(docList && docList.type === para.list && docList.start === listStart)) {
-          requests.push({ createParagraphBullets: { range: { startIndex: at(listStart), endIndex: at(segEnd) }, bulletPreset: LIST_PRESETS[para.list] } });
+        if (!(sameList(docList, para) && docList!.start === listStart)) {
+          // Join the list by re-creating it from its first item, every item at its level, so numbering stays continuous
+          const first = this.paragraphIndexAt(listStart);
+          const items: { start: number; end: number; level: number }[] = [];
+          for (let q = first; q <= p; q++) {
+            const qs = this.paraStarts[q];
+            const qe = q === p ? segEnd : (this.paraStarts[q + 1] ?? this.text.length);
+            items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0 });
+          }
+          requests.push(...bulletRequests(items, presetOf(para)));
         }
-        processed.set(p, { type: para.list, start: listStart });
+        processed.set(p, { type: para.list, start: listStart, level: para.level ?? 0, preset: presetOf(para) });
       }
     }
 
@@ -674,9 +733,9 @@ export class FormatIndex {
 
   /** Source offset of the first paragraph of the list that paragraph p belongs to */
   private listStartOf(p: number): number {
-    const type = this.format.paragraphs[p]?.list;
+    const para = this.format.paragraphs[p] ?? DEFAULT_PARAGRAPH;
     let q = p;
-    while (q > 0 && this.format.paragraphs[q - 1]?.list === type) q--;
+    while (q > 0 && this.format.paragraphs[q - 1]?.list === para.list && presetOf(this.format.paragraphs[q - 1]) === presetOf(para)) q--;
     return this.paraStarts[q];
   }
 
@@ -716,6 +775,7 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style:
       fields.push("indentStart", "indentFirstLine");
     }
   }
+  if ((a.end ?? 0) !== (b.end ?? 0)) { style.indentEnd = { magnitude: b.end ?? 0, unit: "PT" }; fields.push("indentEnd"); }
   if (b.space && (a.space?.above !== b.space.above || a.space?.below !== b.space.below)) {
     style.spaceAbove = { magnitude: b.space.above, unit: "PT" };
     style.spaceBelow = { magnitude: b.space.below, unit: "PT" };
@@ -817,10 +877,10 @@ export class SegmentFormat {
         }
       }
       const want = para.list ?? null;
-      if ((cur?.type ?? null) !== want) {
+      if ((cur?.type ?? null) !== want || (want && !sameList(cur, para))) {
         if (cur) requests.push({ deleteParagraphBullets: { range } });
-        if (want) requests.push({ createParagraphBullets: { range, bulletPreset: LIST_PRESETS[want] } });
-        cur = want ? { type: want, start: lineStart } : null;
+        if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0 }], presetOf(para)));
+        cur = want ? { type: want, start: lineStart, level: para.level ?? 0, preset: presetOf(para) } : null;
         if (!want) {
           // Indents Docs kept from the bullets
           const ind = effectiveIndent(para);
@@ -890,6 +950,7 @@ export function paragraphRequest(p: ParagraphFormat, startIndex: number, endInde
     paragraphStyle.indentFirstLine = { magnitude: indent.first, unit: "PT" };
     fields.push("indentStart", "indentFirstLine");
   }
+  if (p.end) { paragraphStyle.indentEnd = { magnitude: p.end, unit: "PT" }; fields.push("indentEnd"); }
   if (p.space) {
     paragraphStyle.spaceAbove = { magnitude: p.space.above, unit: "PT" };
     paragraphStyle.spaceBelow = { magnitude: p.space.below, unit: "PT" };
@@ -919,7 +980,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       : null;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null },
+      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null },
       content: [],
     };
     const end = pos + line.length;

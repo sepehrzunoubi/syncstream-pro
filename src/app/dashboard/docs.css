@@ -373,6 +373,15 @@
 }
 
 /* List labels are computed like Docs numbers them (see list-labels.ts) */
+/* Nesting levels of lists made here: Docs indents each level another half inch */
+.ss-doc p[data-list][data-level="1"] { margin-left: 72pt !important; }
+.ss-doc p[data-list][data-level="2"] { margin-left: 108pt !important; }
+.ss-doc p[data-list][data-level="3"] { margin-left: 144pt !important; }
+.ss-doc p[data-list][data-level="4"] { margin-left: 180pt !important; }
+.ss-doc p[data-list][data-level="5"] { margin-left: 216pt !important; }
+.ss-doc p[data-list][data-level="6"] { margin-left: 252pt !important; }
+.ss-doc p[data-list][data-level="7"] { margin-left: 288pt !important; }
+.ss-doc p[data-list][data-level="8"] { margin-left: 324pt !important; }
 .ss-doc p[data-list][data-box] { margin-left: var(--ss-li-start, 36pt) !important; }
 .ss-doc p[data-list][data-box]::before { left: var(--ss-li-marker, -18pt); }
 .ss-doc p[data-list][data-label]::before {
@@ -520,6 +529,17 @@
 }
 .ss-popover input:focus { outline: none; border: 2px solid var(--ss-blue, #0b57d0); padding: 0 9px; }
 .ss-doc.ss-painting { cursor: copy; }
+/* Split list buttons and Docs' list style menus */
+.ss-split { display: inline-flex; align-items: center; }
+.ss-split-arrow { display: inline-flex; align-items: center; height: 28px; width: 14px; margin-left: -4px; border-radius: 4px; color: var(--ss-text-2); }
+.ss-split-arrow:hover:not(:disabled) { background: var(--ss-hover); }
+.ss-preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 6px; }
+.ss-preset-item { height: auto !important; padding: 6px 4px !important; border: 1px solid var(--ss-divider); border-radius: 4px; justify-content: center; }
+.ss-preset-item[data-on="true"] { border-color: var(--ss-blue); background: var(--ss-pressed); }
+.ss-preset { display: flex; flex-direction: column; gap: 5px; width: 72px; }
+.ss-preset > span { display: flex; align-items: center; gap: 4px; }
+.ss-preset-glyph { flex: none; width: 20px; font-size: 10px; line-height: 10px; color: var(--ss-text-2); text-align: left; white-space: nowrap; }
+.ss-preset-line { flex: 1; height: 2px; border-radius: 1px; background: #c4c7c5; }
 .ss-toolbar .ss-icon-btn[data-armed="true"] { background: var(--ss-pressed); color: var(--ss-on-pressed); }
 
 @media print {

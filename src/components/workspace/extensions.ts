@@ -18,7 +18,9 @@ import {
   INDENT_PT,
   LINE_SPACINGS,
   MAX_INDENT,
+  MAX_LIST_LEVEL,
   NAMED_STYLES,
+  presetType,
   roundSize,
   type Border,
   type Borders,
@@ -48,7 +50,11 @@ declare module "@tiptap/core" {
       setCapitalization: (mode: "lower" | "upper" | "title") => ReturnType;
       stepFontSize: (dir: 1 | -1) => ReturnType;
       clearFormatting: () => ReturnType;
-      toggleList: (type: ListType) => ReturnType;
+      toggleList: (type: ListType, preset?: string) => ReturnType;
+      /** Docs list style for the current list run */
+      setListPreset: (preset: string) => ReturnType;
+      /** Exact indents in points (the ruler): text start, first line offset, right indent */
+      setIndents: (indents: { start?: number; first?: number; end?: number }) => ReturnType;
     };
   }
 }
@@ -164,8 +170,24 @@ const DocParagraph = Paragraph.extend({
       },
       /** Which Docs list a paragraph belongs to, its level, and what Docs draws for it (labels are decorations) */
       listId: { default: null, parseHTML: () => null, rendered: false },
-      level: { default: null, parseHTML: () => null, rendered: false },
+      level: {
+        default: null,
+        parseHTML: (el: HTMLElement) => { const v = parseInt(el.getAttribute("data-level") ?? "", 10); return Number.isFinite(v) ? Math.max(0, Math.min(MAX_LIST_LEVEL, v)) : null; },
+        renderHTML: (a: { level?: number | null; list?: string | null }) => (a.list && a.level ? { "data-level": String(a.level) } : {}),
+      },
       glyph: { default: null, parseHTML: () => null, rendered: false },
+      /** Docs list style of a list made here */
+      preset: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-preset"),
+        renderHTML: (a: { preset?: string | null; list?: string | null }) => (a.list && a.preset ? { "data-preset": a.preset } : {}),
+      },
+      /** Right indent in points */
+      indentEnd: {
+        default: null,
+        parseHTML: (el: HTMLElement) => { const v = cssLengthToPt(el.style.marginRight); return v && v > 0 ? Math.round(v * 100) / 100 : null; },
+        renderHTML: (a: { indentEnd?: number | null }) => (a.indentEnd ? { style: `margin-right: ${a.indentEnd}pt` } : {}),
+      },
       /** Exact indents and spacing of a paragraph read from Docs, in points */
       box: {
         default: null,
@@ -264,7 +286,22 @@ function paragraphsInSelection(editor: { state: Editor["state"] }, from: number,
 }
 
 /** Leaving a list, or starting a new one: Docs makes a new list, with default indents */
-const NO_LIST = { list: null, listId: null, level: null, glyph: null, box: null };
+const NO_LIST = { list: null, listId: null, level: null, glyph: null, preset: null, box: null };
+
+/** A list item at a new level. An item read from a Docs list becomes one of our lists in the same style. */
+function localList(a: Record<string, unknown>, level: number): Record<string, unknown> {
+  const glyph = a.glyph as { type?: string | null; symbol?: string | null } | null;
+  const preset = (a.preset as string | null) ?? (a.list === "ordered" ? presetFromGlyph(glyph?.type) : a.list === "check" ? "BULLET_CHECKBOX" : "BULLET_DISC_CIRCLE_SQUARE");
+  return { level, preset, listId: null, glyph: null, box: null };
+}
+function presetFromGlyph(type: string | null | undefined): string {
+  switch (type) {
+    case "UPPER_ALPHA": return "NUMBERED_UPPERALPHA_ALPHA_ROMAN";
+    case "UPPER_ROMAN": return "NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL";
+    case "ZERO_DECIMAL": return "NUMBERED_ZERODECIMAL_ALPHA_ROMAN";
+    default: return "NUMBERED_DECIMAL_ALPHA_ROMAN";
+  }
+}
 
 /** Indent steps of a paragraph, counting exact indents read from Docs */
 function stepsOf(a: Record<string, unknown>): number {
@@ -313,18 +350,59 @@ const DocFormat = Extension.create({
           .updateAttributes("paragraph", { styleName: style })
           .run();
       },
-      indent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.min(MAX_INDENT, stepsOf(a) + 1), box: null })),
-      outdent: () => updateParagraphs((a) => (a.list ? {} : { indent: Math.max(0, stepsOf(a) - 1), box: null })),
+      // On a list item, indenting changes its level, as in Docs (an item of a Docs list becomes one of ours)
+      indent: () => updateParagraphs((a) => (a.list ? localList(a, Math.min(MAX_LIST_LEVEL, ((a.level as number | null) ?? 0) + 1)) : { indent: Math.min(MAX_INDENT, stepsOf(a) + 1), box: null })),
+      outdent: () => updateParagraphs((a) => (a.list ? localList(a, Math.max(0, ((a.level as number | null) ?? 0) - 1)) : { indent: Math.max(0, stepsOf(a) - 1), box: null })),
+      setListPreset: (preset) => ({ tr, state, dispatch }) => {
+        const type = presetType(preset);
+        if (!type) return false;
+        // The whole run of consecutive list items the selection touches takes the style
+        const { from, to } = state.selection;
+        const paras: { pos: number; node: typeof state.doc }[] = [];
+        state.doc.forEach((node, pos) => paras.push({ pos, node }));
+        const inSel = (p: { pos: number; node: typeof state.doc }) => p.pos < to && p.pos + p.node.nodeSize > from;
+        const isList = (p: { pos: number; node: typeof state.doc }) => !!p.node.attrs.list;
+        const hit = new Set<number>();
+        paras.forEach((p, i) => {
+          if (!inSel(p) || !isList(p)) return;
+          let s = i;
+          let e = i;
+          while (s > 0 && isList(paras[s - 1])) s--;
+          while (e < paras.length - 1 && isList(paras[e + 1])) e++;
+          for (let k = s; k <= e; k++) hit.add(k);
+        });
+        for (const k of Array.from(hit)) {
+          const p = paras[k];
+          tr.setNodeMarkup(p.pos, undefined, { ...p.node.attrs, list: type, preset, listId: null, glyph: null, level: (p.node.attrs.level as number | null) ?? 0 });
+        }
+        if (dispatch) dispatch(tr);
+        return hit.size > 0;
+      },
+      setIndents: (indents) => updateParagraphs((a) => {
+        const out: Record<string, unknown> = {};
+        if (indents.end != null) out.indentEnd = indents.end > 0 ? Math.round(indents.end * 100) / 100 : null;
+        if (indents.start == null && indents.first == null) return out;
+        const cur = (a.box as { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null) ?? null;
+        const r = (v: number) => Math.round(v * 100) / 100;
+        if (a.list) {
+          const start = r(indents.start ?? cur?.start ?? 36);
+          const marker = r((indents.first ?? (cur ? (cur.start ?? 36) + (cur.marker ?? -18) : 18)) - start);
+          return { ...out, box: { ...(cur ?? {}), start, marker } };
+        }
+        const start = r(indents.start ?? cur?.start ?? stepsOf(a) * INDENT_PT);
+        const first = r((indents.first ?? (cur ? (cur.start ?? 0) + (cur.first ?? 0) : start + (a.firstLine ? INDENT_PT : 0))) - start);
+        return { ...out, box: { ...(cur ?? {}), start, first }, indent: 0, firstLine: false };
+      }),
       setFirstLine: (on) => updateParagraphs((a) => (a.list ? {} : { indent: stepsOf(a), firstLine: on, box: null })),
-      toggleList: (type) => ({ tr, state, dispatch }) => {
+      toggleList: (type, preset) => ({ tr, state, dispatch }) => {
         const { from, to } = state.selection;
         const paras: { pos: number; attrs: Record<string, unknown> }[] = [];
         state.doc.nodesBetween(from, to, (node, pos) => {
           if (node.type.name === "paragraph") paras.push({ pos, attrs: node.attrs });
         });
-        const allOn = paras.length > 0 && paras.every((p) => p.attrs.list === type);
+        const allOn = paras.length > 0 && paras.every((p) => p.attrs.list === type && (!preset || p.attrs.preset === preset));
         for (const p of paras) {
-          tr.setNodeMarkup(p.pos, undefined, allOn ? { ...p.attrs, ...NO_LIST } : { ...p.attrs, ...NO_LIST, list: type, indent: 0, firstLine: false });
+          tr.setNodeMarkup(p.pos, undefined, allOn ? { ...p.attrs, ...NO_LIST } : { ...p.attrs, ...NO_LIST, list: type, preset: preset ?? null, level: 0, indent: 0, firstLine: false });
         }
         if (dispatch) dispatch(tr);
         return true;
@@ -379,7 +457,7 @@ const DocFormat = Extension.create({
       clearFormatting: () => ({ chain }) =>
         chain()
           .unsetFormattingMarks()
-          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null, keep: null, borders: null, shading: null })))
+          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null, indentEnd: null, keep: null, borders: null, shading: null })))
           .run(),
     };
   },
@@ -427,7 +505,8 @@ const DocFormat = Extension.create({
       },
       Tab: ({ editor }) => {
         const { selection } = editor.state;
-        if (selection.$from.parent.attrs.list && selection.$from.parentOffset === 0) return true; // no nested lists
+        // At the start of a list item, Tab nests it one level deeper, as in Docs
+        if (selection.$from.parent.attrs.list && selection.$from.parentOffset === 0) return editor.commands.indent();
         const paragraphs = paragraphsInSelection(editor, selection.from, selection.to);
         if (paragraphs.length > 1) return editor.commands.indent();
         const atStart = selection.empty && selection.$from.parentOffset === 0;
@@ -441,7 +520,7 @@ const DocFormat = Extension.create({
       "Shift-Tab": ({ editor }) => {
         const { selection } = editor.state;
         const attrs = paragraphsInSelection(editor, selection.from, selection.to)[0]?.attrs ?? {};
-        if (attrs.firstLine) return editor.commands.setFirstLine(false);
+        if (attrs.firstLine && !attrs.list) return editor.commands.setFirstLine(false);
         return editor.commands.outdent();
       },
       "Mod-]": ({ editor }) => editor.commands.indent(),

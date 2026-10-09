@@ -5,7 +5,13 @@ import * as MB from "@radix-ui/react-menubar";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
-import { LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, type NamedStyle } from "@/lib/rich-text";
+import { BULLET_PRESETS, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, type NamedStyle } from "@/lib/rich-text";
+import { presetGlyph, glyphNumber } from "@/lib/list-labels";
+
+/** "1. a. i." or "● ○ ■": the first three levels of a Docs list style */
+function presetLabel(preset: string): string {
+  return [0, 1, 2].map((level) => { const g = presetGlyph(preset, level); return typeof g === "string" ? g : g.format.replace(/%(\d)/g, (_m, d: string) => glyphNumber(1, Number(d) === level ? g.type : "DECIMAL")); }).join("  ");
+}
 
 function useMod() {
   const [mod, setMod] = useState("Ctrl+");
@@ -102,6 +108,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
         list: (para.list as string | null) ?? null,
+        preset: (para.preset as string | null) ?? null,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
       };
@@ -188,6 +195,16 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item checkable checked={st?.firstLine} shortcut="Tab" onSelect={() => run((c) => c.setFirstLine(!st?.firstLine))}>Indent first line</Item>
         </Sub>
         <Sub label="Bullets & numbering" disabled={off}>
+          <Sub label="Numbered list">
+            {NUMBER_PRESETS.map((p) => (
+              <Item key={p} checkable checked={st?.list === "ordered" && (st?.preset ?? NUMBER_PRESETS[0]) === p} onSelect={() => run((c) => (st?.list ? c.setListPreset(p) : c.toggleList("ordered", p)))}>{presetLabel(p)}</Item>
+            ))}
+          </Sub>
+          <Sub label="Bulleted list">
+            {BULLET_PRESETS.filter((p) => p !== "BULLET_CHECKBOX").map((p) => (
+              <Item key={p} checkable checked={st?.list === "bullet" && (st?.preset ?? BULLET_PRESETS[0]) === p} onSelect={() => run((c) => (st?.list ? c.setListPreset(p) : c.toggleList("bullet", p)))}>{presetLabel(p)}</Item>
+            ))}
+          </Sub>
           <Item checkable checked={st?.list === "check"} shortcut={`${mod}Shift+9`} onSelect={() => run((c) => c.toggleList("check"))}>Checklist</Item>
           <Item checkable checked={st?.list === "bullet"} shortcut={`${mod}Shift+8`} onSelect={() => run((c) => c.toggleList("bullet"))}>Bulleted list</Item>
           <Item checkable checked={st?.list === "ordered"} shortcut={`${mod}Shift+7`} onSelect={() => run((c) => c.toggleList("ordered"))}>Numbered list</Item>

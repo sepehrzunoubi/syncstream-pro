@@ -3,14 +3,16 @@
 import React, { useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
-import { MAX_INDENT } from "@/lib/rich-text";
+import { INDENT_PT } from "@/lib/rich-text";
 import { DEFAULT_GEOMETRY, type PageGeometry } from "./pagination";
 
-// Indent steps of half an inch, in CSS pixels (96 per inch)
-const STEP = 48;
+// CSS pixels (96 per inch); the ruler snaps to a sixteenth of an inch, like Docs
+const GRID = 6;
 const BLUE = "#0b57d0";
+const px = (pt: number) => (pt * 96) / 72;
+const toPt = (x: number) => Math.round(((x * 72) / 96) * 100) / 100;
 
-type Drag = { kind: "left" | "first"; x: number } | null;
+type Drag = { kind: "left" | "first" | "right"; x: number } | null;
 
 /** The Docs ruler: inch scale, grey margins, and draggable indent markers for the current paragraph. */
 export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { editor: Editor | null; disabled?: boolean; geometry?: PageGeometry }) {
@@ -23,43 +25,52 @@ export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { edito
   const para = useEditorState({
     editor,
     selector: ({ editor: e }) => {
-      if (!e) return { indent: 0, firstLine: false };
+      if (!e) return { start: 0, first: 0, end: 0, list: false };
       const a = e.getAttributes("paragraph");
-      return { indent: (a.indent as number) ?? 0, firstLine: !!a.firstLine };
+      const box = a.box as { start?: number; first?: number; marker?: number } | null;
+      const list = !!a.list;
+      // Exact indents in points: the box when the paragraph has one, else its steps
+      const level = (a.level as number | null) ?? 0;
+      const start = box ? box.start ?? (list ? 36 : 0) : list ? INDENT_PT * (level + 1) : ((a.indent as number) ?? 0) * INDENT_PT;
+      const first = list ? start + (box?.marker ?? -18) : start + (box ? box.first ?? 0 : a.firstLine ? INDENT_PT : 0);
+      return { start, first, end: (a.indentEnd as number | null) ?? 0, list };
     },
   });
 
-  const leftX = M + (para?.indent ?? 0) * STEP;
-  const firstX = leftX + (para?.firstLine ? STEP : 0);
+  const leftX = M + px(para?.start ?? 0);
+  const firstX = M + px(para?.first ?? 0);
+  const rightX = W - MR - px(para?.end ?? 0);
   const shownLeft = drag?.kind === "left" ? drag.x : leftX;
   const shownFirst = drag?.kind === "first" ? drag.x : drag?.kind === "left" ? drag.x + (firstX - leftX) : firstX;
+  const shownRight = drag?.kind === "right" ? drag.x : rightX;
 
   const toRulerX = (clientX: number) => {
     const r = svgRef.current?.getBoundingClientRect();
     if (!r) return 0;
     return ((clientX - r.left) / r.width) * W;
   };
-  const snapLeft = (x: number) => M + Math.max(0, Math.min(MAX_INDENT, Math.round((x - M) / STEP))) * STEP;
+  const snap = (x: number) => M + Math.round((x - M) / GRID) * GRID;
 
-  const start = (kind: "left" | "first") => (e: React.PointerEvent) => {
+  const start = (kind: NonNullable<Drag>["kind"]) => (e: React.PointerEvent) => {
     if (disabled || !editor) return;
     e.preventDefault();
     (e.target as Element).setPointerCapture(e.pointerId);
-    setDrag({ kind, x: kind === "left" ? leftX : firstX });
+    setDrag({ kind, x: kind === "left" ? leftX : kind === "first" ? firstX : rightX });
   };
   const move = (e: React.PointerEvent) => {
     if (!drag) return;
-    const x = toRulerX(e.clientX);
-    setDrag({ ...drag, x: drag.kind === "left" ? snapLeft(x) : Math.max(leftX, Math.min(W - MR, x)) });
+    const x = snap(toRulerX(e.clientX));
+    const lo = M;
+    const hi = W - MR;
+    if (drag.kind === "right") setDrag({ ...drag, x: Math.max(Math.max(shownLeft, shownFirst) + GRID, Math.min(hi, x)) });
+    else if (drag.kind === "left") setDrag({ ...drag, x: Math.max(lo, Math.min(rightX - GRID - Math.max(0, firstX - leftX), x)) });
+    else setDrag({ ...drag, x: Math.max(lo, Math.min(rightX - GRID, x)) });
   };
   const end = () => {
     if (!drag || !editor) return setDrag(null);
-    if (drag.kind === "left") {
-      const level = Math.round((drag.x - M) / STEP);
-      editor.chain().focus().updateAttributes("paragraph", { indent: level }).run();
-    } else {
-      editor.chain().focus().setFirstLine(drag.x - leftX >= STEP / 2).run();
-    }
+    if (drag.kind === "right") editor.chain().focus().setIndents({ end: toPt(W - MR - drag.x) }).run();
+    else if (drag.kind === "left") editor.chain().focus().setIndents({ start: toPt(drag.x - M), first: toPt(drag.x - M + (firstX - leftX)) }).run();
+    else editor.chain().focus().setIndents({ first: toPt(drag.x - M) }).run();
     setDrag(null);
   };
 
@@ -94,8 +105,8 @@ export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { edito
             <rect className="ss-marker" x={shownFirst - 6} y={0} width={12} height={4} rx={1} fill={BLUE} onPointerDown={start("first")} />
             {/* left indent: triangle */}
             <path className="ss-marker" d={`M ${shownLeft - 6} 5 L ${shownLeft + 6} 5 L ${shownLeft} 11 Z`} fill={BLUE} onPointerDown={start("left")} />
-            {/* right indent (fixed) */}
-            <path d={`M ${W - MR - 6} 5 L ${W - MR + 6} 5 L ${W - MR} 11 Z`} fill={BLUE} />
+            {/* right indent */}
+            <path className="ss-marker" d={`M ${shownRight - 6} 5 L ${shownRight + 6} 5 L ${shownRight} 11 Z`} fill={BLUE} onPointerDown={start("right")} />
           </g>
         )}
       </svg>

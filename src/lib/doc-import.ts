@@ -243,6 +243,7 @@ export function importDoc(doc: Doc): ImportedDoc {
         lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : 115,
         list,
         ...listAttrs,
+        indentEnd: pt(ps.indentEnd) || null,
         box: { ...box, above: above ?? null, below: below ?? null },
         keep: Object.keys(keep).length ? keep : null,
         borders: Object.keys(borders).length ? borders : null,

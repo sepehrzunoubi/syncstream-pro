@@ -8,9 +8,49 @@ import { ColorMenu } from "./color-menu";
 import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
 import {
-  DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, NAMED_STYLES, NAMED_STYLE_ORDER,
+  BULLET_PRESETS, DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, MAX_LIST_LEVEL, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS,
   fontStack, type NamedStyle,
 } from "@/lib/rich-text";
+import { presetGlyph, glyphNumber } from "@/lib/list-labels";
+
+/** A small preview of a list style: its first three levels, as Docs' menus show them */
+function PresetPreview({ preset }: { preset: string }) {
+  return (
+    <span className="ss-preset" aria-hidden="true">
+      {[0, 1, 2].map((level) => {
+        const g = presetGlyph(preset, level);
+        const label = typeof g === "string" ? g : g.format.replace(/%(\d)/g, (_m, d: string) => glyphNumber(1, Number(d) === level ? g.type : "DECIMAL"));
+        return <span key={level} style={{ paddingLeft: 6 + level * 8 }}><span className="ss-preset-glyph">{label}</span><span className="ss-preset-line" /></span>;
+      })}
+    </span>
+  );
+}
+
+/** A toolbar list button like Docs': the button toggles the list, the arrow opens its styles */
+function ListButton({ kind, on, preset, disabled, title, icon, presets, onToggle, onPreset }: {
+  kind: "bullet" | "ordered"; on: boolean; preset: string | null; disabled?: boolean; title: string; icon: string; presets: string[];
+  onToggle: () => void; onPreset: (preset: string) => void;
+}) {
+  const keep = (e: React.MouseEvent) => e.preventDefault();
+  return (
+    <span className="ss-split">
+      <button className="ss-icon-btn" data-on={on} onMouseDown={keep} onClick={onToggle} disabled={disabled} title={title} aria-label={title} aria-pressed={on}>
+        <Icon name={icon} />
+      </button>
+      <Menu keepFocus label={`${kind === "bullet" ? "Bulleted" : "Numbered"} list styles`} trigger={
+        <button className="ss-split-arrow" onMouseDown={keep} disabled={disabled} aria-label={`${kind === "bullet" ? "Bulleted" : "Numbered"} list styles`}><Icon name="arrow_drop_down" size={18} /></button>
+      }>
+        <div className="ss-preset-grid" role="group">
+          {presets.map((p) => (
+            <MenuItem key={p} className="ss-preset-item" onSelect={() => onPreset(p)} aria-label={p.toLowerCase().replace(/_/g, " ")} data-on={on && (preset ?? presets[0]) === p}>
+              <PresetPreview preset={p} />
+            </MenuItem>
+          ))}
+        </div>
+      </Menu>
+    </span>
+  );
+}
 
 const ZOOMS = [50, 75, 90, 100, 125, 150];
 const ALIGN_ICONS = { left: "format_align_left", center: "format_align_center", right: "format_align_right", justify: "format_align_justify" } as const;
@@ -108,6 +148,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         highlight: (e.getAttributes("highlight").color as string | undefined) ?? (e.isActive("highlight") ? "#ffff00" : null),
         link: e.isActive("link"),
         list: (para.list as string | null) ?? null,
+        preset: (para.preset as string | null) ?? null,
+        level: (para.level as number | null) ?? 0,
       };
     },
   });
@@ -293,19 +335,17 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <button className="ss-icon-btn" data-on={s?.list === "check"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("check"))} title={`Checklist (${mod}Shift+9)`} aria-label="Checklist" aria-pressed={s?.list === "check"}>
         <Icon name="checklist" />
       </button>
-      <button className="ss-icon-btn" data-on={s?.list === "bullet"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("bullet"))} title={`Bulleted list (${mod}Shift+8)`} aria-label="Bulleted list" aria-pressed={s?.list === "bullet"}>
-        <Icon name="format_list_bulleted" />
-      </button>
-      <button className="ss-icon-btn" data-on={s?.list === "ordered"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("ordered"))} title={`Numbered list (${mod}Shift+7)`} aria-label="Numbered list" aria-pressed={s?.list === "ordered"}>
-        <Icon name="format_list_numbered" />
-      </button>
+      <ListButton kind="bullet" on={s?.list === "bullet"} preset={s?.preset ?? null} disabled={off} title={`Bulleted list (${mod}Shift+8)`} icon="format_list_bulleted" presets={BULLET_PRESETS.filter((p) => p !== "BULLET_CHECKBOX")}
+        onToggle={() => run((c) => c.toggleList("bullet"))} onPreset={(p) => run((c) => (s?.list ? c.setListPreset(p) : c.toggleList("bullet", p)))} />
+      <ListButton kind="ordered" on={s?.list === "ordered"} preset={s?.preset ?? null} disabled={off} title={`Numbered list (${mod}Shift+7)`} icon="format_list_numbered" presets={NUMBER_PRESETS}
+        onToggle={() => run((c) => c.toggleList("ordered"))} onPreset={(p) => run((c) => (s?.list ? c.setListPreset(p) : c.toggleList("ordered", p)))} />
 
       <span className="ss-sep" />
 
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.outdent())} disabled={(s?.indent ?? 0) === 0} title={`Decrease indent (${mod}[)`} aria-label="Decrease indent">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.outdent())} disabled={s?.list ? (s.level ?? 0) === 0 : (s?.indent ?? 0) === 0} title={`Decrease indent (${mod}[)`} aria-label="Decrease indent">
         <Icon name="format_indent_decrease" />
       </button>
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.indent())} disabled={(s?.indent ?? 0) >= MAX_INDENT} title={`Increase indent (${mod}])`} aria-label="Increase indent">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.indent())} disabled={s?.list ? (s.level ?? 0) >= MAX_LIST_LEVEL : (s?.indent ?? 0) >= MAX_INDENT} title={`Increase indent (${mod}])`} aria-label="Increase indent">
         <Icon name="format_indent_increase" />
       </button>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.clearFormatting())} title={`Clear formatting (${mod}\\)`} aria-label="Clear formatting">
