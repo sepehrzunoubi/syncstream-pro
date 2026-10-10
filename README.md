@@ -249,3 +249,16 @@ npm run style:compile -- --candidate rules-fewshot   # ship a candidate
 npm run typecheck
 npm run lint
 ```
+
+### Development checks
+
+| Command | What it checks |
+| --- | --- |
+| `npm test` | Unit tests (node:test): planner, runner, document model, import, formatting requests, pagination, page setup, secrets, style engine |
+| `npm run typecheck` | `tsc --noEmit` over the app, scripts and browser tests |
+| `npm run lint` | ESLint (Next.js rules) over `src`, `e2e` and `scripts` |
+| `npm run e2e` | Browser tests (Playwright, Chromium) against a production build: `npm run build` first, then `npm run e2e`. Every `/api/*` route is stubbed in the browser, so no Google account or environment variables are needed. `npm run e2e:ui` opens the Playwright UI |
+
+The browser tests live in `e2e/`. `e2e/fixtures.ts` fakes Google behind the API routes and records every Docs `batchUpdate` the editor sends, so tests assert the exact requests (indices, fields) a user action produces. The document they open is built in `e2e/fixtures/google-doc.ts` as a `documents.get` body and run through the app's own importer. Chromium comes from `npx playwright install chromium`; on a machine where the browsers live in `/opt/pw-browsers`, the config finds them there.
+
+CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and on every pull request: lint, typecheck and unit tests in one job, the production build in another, the browser tests against that build, and an informational `npm audit` of the production dependencies.
