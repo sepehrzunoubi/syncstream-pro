@@ -94,8 +94,9 @@ test("styleRequests: paragraph style only where a paragraph starts, text styles 
   assert.deepEqual(para.range, { startIndex: 1, endIndex: 7 });
   assert.equal(para.paragraphStyle.namedStyleType, "TITLE");
   assert.equal(para.paragraphStyle.alignment, "CENTER");
-  const ts = first[1].updateTextStyle as { range: object; textStyle: { fontSize: { magnitude: number } } };
-  assert.equal(ts.textStyle.fontSize.magnitude, 26, "title default size");
+  const ts = first[1].updateTextStyle as { range: object; textStyle: { fontSize?: { magnitude: number } }; fields: string };
+  assert.equal(ts.textStyle.fontSize, undefined, "no size of its own: the named style's applies");
+  assert.ok(ts.fields.includes("fontSize"), "fontSize is in the mask so an inherited value is reset");
 
   // Chunk "here\nOne " spans the newline: second paragraph starts at offset 11
   const second = idx.styleRequests(6, 15, 50);
@@ -105,12 +106,11 @@ test("styleRequests: paragraph style only where a paragraph starts, text styles 
   assert.deepEqual(p2.range, { startIndex: 50 + 5, endIndex: 50 + 9 });
   assert.equal(p2.paragraphStyle.indentStart.magnitude, 36);
   assert.equal(p2.paragraphStyle.indentFirstLine.magnitude, 72);
-  const textReqs = second.filter((r) => r.updateTextStyle).map((r) => (r.updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: { fontSize: { magnitude: number } } }));
-  // "here\n" is title-sized (26), "One " is normal (11): two text requests
-  assert.equal(textReqs.length, 2);
-  assert.deepEqual(textReqs[0].range, { startIndex: 50, endIndex: 55 });
-  assert.equal(textReqs[0].textStyle.fontSize.magnitude, 26);
-  assert.equal(textReqs[1].textStyle.fontSize.magnitude, 11);
+  const textReqs = second.filter((r) => r.updateTextStyle).map((r) => (r.updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: { fontSize?: { magnitude: number } } }));
+  // "here\nOne " carries no explicit text style: one request over the whole chunk
+  assert.equal(textReqs.length, 1);
+  assert.deepEqual(textReqs[0].range, { startIndex: 50, endIndex: 59 });
+  assert.equal(textReqs[0].textStyle.fontSize, undefined);
 
   // A chunk entirely inside paragraph 1 does not restyle the paragraph
   const inner = idx.styleRequests(15, 22, 80);
@@ -125,21 +125,33 @@ test("uniform requests style typo characters like the text they precede", () => 
   const idx = new FormatIndex(text, format);
   const reqs = idx.uniformStyleRequests(3, 4, 10);
   assert.equal(reqs.length, 1, "only character styling; the paragraph is set with the real text");
-  const tsr = reqs[0].updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: { bold: boolean; fontSize: { magnitude: number } } };
+  const tsr = reqs[0].updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: { bold: boolean; fontSize?: { magnitude: number } } };
   assert.deepEqual(tsr.range, { startIndex: 10, endIndex: 14 });
   assert.equal(tsr.textStyle.bold, true);
-  assert.equal(tsr.textStyle.fontSize.magnitude, 20);
+  assert.equal(tsr.textStyle.fontSize, undefined, "the heading's size comes from the named style");
   assert.equal(idx.uniformStyleRequests(4, 2, 10).length, 1);
 });
 
-test("plain format applies defaults: Arial 11pt, 1.15 spacing", () => {
+test("plain format applies defaults: the document's Normal text style, 1.15 spacing", () => {
   const text = "one\ntwo";
   const idx = new FormatIndex(text, plainFormat(text));
   const reqs = idx.styleRequests(0, text.length, 1);
   assert.equal(reqs.filter((r) => r.updateParagraphStyle).length, 2);
-  const ts = reqs.find((r) => r.updateTextStyle)!.updateTextStyle as { textStyle: { weightedFontFamily: { fontFamily: string }; fontSize: { magnitude: number } } };
-  assert.equal(ts.textStyle.weightedFontFamily.fontFamily, "Arial");
-  assert.equal(ts.textStyle.fontSize.magnitude, 11);
+  const ts = reqs.find((r) => r.updateTextStyle)!.updateTextStyle as { textStyle: { weightedFontFamily?: unknown; fontSize?: unknown; smallCaps: boolean }; fields: string };
+  // Nothing explicit: Docs applies the document's own Normal text font and size
+  assert.equal(ts.textStyle.weightedFontFamily, undefined);
+  assert.equal(ts.textStyle.fontSize, undefined);
+  assert.equal(ts.textStyle.smallCaps, false);
+  for (const f of ["fontSize", "weightedFontFamily", "smallCaps"]) assert.ok(ts.fields.split(",").includes(f));
+});
+
+test("explicit font and size are sent as given; small caps round-trips", () => {
+  const { text, format } = richFromEditorJSON({ type: "doc", content: [p([t("ab", { type: "textStyle", attrs: { fontFamily: "Georgia", fontSize: 14 } }, { type: "smallCaps" })])] });
+  const idx = new FormatIndex(text, format);
+  const ts = idx.styleRequests(0, 2, 1).find((r) => r.updateTextStyle)!.updateTextStyle as { textStyle: { weightedFontFamily: { fontFamily: string }; fontSize: { magnitude: number }; smallCaps: boolean } };
+  assert.equal(ts.textStyle.weightedFontFamily.fontFamily, "Georgia");
+  assert.equal(ts.textStyle.fontSize.magnitude, 14);
+  assert.equal(ts.textStyle.smallCaps, true);
 });
 
 test("richToEditorJSON round-trips through richFromEditorJSON", async () => {
@@ -225,8 +237,8 @@ test("super/subscript, headings 4-6, keep options, borders and shading reach Doc
   assert.deepEqual(para.keep, { withNext: true });
   assert.deepEqual(para.borders, { bottom: { width: 1.5, color: "#ff0000", dash: "DASH", padding: 2 } });
   assert.equal(para.shading, "#fff2cc");
-  assert.equal(resolveTextStyle({ sup: 1 }, para).baselineOffset, "SUPERSCRIPT");
-  assert.equal(resolveTextStyle({}, para).baselineOffset, "NONE");
+  assert.equal(resolveTextStyle({ sup: 1 }).baselineOffset, "SUPERSCRIPT");
+  assert.equal(resolveTextStyle({}).baselineOffset, "NONE");
   const req = paragraphRequest(para, 1, 4).updateParagraphStyle as { paragraphStyle: Record<string, unknown>; fields: string };
   assert.equal(req.paragraphStyle.namedStyleType, "HEADING_5");
   assert.equal(req.paragraphStyle.keepWithNext, true);

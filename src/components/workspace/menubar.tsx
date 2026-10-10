@@ -125,6 +125,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         strike: e.isActive("strike"),
         sup: e.isActive("superscript"),
         sub: e.isActive("subscript"),
+        sc: e.isActive("smallCaps"),
         above: box?.above ?? 0,
         below: box?.below ?? 0,
         keepNext: !!keep.withNext,
@@ -231,6 +232,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item checkable checked={st?.strike} shortcut={`${mod}Shift+X`} onSelect={() => run((c) => c.toggleStrike())}>Strikethrough</Item>
           <Item checkable checked={st?.sup} shortcut={`${mod}.`} onSelect={() => run((c) => c.toggleMark("superscript"))}>Superscript</Item>
           <Item checkable checked={st?.sub} shortcut={`${mod},`} onSelect={() => run((c) => c.toggleMark("subscript"))}>Subscript</Item>
+          <Item checkable checked={st?.sc} onSelect={() => run((c) => c.toggleMark("smallCaps"))}>Small caps</Item>
           <Sep />
           <Sub label="Size">
             <Item shortcut={`${mod}Shift+.`} onSelect={() => run((c) => c.stepFontSize(1))}>Increase font size</Item>

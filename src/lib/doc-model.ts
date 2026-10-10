@@ -686,8 +686,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       // Docs drops soft line breaks sent through the API, so a line break becomes a new paragraph
       const ch = t.k === "c" ? t.c : "\n";
       if (t.k === "c") {
-        const para = paragraphFromAttrs(nextNl(target, r.ts + q)?.attrs);
-        styled.push({ from: pos + text.length, to: pos + text.length + 1, style: resolveTextStyle(styleFromMarks(withoutPending(t.marks)), para) });
+        styled.push({ from: pos + text.length, to: pos + text.length + 1, style: resolveTextStyle(styleFromMarks(withoutPending(t.marks))) });
       }
       text += ch;
     }

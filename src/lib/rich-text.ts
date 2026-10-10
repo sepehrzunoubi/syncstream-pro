@@ -161,6 +161,8 @@ export interface RunFormat {
   /** Superscript or subscript */
   sup?: 1;
   sub?: 1;
+  /** Small caps */
+  sc?: 1;
   font?: string;
   /** Point size; when absent the paragraph's named-style size applies */
   size?: number;
@@ -374,6 +376,7 @@ export function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
     else if (m.type === "strike") s.s = 1;
     else if (m.type === "superscript") s.sup = 1;
     else if (m.type === "subscript") s.sub = 1;
+    else if (m.type === "smallCaps") s.sc = 1;
     else if (m.type === "textStyle") {
       const font = typeof m.attrs?.fontFamily === "string" ? cssFontToFamily(m.attrs.fontFamily) : undefined;
       if (font) s.font = font;
@@ -720,7 +723,7 @@ export class FormatIndex {
       const pi = this.paragraphIndexAt(pos);
       const paraEnd = this.paraStarts[pi + 1] ?? Infinity;
       const segEnd = Math.min(end, runEnd, paraEnd);
-      const style = resolveTextStyle(run, this.format.paragraphs[pi] ?? DEFAULT_PARAGRAPH);
+      const style = resolveTextStyle(run);
       const key = JSON.stringify(style);
       if (pending && (pending as { key: string }).key === key && (pending as { to: number }).to === pos) {
         (pending as { to: number }).to = segEnd;
@@ -749,11 +752,9 @@ export class FormatIndex {
   uniformStyleRequests(offset: number, length: number, docIndex: number): DocsRequest[] {
     if (length <= 0 || this.format.runs.length === 0) return [];
     const at = Math.max(0, Math.min(offset, this.text.length - 1));
-    const pi = this.paragraphIndexAt(at);
-    const para = this.format.paragraphs[pi] ?? DEFAULT_PARAGRAPH;
     const run = { ...this.format.runs[this.runIndexAt(at)] };
     delete run.link;
-    return [textRequest(resolveTextStyle(run, para), docIndex, docIndex + length)];
+    return [textRequest(resolveTextStyle(run), docIndex, docIndex + length)];
   }
 }
 
@@ -915,17 +916,19 @@ export function rgb(hex: string) {
   return { color: { rgbColor: { red: ((n >> 16) & 255) / 255, green: ((n >> 8) & 255) / 255, blue: (n & 255) / 255 } } };
 }
 
-export function resolveTextStyle(run: RunStyle, para: ParagraphFormat): DocsRequest {
+export function resolveTextStyle(run: RunStyle): DocsRequest {
   const style: DocsRequest = {
     bold: !!run.b,
     italic: !!run.i,
     underline: !!run.u || !!run.link,
     strikethrough: !!run.s,
     baselineOffset: run.sup ? "SUPERSCRIPT" : run.sub ? "SUBSCRIPT" : "NONE",
-    fontSize: { magnitude: run.size ?? NAMED_STYLES[para.style].size, unit: "PT" },
-    weightedFontFamily: { fontFamily: run.font ?? DEFAULT_FONT, weight: 400 },
+    smallCaps: !!run.sc,
   };
-  // Fields listed in the mask but left unset are reset to their defaults
+  // Fields listed in the mask but left unset are reset to their defaults: text with no size or
+  // font of its own takes the document's named style, as text typed in Docs does
+  if (run.size) style.fontSize = { magnitude: run.size, unit: "PT" };
+  if (run.font) style.weightedFontFamily = { fontFamily: run.font, weight: 400 };
   const color = run.color ?? (run.link ? LINK_COLOR : undefined);
   if (color) style.foregroundColor = rgb(color);
   if (run.bg) style.backgroundColor = rgb(run.bg);
@@ -938,7 +941,7 @@ export function textRequest(textStyle: DocsRequest, startIndex: number, endIndex
     updateTextStyle: {
       range: { startIndex, endIndex },
       textStyle,
-      fields: "bold,italic,underline,strikethrough,baselineOffset,fontSize,weightedFontFamily,foregroundColor,backgroundColor,link",
+      fields: "bold,italic,underline,strikethrough,baselineOffset,smallCaps,fontSize,weightedFontFamily,foregroundColor,backgroundColor,link",
     },
   };
 }
@@ -998,6 +1001,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       if (run.u) marks.push({ type: "underline" });
       if (run.s) marks.push({ type: "strike" });
       if (run.sup) marks.push({ type: "superscript" });
+      if (run.sc) marks.push({ type: "smallCaps" });
       if (run.sub) marks.push({ type: "subscript" });
       if (run.link) marks.push({ type: "link", attrs: { href: run.link } });
       if (run.bg) marks.push({ type: "highlight", attrs: { color: run.bg } });

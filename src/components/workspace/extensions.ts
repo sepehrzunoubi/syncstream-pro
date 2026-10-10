@@ -237,10 +237,19 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => {
           const data = el.getAttribute("data-spacing");
           if (data) return parseInt(data, 10) || 115;
-          // Docs and browsers copy line spacing as 1.2 × the spacing
-          const lh = parseFloat(el.style.lineHeight);
-          if (!Number.isFinite(lh) || /px|pt|%/.test(el.style.lineHeight)) return 115;
-          const pct = (lh / 1.2) * 100;
+          // Docs and browsers copy line spacing as 1.2 × the spacing; Word as a percentage of
+          // lines; Chrome sometimes as a length, read against the element's own font size
+          const raw = el.style.lineHeight;
+          const lh = parseFloat(raw);
+          if (!Number.isFinite(lh) || lh <= 0) return 115;
+          let pct: number;
+          if (/%\s*$/.test(raw)) pct = lh;
+          else if (/px|pt/.test(raw)) {
+            const fs = parseFloat(el.style.fontSize);
+            const sameUnit = /px/.test(raw) === /px/.test(el.style.fontSize);
+            if (!Number.isFinite(fs) || fs <= 0 || !sameUnit) return 115;
+            pct = (lh / fs / 1.2) * 100;
+          } else pct = (lh / 1.2) * 100;
           const near = LINE_SPACINGS.find((s) => Math.abs(s.value - pct) <= 6);
           return near ? near.value : Math.max(50, Math.min(500, Math.round(pct)));
         },
@@ -546,6 +555,12 @@ const DocFormat = Extension.create({
       Enter: ({ editor }) => {
         // Enter on an empty list item ends the list, as in Docs
         if (inEmptyListItem(editor)) return editor.commands.updateAttributes("paragraph", NO_LIST);
+        // Enter at the end of a title or heading opens a Normal text paragraph, as in Docs
+        const { selection } = editor.state;
+        const parent = selection.$from.parent;
+        if (selection.empty && parent.type.name === "paragraph" && parent.attrs.styleName !== "normal" && !parent.attrs.list && !parent.attrs.locked && parent.content.size > 0 && selection.$from.parentOffset === parent.content.size) {
+          return editor.chain().splitBlock().updateAttributes("paragraph", { styleName: "normal" }).run();
+        }
         return false;
       },
       Backspace: ({ editor }) => {
@@ -630,29 +645,40 @@ export function pastedEmptyLines(html: string): string {
 
 /**
  * Pasted HTML lists become list paragraphs (Docs stores lists as a property
- * of each paragraph). Nested lists are flattened to one level.
+ * of each paragraph), in document order, each at its nesting level. Docs
+ * wraps an item's text in a <p> that carries the paragraph's alignment and
+ * spacing and marks the level with aria-level; other sources nest <ul>/<ol>.
  */
 export function flattenPastedLists(html: string): string {
   if (typeof DOMParser === "undefined" || !/<(ol|ul)\b/i.test(html)) return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
-  let list = doc.querySelector("ol, ul");
-  let guard = 0;
-  while (list && guard++ < 500) {
+  const flatten = (list: Element, depth: number, out: Element[]) => {
     const type = list.tagName === "OL" ? "ordered" : "bullet";
-    for (const li of Array.from(list.children).filter((c) => c.tagName === "LI")) {
-      // Keep nested lists after their item; they are handled in a later pass
-      const nested = Array.from(li.querySelectorAll(":scope > ol, :scope > ul"));
+    for (const child of Array.from(list.children)) {
+      if (child.tagName === "OL" || child.tagName === "UL") { flatten(child, depth + 1, out); continue; }
+      if (child.tagName !== "LI") { out.push(child); continue; }
+      const li = child;
+      const nested = Array.from(li.children).filter((c) => c.tagName === "OL" || c.tagName === "UL");
       nested.forEach((n) => n.remove());
+      const inner = li.children.length === 1 && li.firstElementChild?.tagName === "P" ? li.firstElementChild : null;
       const p = doc.createElement("p");
-      const style = li.getAttribute("style");
+      const style = [li.getAttribute("style"), inner?.getAttribute("style")].filter(Boolean).join("; ");
       if (style) p.setAttribute("style", style);
+      const aria = parseInt(li.getAttribute("aria-level") ?? "", 10);
+      const level = Number.isFinite(aria) ? Math.max(0, aria - 1) : depth;
+      if (level > 0) p.setAttribute("data-level", String(level));
       p.setAttribute("data-list", li.getAttribute("role") === "checkbox" || li.querySelector("input[type=checkbox]") ? "check" : type);
-      p.innerHTML = li.innerHTML.replace(/^\s*<p[^>]*>|<\/p>\s*$/gi, "");
-      list.parentNode?.insertBefore(p, list);
-      for (const n of nested) list.parentNode?.insertBefore(n, list);
+      p.innerHTML = inner ? inner.innerHTML : li.innerHTML.replace(/^\s*<p[^>]*>|<\/p>\s*$/gi, "");
+      out.push(p);
+      for (const n of nested) flatten(n, depth + 1, out);
     }
+  };
+  const top = Array.from(doc.querySelectorAll("ol, ul")).filter((l) => !l.parentElement?.closest("ol, ul"));
+  for (const list of top) {
+    const out: Element[] = [];
+    flatten(list, 0, out);
+    for (const el of out) list.parentNode?.insertBefore(el, list);
     list.remove();
-    list = doc.querySelector("ol, ul");
   }
   return doc.body.innerHTML;
 }
@@ -804,26 +830,82 @@ const Subscript = Mark.create({
   parseHTML: () => [{ tag: "sub" }, { style: "vertical-align", getAttrs: (v: string | HTMLElement) => (v === "sub" ? {} : false) }],
   renderHTML: () => ["sub", 0],
 });
+const SmallCaps = Mark.create({
+  name: "smallCaps",
+  parseHTML: () => [
+    { style: "font-variant", getAttrs: (v: string | HTMLElement) => (typeof v === "string" && /small-caps/.test(v) ? {} : false) },
+    { style: "font-variant-caps", getAttrs: (v: string | HTMLElement) => (v === "small-caps" ? {} : false) },
+  ],
+  renderHTML: () => ["span", { style: "font-variant: small-caps" }, 0],
+});
 
-/** The copied HTML Docs and other editors understand: real heading tags, sizes for Title and Subtitle */
+/**
+ * The copied HTML Docs and other editors understand: real heading tags, sizes
+ * for Title and Subtitle, plain line-height numbers (Docs' 1.2 × spacing), real
+ * <ul>/<ol>/<li> lists nested by level, and no label text for page breaks. The
+ * data-* attributes stay, so pasting back into SyncStream is exact.
+ */
 const ClipboardHTML = Extension.create({
   name: "clipboardHTML",
   addProseMirrorPlugins() {
     const { schema } = this.editor;
     const base = DOMSerializer.fromSchema(schema);
-    const HEADING_TAG: Record<string, string> = { h1: "h1", h2: "h2", h3: "h3" };
+    const HEADING_TAG: Record<string, string> = { h1: "h1", h2: "h2", h3: "h3", h4: "h4", h5: "h5", h6: "h6" };
     const paragraph = (node: PMNode): DOMOutputSpec => {
       const spec = base.nodes.paragraph(node);
       if (!Array.isArray(spec)) return spec;
       const [, attrs, ...rest] = spec as [string, Record<string, string>, ...unknown[]];
       const style = node.attrs.styleName as string;
       const out = { ...attrs };
+      const spacing = typeof node.attrs.lineSpacing === "number" ? node.attrs.lineSpacing : 115;
+      out.style = (out.style ?? "").replace(/--ss-spacing:[^;]*;\s*line-height:[^;]*/, `line-height: ${Math.round((spacing / 100) * 1.2 * 100) / 100}`);
       const size = style === "title" || style === "subtitle" ? NAMED_STYLES[style].size : null;
       if (size) out.style = [out.style, `font-size: ${size}pt`].filter(Boolean).join("; ");
       return [HEADING_TAG[style] ?? "p", out, ...rest] as DOMOutputSpec;
     };
-    const serializer = new DOMSerializer({ ...base.nodes, paragraph }, base.marks);
-    return [new Plugin({ props: { clipboardSerializer: serializer } })];
+    const pageBreak = (): DOMOutputSpec => ["span", { "data-page-break": "", style: "display: block; page-break-before: always" }];
+    const serializer = new DOMSerializer({ ...base.nodes, paragraph, pageBreak }, base.marks);
+    const grouped = {
+      serializeFragment(fragment: PMNode["content"], options: { document?: Document } = {}): DocumentFragment {
+        const doc = options.document ?? document;
+        const out = doc.createDocumentFragment();
+        // stack[i] is the open list element at level i
+        let stack: HTMLElement[] = [];
+        fragment.forEach((node) => {
+          if (node.type.name === "paragraph" && node.attrs.list) {
+            const level = Math.max(0, Number(node.attrs.level ?? 0));
+            const tag = node.attrs.list === "ordered" ? "ol" : "ul";
+            stack = stack.slice(0, level + 1);
+            for (let i = stack.length; i <= level; i++) {
+              const list = doc.createElement(i === level ? tag : "ul");
+              if (i === 0) out.appendChild(list);
+              else {
+                let li = stack[i - 1].lastElementChild as HTMLElement | null;
+                if (!li) { li = doc.createElement("li"); stack[i - 1].appendChild(li); }
+                li.appendChild(list);
+              }
+              stack.push(list);
+            }
+            if (stack[level].tagName.toLowerCase() !== tag) {
+              const list = doc.createElement(tag);
+              stack[level].parentNode?.insertBefore(list, stack[level].nextSibling);
+              stack[level] = list;
+              stack = stack.slice(0, level + 1);
+            }
+            const li = doc.createElement("li");
+            li.setAttribute("aria-level", String(level + 1));
+            if (node.attrs.list === "check") li.setAttribute("role", "checkbox");
+            li.appendChild(serializer.serializeNode(node, options));
+            stack[level].appendChild(li);
+          } else {
+            stack = [];
+            out.appendChild(serializer.serializeNode(node, options));
+          }
+        });
+        return out;
+      },
+    };
+    return [new Plugin({ props: { clipboardSerializer: grouped as unknown as DOMSerializer } })];
   },
 });
 
@@ -840,6 +922,7 @@ export const segmentExtensions = () => [
   DocHighlight,
   Superscript,
   Subscript,
+  SmallCaps,
   DocImage,
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
@@ -867,6 +950,7 @@ export const editorExtensions = [
   DocHighlight,
   Superscript,
   Subscript,
+  SmallCaps,
   PageBreak,
   FootnoteRef,
   ColumnSection,

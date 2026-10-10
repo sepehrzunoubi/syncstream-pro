@@ -312,8 +312,8 @@
   /* Docs lays text out without kerning or ligatures */
   font-kerning: none;
   font-variant-ligatures: none;
-  font-family: Arial, Arimo, "Liberation Sans", sans-serif;
-  font-size: 11pt;
+  font-family: var(--ss-doc-font, Arial, Arimo, "Liberation Sans", sans-serif);
+  font-size: var(--ss-doc-size, 11pt);
   --ss-spacing: 1.15;
   line-height: calc(var(--ss-spacing) * var(--ss-nlh, 1.15));
   color: #000;
@@ -327,14 +327,18 @@
   min-height: 9in;
 }
 .ss-doc p { margin: 0; }
-.ss-doc p[data-style="title"] { font-size: 26pt; margin-bottom: 3pt; }
-.ss-doc p[data-style="subtitle"] { font-size: 15pt; color: #666; margin-bottom: 16pt; }
-.ss-doc p[data-style="h1"] { font-size: 20pt; margin-top: 20pt; margin-bottom: 6pt; }
-.ss-doc p[data-style="h2"] { font-size: 16pt; margin-top: 18pt; margin-bottom: 6pt; }
-.ss-doc p[data-style="h3"] { font-size: 14pt; color: #434343; margin-top: 16pt; margin-bottom: 4pt; }
-.ss-doc p[data-style="h4"] { font-size: 12pt; color: #666666; margin-top: 14pt; margin-bottom: 4pt; }
-.ss-doc p[data-style="h5"] { font-size: 11pt; color: #666666; margin-top: 12pt; margin-bottom: 4pt; }
-.ss-doc p[data-style="h6"] { font-size: 11pt; color: #666666; font-style: italic; margin-top: 12pt; margin-bottom: 4pt; }
+/* Named styles: the document's own sizes, fonts and colours when it sets them, else Docs' defaults */
+.ss-doc p[data-style="title"] { font-size: var(--ss-size-title, 26pt); font-family: var(--ss-font-title, inherit); color: var(--ss-color-title, inherit); margin-bottom: 3pt; }
+.ss-doc p[data-style="subtitle"] { font-size: var(--ss-size-subtitle, 15pt); font-family: var(--ss-font-subtitle, inherit); color: var(--ss-color-subtitle, #666); margin-bottom: 16pt; }
+.ss-doc p[data-style="h1"] { font-size: var(--ss-size-h1, 20pt); font-family: var(--ss-font-h1, inherit); color: var(--ss-color-h1, inherit); margin-top: 20pt; margin-bottom: 6pt; }
+.ss-doc p[data-style="h2"] { font-size: var(--ss-size-h2, 16pt); font-family: var(--ss-font-h2, inherit); color: var(--ss-color-h2, inherit); margin-top: 18pt; margin-bottom: 6pt; }
+.ss-doc p[data-style="h3"] { font-size: var(--ss-size-h3, 14pt); font-family: var(--ss-font-h3, inherit); color: var(--ss-color-h3, #434343); margin-top: 16pt; margin-bottom: 4pt; }
+.ss-doc p[data-style="h4"] { font-size: var(--ss-size-h4, 12pt); font-family: var(--ss-font-h4, inherit); color: var(--ss-color-h4, #666666); margin-top: 14pt; margin-bottom: 4pt; }
+.ss-doc p[data-style="h5"] { font-size: var(--ss-size-h5, 11pt); font-family: var(--ss-font-h5, inherit); color: var(--ss-color-h5, #666666); margin-top: 12pt; margin-bottom: 4pt; }
+.ss-doc p[data-style="h6"] { font-size: var(--ss-size-h6, 11pt); font-family: var(--ss-font-h6, inherit); color: var(--ss-color-h6, #666666); font-style: italic; margin-top: 12pt; margin-bottom: 4pt; }
+/* A horizontal rule: Docs draws a line across the paragraph */
+.ss-doc p[data-kind="rule"] { position: relative; min-height: 1em; }
+.ss-doc p[data-kind="rule"]::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid #000; }
 /* A border between paragraphs that share one (Docs draws it once, between them) */
 .ss-doc p[data-between] + p[data-between] { border-top: var(--ss-between); padding-top: var(--ss-between-pad, 0); }
 .ss-doc sup, .ss-doc sub { font-size: 0.6em; line-height: 0; }

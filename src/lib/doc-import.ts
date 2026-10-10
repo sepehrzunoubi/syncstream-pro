@@ -30,8 +30,19 @@ export interface Anchor {
 /** A header, footer or footnote: its Docs segment id and paragraphs */
 export interface ImportedSegment { id: string; nodes: EditorNode[] }
 
+/** What the document's own named styles give text that sets nothing itself */
+export interface DocDefaults {
+  fontFamily: string;
+  fontSize: number;
+  lineSpacing: number;
+  /** Per paragraph style: size, font and colour when the document's named style sets them */
+  styles: Partial<Record<NamedStyle, { fontSize?: number; fontFamily?: string; color?: string }>>;
+}
+
 export interface ImportedDoc {
   revisionId: string;
+  /** Fonts and sizes of the document's named styles */
+  defaults: DocDefaults;
   /** Paper size, margins and colour, from the document's style */
   pageSetup: PageSetup;
   /** Headers and footers, when the document has them */
@@ -127,9 +138,10 @@ function listInfo(lists: Doc["lists"], bullet: docs_v1.Schema$Bullet) {
   };
 }
 
-function textMarks(ts: TextStyle, style: NamedStyle): NonNullable<EditorNode["marks"]> {
+function textMarks(ts: TextStyle, style: NamedStyle, defaults: DocDefaults): NonNullable<EditorNode["marks"]> {
   const marks: NonNullable<EditorNode["marks"]> = [];
   if (ts.bold) marks.push({ type: "bold" });
+  if (ts.smallCaps) marks.push({ type: "smallCaps" });
   if (ts.italic) marks.push({ type: "italic" });
   if (ts.underline) marks.push({ type: "underline" });
   if (ts.strikethrough) marks.push({ type: "strike" });
@@ -141,10 +153,16 @@ function textMarks(ts: TextStyle, style: NamedStyle): NonNullable<EditorNode["ma
   const font = ts.weightedFontFamily?.fontFamily ?? undefined;
   const size = pt(ts.fontSize);
   const color = hex(ts.foregroundColor);
+  // A value the paragraph's named style already gives is not a mark: the editor shows the
+  // document's defaults itself, and text with no mark is written to Docs without an explicit value
+  const own = defaults.styles[style] ?? {};
+  const styleFont = own.fontFamily ?? defaults.fontFamily;
+  const styleSize = own.fontSize ?? (style === "normal" ? defaults.fontSize : NAMED_STYLES[style].size);
+  const styleColor = own.color ?? "#000000";
   const attrs = {
-    fontFamily: font && font !== DEFAULT_FONT ? font : null,
-    fontSize: size && size !== NAMED_STYLES[style].size ? size : null,
-    color: color && color !== "#000000" ? color : null,
+    fontFamily: font && font !== styleFont ? font : null,
+    fontSize: size && size !== styleSize ? size : null,
+    color: color && color !== styleColor ? color : null,
   };
   if (attrs.fontFamily || attrs.fontSize || attrs.color) marks.push({ type: "textStyle", attrs });
   return marks;
@@ -162,6 +180,31 @@ function plainText(p: docs_v1.Schema$Paragraph | undefined): string {
 }
 
 /** Read a documents.get response into editor paragraphs. */
+
+/** The fonts and sizes the document's named styles give text that sets none itself */
+function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDefaults {
+  const normal = namedStyles.get("NORMAL_TEXT");
+  const nt = normal?.textStyle ?? {};
+  const styles: DocDefaults["styles"] = {};
+  for (const [docsName, name] of Object.entries(NAMED)) {
+    if (docsName === "NORMAL_TEXT") continue;
+    const ts = namedStyles.get(docsName)?.textStyle ?? {};
+    const entry: { fontSize?: number; fontFamily?: string; color?: string } = {};
+    const size = pt(ts.fontSize);
+    if (size) entry.fontSize = size;
+    if (ts.weightedFontFamily?.fontFamily) entry.fontFamily = ts.weightedFontFamily.fontFamily;
+    const color = hex(ts.foregroundColor);
+    if (color) entry.color = color;
+    if (Object.keys(entry).length) styles[name] = entry;
+  }
+  return {
+    fontFamily: nt.weightedFontFamily?.fontFamily ?? DEFAULT_FONT,
+    fontSize: pt(nt.fontSize) ?? NAMED_STYLES.normal.size,
+    lineSpacing: normal?.paragraphStyle?.lineSpacing ? Math.round(normal.paragraphStyle.lineSpacing) : 115,
+    styles,
+  };
+}
+
 export function importDoc(doc: Doc): ImportedDoc {
   let blockId = 0;
   const lock = (node: EditorNode, span: number) => {
@@ -170,15 +213,25 @@ export function importDoc(doc: Doc): ImportedDoc {
   };
   const namedStyles = new Map<string, docs_v1.Schema$NamedStyle>();
   for (const s of doc.namedStyles?.styles ?? []) if (s.namedStyleType) namedStyles.set(s.namedStyleType, s);
+  const defaults = docDefaults(namedStyles);
   let hasContent = false;
 
   const paragraphNode = (p: docs_v1.Schema$Paragraph): EditorNode => {
     const own: ParagraphStyle = p.paragraphStyle ?? {};
     const namedType = own.namedStyleType ?? "NORMAL_TEXT";
     const named = namedStyles.get(namedType);
-    const ps: ParagraphStyle = { ...(named?.paragraphStyle ?? {}), ...stripNull(own) };
+    const normal = namedStyles.get("NORMAL_TEXT");
+    // Docs resolves a paragraph as: its own fields, then its named style, then Normal text
+    const ps: ParagraphStyle = {
+      ...stripNull(normal?.paragraphStyle ?? {}),
+      ...(namedType !== "NORMAL_TEXT" ? stripNull(named?.paragraphStyle ?? {}) : {}),
+      ...stripNull(own),
+    };
     const style = NAMED[namedType] ?? "normal";
-    const baseText: TextStyle = named?.textStyle ?? {};
+    const baseText: TextStyle = {
+      ...stripNull(normal?.textStyle ?? {}),
+      ...(namedType !== "NORMAL_TEXT" ? stripNull(named?.textStyle ?? {}) : {}),
+    };
 
     let list: ListType | null = null;
     let listAttrs: Record<string, unknown> = {};
@@ -194,10 +247,11 @@ export function importDoc(doc: Doc): ImportedDoc {
 
     const content: EditorNode[] = [];
     let unsupported = false;
+    let rule = false;
     for (const pe of p.elements ?? []) {
       if (pe.textRun?.content != null) {
         const ts = { ...baseText, ...stripNull(pe.textRun.textStyle ?? {}) };
-        const marks = textMarks(ts, style);
+        const marks = textMarks(ts, style, defaults);
         const text = pe.textRun.content.replace(/\n$/, "");
         text.split("\u000b").forEach((part, i) => {
           if (i > 0) content.push({ type: "hardBreak" });
@@ -228,8 +282,12 @@ export function importDoc(doc: Doc): ImportedDoc {
       } else if (pe.footnoteReference?.footnoteId) {
         content.push({ type: "footnoteRef", attrs: { fid: pe.footnoteReference.footnoteId, n: pe.footnoteReference.footnoteNumber ?? null } });
         hasContent = true;
+      } else if (pe.horizontalRule) {
+        // Docs draws a line across the paragraph; the paragraph itself stays read-only here
+        rule = true;
+        unsupported = true;
       } else if (!pe.textRun) {
-        // Footnote references, equations and the like: shown, not editable
+        // Equations, chips and the like: shown, not editable
         unsupported = true;
       }
     }
@@ -259,6 +317,7 @@ export function importDoc(doc: Doc): ImportedDoc {
       attrs: {
         styleName: style,
         textAlign: ALIGN[ps.alignment ?? "START"] ?? null,
+        ...(rule ? { kind: "rule" } : {}),
         indent: 0,
         firstLine: false,
         lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : 115,
@@ -389,6 +448,7 @@ export function importDoc(doc: Doc): ImportedDoc {
   for (const [id, fn] of Object.entries(doc.footnotes ?? {})) { const seg = segment(id, fn.content ?? undefined); if (seg) footnotes[id] = seg; }
   return {
     revisionId: doc.revisionId ?? "",
+    defaults,
     pageSetup: pageSetupFromDocumentStyle(doc.documentStyle),
     header: segment(ds.defaultHeaderId, doc.headers?.[ds.defaultHeaderId ?? ""]?.content ?? undefined),
     footer: segment(ds.defaultFooterId, doc.footers?.[ds.defaultFooterId ?? ""]?.content ?? undefined),

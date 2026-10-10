@@ -2,6 +2,7 @@
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Fragment, Slice } from "@tiptap/pm/model";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { editorExtensions, flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
@@ -18,6 +19,7 @@ import { PagedSurface } from "./paged-surface";
 import { PageSetupDialog } from "./page-setup-dialog";
 import { installLineMetrics } from "./line-metrics";
 import { pageStartOffsets } from "@/lib/page-offsets";
+import type { DocDefaults } from "@/lib/doc-import";
 import { tokenPositions } from "./pagination";
 import { tokenize } from "@/lib/doc-model";
 import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
@@ -31,7 +33,7 @@ import { measureRemoteImage, uploadImage } from "./image-upload";
 import { isActive, statusLine } from "./job-status";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
-import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat } from "@/lib/rich-text";
+import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat, NAMED_STYLE_ORDER } from "@/lib/rich-text";
 import { loadDocument } from "./doc-sync";
 import { additions, directEdits, groupColumns, hasPending, rebase, segmentEdits, signature, PENDING_MARK } from "@/lib/doc-model";
 import { useSegmentEditor } from "./segment-editor";
@@ -160,6 +162,8 @@ interface DocContent {
   docId: string;
   status: "loading" | "ready" | "failed";
   revisionId?: string;
+  /** The document's own default font, size and heading styles */
+  defaults?: DocDefaults;
   /** Why it couldn't be opened */
   error?: string;
 }
@@ -263,20 +267,29 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           imageFilesRef.current(files);
           return true;
         }
-        // Pasting whole paragraphs into an empty one (or over whole paragraphs) keeps the first
-        // pasted paragraph's formatting, as Docs does; ProseMirror would keep the paragraph being replaced
+        // Pasting formatted paragraphs into an empty one (or over whole paragraphs) keeps every
+        // pasted paragraph's own formatting, as Docs does; ProseMirror would merge the first into
+        // the paragraph being replaced. Plain text (no HTML, or paste without formatting) keeps the
+        // destination's formatting instead, also as Docs does.
+        const hasHTML = !!event.clipboardData?.types.includes("text/html") && !(view as unknown as { input: { shiftKey: boolean } }).input.shiftKey;
         const { $from, $to } = view.state.selection;
         const first = slice.content.firstChild;
         const target = $from.parent;
         const wholeParagraphs = $from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size;
-        if (wholeParagraphs && slice.openStart > 0 && first?.type.name === "paragraph" && target.type.name === "paragraph" && !target.attrs.locked) {
-          const tr = view.state.tr.setNodeMarkup($from.before(), undefined, { ...first.attrs, locked: false, span: null, bid: null, kind: null });
-          tr.replaceSelection(slice).scrollIntoView();
+        if (hasHTML && wholeParagraphs && slice.openStart > 0 && first?.type.name === "paragraph" && target.type.name === "paragraph" && !target.attrs.locked && $from.depth === 1 && $to.depth === 1) {
+          const tr = view.state.tr.replace($from.before(), $to.after(), new Slice(slice.content, 0, 0)).scrollIntoView();
           view.dispatch(tr.setMeta("paste", true).setMeta("uiEvent", "paste"));
           event.preventDefault();
           return true;
         }
         return false;
+      },
+      // Plain text takes the formatting of the paragraph it lands in
+      clipboardTextParser: (text, $context) => {
+        const schema = $context.doc.type.schema;
+        const parent = $context.parent.type.name === "paragraph" ? $context.parent : null;
+        const nodes = text.split(/\r\n?|\n/).map((line) => schema.nodes.paragraph.create(parent ? { ...parent.attrs, locked: false, span: null, bid: null, kind: null } : null, line ? schema.text(line, $context.marks()) : null));
+        return new Slice(Fragment.from(nodes), 1, 1);
       },
       handleDrop: (view, event, _slice, moved) => {
         if (moved) return false;
@@ -542,7 +555,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       setDocJSON(editor.getJSON());
       contentStale.current = false;
       setSaveState("idle");
-      setDocContent({ docId, status: "ready", revisionId: revision });
+      setDocContent({ docId, status: "ready", revisionId: revision, defaults: (data as { defaults?: DocDefaults }).defaults });
       if (keep) setSnack("The document changed in Google Docs. SyncStream reloaded it and kept your new text.");
     } catch (err) {
       if (req !== contentReq.current) return;
@@ -838,6 +851,24 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, [docContent, pinGooglePages]);
   useEffect(() => () => { if (pagesTimer.current) clearTimeout(pagesTimer.current); }, []);
   useEffect(() => { if (docContent?.status !== "ready") editor?.commands.setPinnedBreaks([]); }, [docContent?.status, editor]);
+
+  // The page shows text that sets no font or size of its own in the document's own defaults
+  const docDefaults = docContent?.status === "ready" ? docContent.defaults : undefined;
+  useEffect(() => {
+    for (const e of [editor, viewer]) {
+      const dom = e?.view.dom as HTMLElement | undefined;
+      if (!dom) continue;
+      dom.style.setProperty("--ss-doc-font", docDefaults ? `"${docDefaults.fontFamily}", Arimo, sans-serif` : "");
+      dom.style.setProperty("--ss-doc-size", docDefaults ? `${docDefaults.fontSize}pt` : "");
+      for (const name of NAMED_STYLE_ORDER) {
+        const s = docDefaults?.styles[name];
+        dom.style.setProperty(`--ss-size-${name}`, s?.fontSize ? `${s.fontSize}pt` : "");
+        dom.style.setProperty(`--ss-font-${name}`, s?.fontFamily ? `"${s.fontFamily}", Arimo, sans-serif` : "");
+        dom.style.setProperty(`--ss-color-${name}`, s?.color ?? "");
+      }
+      dom.dataset.docFont = docDefaults?.fontFamily ?? "";
+    }
+  }, [editor, viewer, docDefaults]);
 
   /** Page setup from the dialog: shown here, and written to the open Google Doc */
   const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {

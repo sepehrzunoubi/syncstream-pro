@@ -410,7 +410,7 @@ test("formatted plans send styling in the same batch as each insert, at the righ
   const [b0, b1, b2, b3] = batches;
   assert.equal(b0.reqs[0].updateParagraphStyle.paragraphStyle!.namedStyleType, "HEADING_1");
   assert.deepEqual(b0.reqs[1].updateTextStyle.range, { startIndex: 1, endIndex: 5 });
-  assert.equal((b0.reqs[1].updateTextStyle.textStyle!.fontSize as { magnitude: number }).magnitude, 20);
+  assert.equal(b0.reqs[1].updateTextStyle.textStyle!.fontSize, undefined, "a heading's size comes from the named style");
   // The typo's wrong characters only get character styling
   assert.equal(b1.reqs.length, 1);
   assert.equal(b1.reqs[0].updateTextStyle.textStyle!.italic, true);

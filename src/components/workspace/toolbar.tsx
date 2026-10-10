@@ -130,7 +130,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         italic: e.isActive("italic"),
         underline: e.isActive("underline"),
         strike: e.isActive("strike"),
-        font: (ts.fontFamily as string) ?? DEFAULT_FONT,
+        font: (ts.fontFamily as string) ?? ((e.view.dom as HTMLElement).dataset.docFont || DEFAULT_FONT),
         size: (ts.fontSize as number) ?? NAMED_STYLES[style]?.size ?? 11,
         style,
         align: ((para.textAlign as string) ?? "left") as keyof typeof ALIGN_ICONS,
