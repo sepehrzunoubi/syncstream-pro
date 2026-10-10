@@ -1,15 +1,16 @@
 # SyncStream Pro
 
-A utility for **human-cadence text synchronization into Google Docs**, featuring an obsidian-dark dashboard UI built with the Aceternity Sidebar pattern. A second tab, the **Style engine**, rewrites text in a house style learned from a developer-curated dataset of input/output pairs and served by a local Llama model.
+A utility for **human-cadence text synchronization into Google Docs**. The dashboard is a Google Docs look-alike editor: open one of your Docs, see it exactly as Docs lays it out, edit it (edits save straight to Docs), add text that glows, and start a sync that types the glowing text in at a human pace. A second tab, the **Style engine**, rewrites text in a house style learned from a developer-curated dataset of input/output pairs and served by a local Llama model.
 
 Sign in with any Google account and start syncing. There is no license key or allow-list.
 
 ## Tech Stack
 
 - **Framework:** Next.js 14 (App Router), TypeScript
-- **Styling:** Tailwind CSS, obsidian-dark theme
-- **Animations:** Framer Motion (Aceternity Sidebar), tsParticles
-- **Icons:** Lucide React
+- **Editor:** TipTap 3 / ProseMirror with a pagination plugin; Radix menus
+- **Styling:** Tailwind CSS for the shell, `docs.css` for the Docs-like workspace (light, like Docs)
+- **Animations:** Framer Motion, tsParticles on the landing page
+- **Icons:** Material Symbols (subset loaded in the dashboard layout), Lucide on the landing page
 - **Backend:** Next.js API Routes
 - **Google APIs:** `googleapis` (OAuth2, Docs, Drive)
 - **Job state:** Upstash Redis (in-memory fallback for local dev)
@@ -114,7 +115,7 @@ src/
 │   ├── api/
 │   │   ├── auth/        # OAuth login, callback, logout, me
 │   │   ├── cron/        # sync-watchdog (daily safety net for lost queue messages)
-│   │   ├── docs/        # List recent Google Docs, create a doc, read a doc, save edits to it
+│   │   ├── docs/        # List, create, read (content), edit, rename, revision (change polling), pages (Google's page breaks from the PDF export)
 │   │   ├── health/      # Live check of every configured service (signed-in users)
 │   │   ├── images/      # Upload pasted images and serve them so Google Docs can fetch them
 │   │   ├── style/       # Style engine: status of the model server and compiled style; transform (text → text, streamed)
@@ -128,15 +129,21 @@ src/
 │   │   ├── workspace.tsx        # State and layout of the dashboard
 │   │   ├── header.tsx           # Target doc picker, Start sync, account menu
 │   │   ├── toolbar.tsx          # Docs formatting toolbar
-│   │   ├── menubar.tsx          # File / Edit / View / Insert / Format menus
+│   │   ├── menubar.tsx          # File / Edit / View / Insert / Format / Help menus
+│   │   ├── context-menu.tsx     # Right-click menu and the keyboard shortcuts dialog
+│   │   ├── outline.tsx          # Document outline (headings) in the left panel
+│   │   ├── find.ts, find-bar.tsx # Find (Ctrl+F) and find & replace (Ctrl+H)
 │   │   ├── insert-popovers.tsx  # Link and image dialogs
+│   │   ├── dialog.tsx, format-dialogs.tsx, page-setup-dialog.tsx  # Docs-style dialogs: spacing, borders, columns, page setup
 │   │   ├── color-menu.tsx       # Text and highlight colour palettes
 │   │   ├── image-upload.ts      # Downscale and upload images
 │   │   ├── ruler.tsx            # Ruler with draggable indent markers
-│   │   ├── extensions.ts        # Editor (TipTap) setup: paragraph styles, indents, fonts, lists, images, paste
-│   │   ├── pagination.ts        # Splits the document into US Letter pages; marks typing progress
-│   │   ├── doc-sync.ts          # New text glows as an addition; list numbers; locked tables
-│   │   ├── paged-surface.tsx    # Draws the page sheets behind the editor
+│   │   ├── extensions.ts        # Editor (TipTap) setup: paragraph styles, indents, fonts, lists, tables, breaks, footnotes, columns, paste
+│   │   ├── pagination.ts        # Splits the document into pages (page setup, keep rules, Google's own breaks); marks typing progress
+│   │   ├── line-metrics.ts      # Measures each font's natural line height, as Docs spaces lines
+│   │   ├── doc-sync.ts          # New text glows as an addition; list numbers; locked regions
+│   │   ├── paged-surface.tsx    # Draws the page sheets, headers, footers and footnotes behind the editor
+│   │   ├── segment-editor.tsx   # Editors for headers, footers and footnotes
 │   │   ├── sync-panel.tsx       # Total time, breaks, typos, start time, plan
 │   │   ├── job-panel.tsx        # Status and controls of a running sync
 │   │   ├── sync-rail.tsx        # List of syncs
@@ -152,8 +159,12 @@ src/
 │   ├── drip-engine.ts   # Seeded planner: chunks, pauses, typos, breaks, target duration
 │   ├── rich-text.ts     # Formatting model and the Docs formatting requests for any text range
 │   ├── image-store.ts   # Redis storage for uploaded images (14 days)
-│   ├── doc-import.ts    # Reads an existing Google Doc into the editor
+│   ├── doc-import.ts    # Reads an existing Google Doc into the editor (styles, lists, tables, breaks, headers, footnotes, page setup)
 │   ├── doc-model.ts     # Compares the editor with the saved doc: direct edits to save, additions to sync
+│   ├── page-setup.ts    # Paper sizes, margins, orientation; the Docs documentStyle requests
+│   ├── page-text.ts, page-offsets.ts  # Google's page breaks: text per PDF page, matched back to the document
+│   ├── list-labels.ts   # Bullet and numbering glyphs per preset and level
+│   ├── secret.ts        # Signed cookies, sealed tokens at rest, internal secrets
 │   ├── sync-runner.ts   # Queue-driven worker: bounded windows, lock, idempotent writes, retries
 │   ├── sync-store.ts    # Redis-backed plans, jobs, per-user index, locks, control intents
 │   ├── sync-api.ts      # Ownership checks and lock-aware job mutations for the routes
@@ -195,10 +206,11 @@ Each hand-off is one QStash message. A typical 300-word sync uses roughly 60 to 
 
 The dashboard is laid out like Google Docs: a File, Edit, View, Insert and Format menu bar, the formatting toolbar, a ruler with draggable indent markers, the page in the middle, your syncs on the left and the sync settings on the right. Animations use Framer Motion and turn off when the system asks for reduced motion.
 
-- **Documents that already have text.** Pick a document and it opens on the page, fully editable. Formatting, deleting and restructuring existing text saves straight to Google Docs, like Docs autosave. Anything you type or paste is new text: it glows until a sync types it in, and you can add it in as many places as you like. Start sync types every glowing addition, top to bottom, each at its own spot. While it runs, the worker finds each spot again before every edit, so changes elsewhere in the document don't throw it off. Tables, smart chips and section breaks are shown but can't be edited here. Additions are kept on this device per document until they are synced. If the document changes in Google Docs, SyncStream reloads it and puts your additions back where they were.
-- **Pages.** The editor splits your text into US Letter pages with one-inch margins, like Docs. File > Page setup switches to Pageless. Narrow screens always use pageless. While a sync runs, the same paginated page shows what has been typed so far, with a caret at the current position.
-- **Formatting.** Paragraph styles (Normal text, Title, Subtitle, Headings 1 to 3), fonts, sizes in points, bold, italic, underline, strikethrough, text colour, highlight, links, alignment, line spacing, indents and first-line indent (Tab at the start of a paragraph). The toolbar also has undo, redo, print, spell check and paint format. The same shortcuts as Docs work. Pasting from Google Docs or Word keeps this formatting. Every chunk is typed into the Google Doc together with its formatting in a single API call.
-- **Lists.** Bulleted, numbered and checklists, from the toolbar, the Format menu, or by typing "- ", "1. " or "[] ". They become real Docs lists. Nested lists are flattened to one level, and checklist items are created unchecked because the Docs API cannot tick them.
+- **Documents that already have text.** Pick a document and it opens on the page, fully editable. Formatting, deleting and restructuring existing text saves straight to Google Docs, like Docs autosave. Anything you type or paste is new text: it glows until a sync types it in, and you can add it in as many places as you like. Start sync types every glowing addition, top to bottom, each at its own spot. While it runs, the worker finds each spot again before every edit, so changes elsewhere in the document don't throw it off. Additions are kept on this device per document until they are synced. If the document changes in Google Docs (checked every few seconds while the tab is visible), SyncStream reloads it and puts your additions back where they were.
+- **Pages.** The editor lays the document out on pages exactly as Docs does: File > Page setup sets paper size, orientation, margins and page colour (or Pageless), lines are spaced with each font's natural line height, and page breaks follow Google's own pagination (read from the Doc's PDF export). Narrow screens always use pageless. While a sync runs, the same paginated page shows what has been typed so far, with a caret at the current position.
+- **Formatting.** Paragraph styles (Normal text, Title, Subtitle, Headings 1 to 6), fonts, sizes in points, bold, italic, underline, strikethrough, superscript, subscript, small caps, capitalization, text colour, highlight, links, alignment, line and paragraph spacing (custom spacing dialog), keep with next, keep lines together, widow control, borders and shading, indents and first-line indent (ruler or Tab at the start of a paragraph). The toolbar also has undo, redo, print, spell check and paint format. The same shortcuts as Docs work, with Help > Keyboard shortcuts (Ctrl+/) and a right-click menu. Pasting from Google Docs or Word keeps this formatting (Ctrl+Shift+V pastes plain). Every chunk is typed into the Google Doc together with its formatting in a single API call.
+- **Lists.** Bulleted, numbered and checklists with every Docs bullet and numbering style, nested up to eight levels with Tab and Shift+Tab. They become real Docs lists. Checklist items are created unchecked because the Docs API cannot tick them.
+- **Structure.** Page breaks (Ctrl+Enter), section breaks, columns, headers and footers (double-click the page margin), footnotes (Ctrl+Alt+F), tables (insert from the grid, edit cells, add or delete rows and columns), find and replace, a document outline, and renaming the document. All of it is written through the Docs API so Docs shows the same result. Smart chips, suggestions, comments, page numbers and positioned images are shown as Docs has them but cannot be edited here, because the Docs API cannot write them.
 - **Images.** Paste, drop, upload or insert by URL. Uploaded images are downscaled to under 700 KB and stored in Redis for 14 days so Google can fetch them when the sync reaches that point. PNG, JPEG and GIF are supported.
 - **Not supported.** Comments cannot be added, because the Google Docs API has no way to create a comment anchored to text.
 
@@ -230,7 +242,7 @@ The problem it solves: we have **x**, what users typed, and **z**, the output we
 
 ```bash
 npm run dev        # local server (in-memory store, direct self-calls instead of QStash)
-npm test           # planner, runner, style-metrics, fingerprint and style-lab unit tests
+npm test           # planner, runner, document model, import, formatting requests, pagination, page setup, secrets, style unit tests
 npm run style:fingerprint   # print the dataset's fingerprint and rules
 npm run style:eval -- --loo # run every prompt candidate against the model and rank them
 npm run style:compile -- --candidate rules-fewshot   # ship a candidate
