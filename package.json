@@ -12,7 +12,9 @@
     "style:eval": "tsx scripts/style-lab/run.ts",
     "style:compile": "tsx scripts/style-lab/compile.ts",
     "style:fingerprint": "tsx scripts/style-lab/compile.ts --print",
-    "style:mock": "tsx scripts/style-lab/mock-ollama.ts"
+    "style:mock": "tsx scripts/style-lab/mock-ollama.ts",
+    "e2e:live": "tsx scripts/e2e-live/run.ts",
+    "e2e:live:auth": "tsx scripts/e2e-live/authorize.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
