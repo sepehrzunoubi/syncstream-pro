@@ -287,7 +287,7 @@ Budgets are per minute, keyed by the signed-in user (a hashed id) or, before sig
 
 ### Health endpoint
 
-`GET /api/health` answers for anyone with liveness and configuration presence, never a secret value: `{ ok, service, version, deployment, env, uptime, redis: {configured}, qstash: {configured, signing}, errorWebhook: {configured}, rateLimit: {enabled, store} }`. Point an uptime monitor at it. A signed-in user additionally gets live checks (`checks.redis` pings Redis, `checks.qstash` lists schedules with the token, Google and Style engine configuration) and, per variable, whether it is present, its length and whether it has stray whitespace.
+`GET /api/health` answers for anyone with liveness only: `{ ok, service, version, uptime }`. Point an uptime monitor at it. A signed-in user additionally gets configuration presence (`deployment, env, redis: {configured}, qstash: {configured, signing}, errorWebhook: {configured}, rateLimit: {enabled, store}`), live checks (`checks.redis` pings Redis, `checks.qstash` lists schedules with the token, Google and Style engine configuration) and, per variable, whether it is present, its length and whether it has stray whitespace.
 
 ## Development
 

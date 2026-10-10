@@ -24,14 +24,17 @@ function describe(name: string): { present: boolean; length: number; prefix: str
   };
 }
 
-/** What any uptime monitor may see: liveness and which backends are configured, never a secret */
+/** What any uptime monitor may see: liveness only, never configuration or a secret */
+function liveness() {
+  return { service: "syncstream", version: pkg.version, uptime: Math.round(process.uptime()) };
+}
+
+/** Which backends are configured (signed-in users only; a probe should not learn the deployment's shape) */
 function summary() {
   return {
-    service: "syncstream",
-    version: pkg.version,
+    ...liveness(),
     deployment: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local",
     env: process.env.VERCEL_ENV || process.env.NODE_ENV || "development",
-    uptime: Math.round(process.uptime()),
     redis: { configured: hasRedis() },
     qstash: { configured: !!process.env.QSTASH_TOKEN?.trim(), signing: !!(process.env.QSTASH_CURRENT_SIGNING_KEY?.trim() && process.env.QSTASH_NEXT_SIGNING_KEY?.trim()) },
     errorWebhook: { configured: !!process.env.ERROR_WEBHOOK_URL?.trim() },
@@ -40,9 +43,8 @@ function summary() {
 }
 
 /**
- * Health check. Anyone gets the liveness summary ({ok, version, uptime,
- * what is configured}); a signed-in user also gets the live configuration
- * checks. Secret values are never returned, only whether they are present
+ * Health check. Anyone gets liveness ({ok, version, uptime}); a signed-in
+ * user also gets what is configured and the live configuration checks. Secret values are never returned, only whether they are present
  * and whether the service accepts them.
  */
 export const GET = withRoute(async (req: NextRequest) => {
@@ -50,7 +52,7 @@ export const GET = withRoute(async (req: NextRequest) => {
   if (limited) return limited;
   const signedIn = req.cookies.has("google_access_token") || req.cookies.has("google_refresh_token");
   if (!signedIn) {
-    return NextResponse.json({ ok: true, ...summary() }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ ok: true, ...liveness() }, { headers: { "Cache-Control": "no-store" } });
   }
 
   const env = {
