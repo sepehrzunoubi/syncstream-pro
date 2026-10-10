@@ -601,8 +601,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const end = index[base.length];
   const contentRequests: DocsRequest[] = [];
   const extraNlAfter = new Set<Region>();
-  // A paragraph's final newline cannot be deleted when it ends the body or a table cell
-  const finalNl = (i: number) => { const next = base[i + 1]; return base[i]?.k === "nl" && (i + 1 === base.length || (next.k === "st" && next.kind === "cellEnd")); };
+  // A paragraph's final newline cannot be deleted when it ends the body or a table cell, nor the one right before a table
+  const finalNl = (i: number) => { const next = base[i + 1]; return base[i]?.k === "nl" && (i + 1 === base.length || (next.k === "st" && (next.kind === "cellEnd" || next.kind === "table"))); };
   for (const r of [...regions].reverse()) {
     let bs = r.bs;
     let be = r.be;
