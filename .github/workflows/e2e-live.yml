@@ -1,0 +1,60 @@
+name: Live end-to-end test
+
+# Runs scripts/e2e-live against the real Google Docs API with a throwaway
+# document. Needs three repository secrets: GOOGLE_CLIENT_ID,
+# GOOGLE_CLIENT_SECRET and E2E_GOOGLE_REFRESH_TOKEN (see README, "Live
+# end-to-end test"). Without them the job skips with a notice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: Keep the test document afterwards
+        type: boolean
+        default: false
+  schedule:
+    # Weekly, Monday 06:17 UTC
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: e2e-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Google credentials
+        id: creds
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          E2E_GOOGLE_REFRESH_TOKEN: ${{ secrets.E2E_GOOGLE_REFRESH_TOKEN }}
+        run: |
+          if [ -n "$GOOGLE_CLIENT_ID" ] && [ -n "$GOOGLE_CLIENT_SECRET" ] && [ -n "$E2E_GOOGLE_REFRESH_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Live e2e skipped::Set the GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and E2E_GOOGLE_REFRESH_TOKEN repository secrets to run the live end-to-end test (npm run e2e:live:auth prints the refresh token)."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.present == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        if: steps.creds.outputs.present == 'true'
+        run: npm ci
+
+      - name: Run the live end-to-end test
+        if: steps.creds.outputs.present == 'true'
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          E2E_GOOGLE_REFRESH_TOKEN: ${{ secrets.E2E_GOOGLE_REFRESH_TOKEN }}
+        run: npm run e2e:live -- ${{ inputs.keep && '--keep' || '' }}

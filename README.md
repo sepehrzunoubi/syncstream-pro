@@ -238,14 +238,31 @@ The problem it solves: we have **x**, what users typed, and **z**, the output we
 
 **Plumbing without a model.** `npm run style:mock` starts a fake Ollama on port 11434 that answers with a crude rewrite; use it to check the lab and the tab end to end. Its scores mean nothing.
 
+## Live end-to-end test
+
+`npm run e2e:live` proves the two write paths against the real Google Docs API, in a throwaway document it creates and deletes. Unit tests use fakes; this is the one check where Google itself is in the loop.
+
+**Authorize once.** `npm run e2e:live:auth` prints a Google sign-in URL for the app's own OAuth client (same scopes as the app, with `access_type=offline&prompt=consent` so Google issues a refresh token). Sign in as a Google account whose Drive may hold the test document, consent, and the script catches the redirect (it listens on `GOOGLE_REDIRECT_URI` when nothing else does; otherwise paste the `code` from the browser's address bar). It prints `E2E_GOOGLE_REFRESH_TOKEN=...`: put that line in `.env.local`, or add it as a repository secret. `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` come from `.env.local` as usual. The token is as sensitive as a signed-in session; OAuth apps still in "Testing" status expire refresh tokens after seven days, so re-run the authorization when the test says the token no longer works.
+
+**Run.** `npm run e2e:live` (add `-- --keep` to keep the document, `--seed N` to repeat a plan, `--verbose` for every runner step). Every assertion prints a `PASS`/`FAIL` line, the exit code is non-zero when anything failed, and the document's URL is printed whenever it is kept, including after a failure.
+
+**What it checks.**
+- *A. Typing.* Additions are built exactly as the editor builds them (`additions()`), turned into a job exactly as `POST /api/sync/start` does (`src/lib/sync-plan.ts`), and typed by the real runner running in-process with the in-memory store: three segments with headings, bold, italic and a link, a bulleted list nested three levels deep, a numbered list, words typed into the middle of an existing sentence, and a page break, typos and a break included. The runner's waits run on a virtual clock (it takes `now` and `sleep` as dependencies), so a plan that would take minutes finishes in seconds while every delay is still computed. The document is read back with `importDoc` and compared: text, named styles, bold/italic/link runs, list items and levels, page breaks.
+- *B. Direct edits.* The document is imported, changed as a user would in the editor (split a heading, remove the bullet from one item, change words mid-sentence, delete the last paragraph, insert a 2×2 table) and saved with `directEdits()`, including the editor's read-back after a table structure change. The document must match the editor's target, saving must converge, and the editor's idea of the saved document must match Google's.
+- *C. Collaborator mid-sync.* While the runner is between two batches, another writer inserts a paragraph at the top of the document. The sync must still land its text at the right place (the runner finds its spot again from the text before it).
+
+**Cost and scope.** A run makes a few hundred Docs API requests (one `documents.get` and one `batchUpdate` per typed chunk, plus the deletes and re-inserts of typos), spaced about 700 ms apart to stay inside the Docs API's 60-writes-per-minute quota, so it takes two to four minutes. It never touches any document other than the one it creates. `npm run e2e:live -- --dry-run` runs the same scenarios against an in-memory Docs stub (`scripts/e2e-live/stub-docs.ts`) without Google, and `npm test` does that too, so a failing live run points at Google's behaviour, not at the harness. `.github/workflows/e2e-live.yml` runs it on demand (and weekly) when the three secrets are set, and skips with a notice otherwise.
+
 ## Development
 
 ```bash
 npm run dev        # local server (in-memory store, direct self-calls instead of QStash)
-npm test           # planner, runner, document model, import, formatting requests, pagination, page setup, secrets, style unit tests
+npm test           # planner, runner, document model, import, formatting requests, pagination, page setup, secrets, style unit tests, live e2e harness against the stub
 npm run style:fingerprint   # print the dataset's fingerprint and rules
 npm run style:eval -- --loo # run every prompt candidate against the model and rank them
 npm run style:compile -- --candidate rules-fewshot   # ship a candidate
 npm run typecheck
 npm run lint
+npm run e2e:live:auth       # once: a refresh token for the live end-to-end test
+npm run e2e:live            # the live end-to-end test against Google Docs (see above)
 ```
