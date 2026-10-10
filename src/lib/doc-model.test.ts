@@ -14,6 +14,7 @@ const p = (pieces: Piece[] | string, attrs: Record<string, unknown> = {}): Edito
 });
 const add = (text: string, marks: EditorNode["marks"] = []): Piece => ({ text, marks: [...marks, ADD] });
 const doc = (...paras: EditorNode[]): EditorNode => ({ type: "doc", content: paras });
+const rangeOf = (r: unknown) => (r as { updateTextStyle?: { range?: unknown } }).updateTextStyle?.range;
 
 // "Why?\n" is Docs indices 1–5, "Yes.\n" 6–10, "End\n" 11–14
 const BASE = doc(p("Why?", { list: "ordered" }), p("Yes."), p("End"));
@@ -114,7 +115,7 @@ test("text that comes back without glowing (undoing a deletion) is put back dire
   assert.ok(requests.slice(1).every((r) => r.updateTextStyle));
   // Identically styled characters share one style request
   assert.equal(requests.length, 2);
-  assert.deepEqual(requests[1].updateTextStyle?.range, { startIndex: 7, endIndex: 9 });
+  assert.deepEqual(rangeOf(requests[1]), { startIndex: 7, endIndex: 9 });
 });
 
 test("restored text with mixed styles gets one style request per run", () => {
@@ -122,7 +123,7 @@ test("restored text with mixed styles gets one style request per run", () => {
   const target = doc(p("Why?", { list: "ordered" }), p(["Ye", { text: "ss", marks: [{ type: "bold" }] }, "."]), p("End"));
   const { requests } = directEdits(saved, target);
   assert.deepEqual(requests[0], { insertText: { location: { index: 7 }, text: "ess" } });
-  const ranges = requests.slice(1).map((r) => r.updateTextStyle?.range);
+  const ranges = requests.slice(1).map(rangeOf);
   assert.deepEqual(ranges, [{ startIndex: 7, endIndex: 8 }, { startIndex: 8, endIndex: 10 }]);
 });
 
