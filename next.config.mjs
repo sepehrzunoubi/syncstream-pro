@@ -28,14 +28,10 @@ const nextConfig = {
   },
   // Self-contained server for the Docker image (Vercel ignores this)
   output: "standalone",
-  images: {
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "lh3.googleusercontent.com",
-      },
-    ],
-  },
+  // No next/image anywhere: avatars and icons are plain <img> tags (CSP img-src allows https:).
+  // Turning the optimizer off also takes its endpoint, and its security advisories, out of the
+  // self-hosted Docker image.
+  images: { unoptimized: true },
 };
 
 export default nextConfig;
