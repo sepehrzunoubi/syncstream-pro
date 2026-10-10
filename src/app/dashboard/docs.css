@@ -406,6 +406,10 @@
 /* Columns, as Docs lays a section out */
 .ss-doc .ss-section-cols { column-count: var(--ss-cols, 2); column-gap: var(--ss-col-gap, 36pt); column-rule: var(--ss-col-rule, none); column-fill: balance; }
 .ss-doc .ss-section-cols > p { break-inside: avoid-column; }
+/* Pages inside a column section: the page gap spans the columns and the pagination plugin says which blocks start a
+   column, so text fills column 1 to the page bottom, then column 2, then the next page (only the last page is balanced) */
+.ss-doc .ss-section-cols > .ss-page-gap { column-span: all; }
+.ss-doc .ss-section-cols > .ss-col-start { break-before: column; }
 /* A page break: invisible on pages (the text just moves), a labelled dashed line when pageless */
 .ss-doc .ss-page-break { display: inline-block; width: 0; height: 0; overflow: hidden; vertical-align: baseline; }
 .ss-doc .ss-page-break.ProseMirror-selectednode { outline: 2px solid var(--ss-blue); }
