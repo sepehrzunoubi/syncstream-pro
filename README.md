@@ -89,7 +89,7 @@ Once deployed, sign in and open `/api/health` to verify every service is reachab
 
 `vercel.json` schedules the sync watchdog cron once a day (`0 0 * * *`). Hobby plans only allow daily crons, and a more frequent schedule makes the whole deployment fail. On a Pro plan you can tighten it (for example `*/2 * * * *`) for faster recovery of stalled jobs. QStash retries already cover normal delivery, so the cron is only a safety net.
 
-`/api/sync/process` declares `maxDuration = 300`. If your Vercel plan caps function duration lower, reduce that value; the route chains itself well before the limit. `/api/style/transform` declares the same `maxDuration`, because a long text on a small local model can take minutes; it streams its reply, so the browser sees text as soon as it is written.
+`/api/sync/process` declares `maxDuration = 60`: each delivery works for about 20 seconds and then hands the job back to the queue, so it fits every Vercel plan. `/api/style/transform` declares `maxDuration = 300`, because a long text on a small local model can take minutes; it streams its reply, so the browser sees text as soon as it is written.
 
 ## Self-hosting with a local model
 
