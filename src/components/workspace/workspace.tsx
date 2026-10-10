@@ -17,7 +17,7 @@ import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
 import { PageSetupDialog } from "./page-setup-dialog";
 import { installLineMetrics } from "./line-metrics";
-import { pageStartOffsets } from "@/lib/page-text";
+import { pageStartOffsets } from "@/lib/page-offsets";
 import { tokenPositions } from "./pagination";
 import { tokenize } from "@/lib/doc-model";
 import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
@@ -130,7 +130,13 @@ function loadDraft(): Draft {
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  } catch {
+    // Offline or the request never reached the server: report it, never throw into a debounce
+    return { ok: false, status: 0, data: { error: "You're offline, or Google can't be reached" } as T & { error?: string } };
+  }
   let data = {} as T & { error?: string };
   try { data = await res.json(); } catch { /* empty body */ }
   return { ok: res.ok, status: res.status, data };
@@ -493,6 +499,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     }
     if (!keep) setDocContent({ docId, status: "loading" });
     try {
+      const startedWith = revisionRef.current;
       const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
       const data = (await res.json().catch(() => ({}))) as { nodes?: EditorNode[]; revisionId?: string; empty?: boolean; pageSetup?: unknown; error?: string };
       if (res.status === 401) setScopeError(true);
@@ -500,6 +507,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       if (req !== contentReq.current) return;
       const revision = data.revisionId ?? "";
       if (keep && revision === revisionRef.current && docContentRef.current?.docId === docId) return; // unchanged
+      // A save landed while this copy was fetched: it is already stale, the next check reloads
+      if (keep && (revisionRef.current !== startedWith || savingRef.current)) return;
       // The document's own page setup, headers and footers
       const docSetup = parsePageSetup(data.pageSetup);
       if (docSetup) setPageSetup(docSetup);
@@ -513,7 +522,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       setFootnotes(next);
       const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
       let target = fresh;
-      if (keep) target = rebase(fresh, keep);
+      if (keep) target = rebase(fresh, editor.getJSON() as EditorNode);
       else {
         const saved = readAdditions(docId);
         // Google's copy is the truth: only the glowing additions come back from last time
@@ -760,12 +769,15 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     const replies = await docEdit(requests);
     if (!replies) return;
     setHfSetup(merged);
-    const created = { ...cur };
-    for (const r of replies as { createHeader?: { headerId?: string }; createFooter?: { footerId?: string } }[]) {
-      if (r.createHeader?.headerId) created.firstPageHeader = { id: r.createHeader.headerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
-      if (r.createFooter?.footerId) created.firstPageFooter = { id: r.createFooter.footerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
-    }
-    setSegments(created);
+    // Only add what was created: a header saved meanwhile keeps its new base
+    setSegments((s) => {
+      const created = { ...s };
+      for (const r of replies as { createHeader?: { headerId?: string }; createFooter?: { footerId?: string } }[]) {
+        if (r.createHeader?.headerId) created.firstPageHeader = { id: r.createHeader.headerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
+        if (r.createFooter?.footerId) created.firstPageFooter = { id: r.createFooter.footerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
+      }
+      return created;
+    });
   }, [docEdit, hfSetup]);
 
   const headerFooters: HeaderFooters = {
@@ -798,7 +810,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const pagesRevision = useRef("");
   const pinGooglePages = useCallback(async (docId: string) => {
     if (!editor) return;
-    const res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}`);
+    let res: Response;
+    try { res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}`); } catch { return; } // pins are optional
     if (!res.ok) return;
     const data = (await res.json().catch(() => ({}))) as { pages?: string[] };
     if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId) return;
@@ -823,6 +836,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (pagesTimer.current) clearTimeout(pagesTimer.current);
     pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId); }, 1500);
   }, [docContent, pinGooglePages]);
+  useEffect(() => () => { if (pagesTimer.current) clearTimeout(pagesTimer.current); }, []);
   useEffect(() => { if (docContent?.status !== "ready") editor?.commands.setPinnedBreaks([]); }, [docContent?.status, editor]);
 
   /** Page setup from the dialog: shown here, and written to the open Google Doc */
@@ -839,7 +853,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       revisionId: revisionRef.current,
       requests: [documentStyleRequest(next)],
     });
-    if (ok) { revisionRef.current = data.revisionId; return; }
+    if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
     setPageSetup(prev);
     if (status === 401) setScopeError(true);
     setSnack(data.error || "Couldn't change the page setup in Google Docs");

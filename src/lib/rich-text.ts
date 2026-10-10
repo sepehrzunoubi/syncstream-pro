@@ -120,10 +120,6 @@ export const LINE_SPACINGS = [
 /** One indent step, like the Docs toolbar: half an inch */
 export const INDENT_PT = 36;
 export const MAX_INDENT = 8;
-/** CSS line-height for Docs line spacing: Docs uses 1.2× the font size as "single" */
-export function cssLineHeight(spacing: number): number {
-  return Math.round((spacing / 100) * 1.2 * 1000) / 1000;
-}
 
 // ── Model ───────────────────────────────────────────────────────────────────
 

@@ -21,7 +21,8 @@ export default function DashboardPage() {
           setChecked(true);
         } else router.replace("/");
       })
-      .catch(() => router.replace("/"))
+      // An abort is this effect's own cleanup (React runs it twice in development), not a signed-out user
+      .catch((err: unknown) => { if (!(err instanceof DOMException && err.name === "AbortError")) router.replace("/"); })
       .finally(() => clearTimeout(timeout));
     return () => { clearTimeout(timeout); controller.abort(); };
   }, [router]);

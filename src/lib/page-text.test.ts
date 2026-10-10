@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pageStartOffsets } from "./page-text";
+import { pageStartOffsets } from "./page-offsets";
 
 test("each PDF page's first body line finds where Docs starts the page", () => {
   const body = "Rogo KPI Analysis\nSepehr Zunoubi | October 9 2026\nRogo is an AI assistant for investment banks. The primary purpose of this tool is to allow employees to perform research.\nThe team behind Rogo's focus on addressing repetitive tasks stems from the founders.\nSince Rogo interfaces directly with an organization's internal databases, it is likely that users begin relying heavily on Rogo.\nSources\nAWS Rogo case study";
