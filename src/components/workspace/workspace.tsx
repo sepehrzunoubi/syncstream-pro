@@ -1,323 +1,91 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Fragment, Slice } from "@tiptap/pm/model";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
-import { editorExtensions, flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
 import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
 import { Header, type HeaderUser } from "./header";
 import { WorkspaceTabs } from "./workspace-tabs";
-import { takeStyleHandoff } from "@/components/style/style-store";
 import { SyncRail } from "./sync-rail";
-import { SyncPanel, type BreaksMode } from "./sync-panel";
+import { SyncPanel } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
-import { PageSetupDialog } from "./page-setup-dialog";
 import { installLineMetrics } from "./line-metrics";
-import { pageStartOffsets } from "@/lib/page-offsets";
-import type { DocDefaults } from "@/lib/doc-import";
-import { tokenPositions } from "./pagination";
-import { tokenize, adoptStructure } from "@/lib/doc-model";
-import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
 import { FindBar } from "./find-bar";
 import { Outline } from "./outline";
-import { ContextMenu, ShortcutsDialog } from "./context-menu";
-import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, parsePageSetup, samePageSetup, type PageSetup } from "@/lib/page-setup";
+import { ContextMenu } from "./context-menu";
+import { pageSize } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
-import { ProgressMarks, progressKey } from "./pagination";
 import { measureRemoteImage, uploadImage } from "./image-upload";
 import { isActive, statusLine } from "./job-status";
-import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
-import { richFromEditorJSON, richToEditorJSON, type EditorNode, type RichFormat, NAMED_STYLE_ORDER } from "@/lib/rich-text";
-import { loadDocument } from "./doc-sync";
-import { additions, directEdits, groupColumns, hasPending, rebase, segmentEdits, signature, PENDING_MARK } from "@/lib/doc-model";
-import { useSegmentEditor } from "./segment-editor";
-import type { HeaderFooters } from "./paged-surface";
 import type { Editor } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
-import { countWords, formatClock } from "@/lib/format";
-
-type Doc = { id: string; name: string; modifiedTime: string };
-
-const DRAFT_KEY = "syncstream_draft_v2";
-const LEGACY_DRAFT_KEY = "syncstream_draft";
-
-interface Draft {
-  /** Text typed with no document selected (all of it is to be typed) */
-  doc?: JSONContent;
-  selectedDocId?: string;
-  durationMinutes?: number | null;
-  breaksMode?: BreaksMode;
-  customBreaks?: number[];
-  typoFrequency?: number;
-  zoom?: number | "fit";
-  pageless?: boolean;
-  /** Page setup of text typed with no document selected */
-  pageSetup?: PageSetup;
-}
-
-/** The page setup new documents get (File > Page setup > Set as default) */
-const PAGE_DEFAULT_KEY = "syncstream_page_default";
-function readPageDefault(): { setup: PageSetup; pageless: boolean } | null {
-  try {
-    const raw = localStorage.getItem(PAGE_DEFAULT_KEY);
-    const v = raw ? (JSON.parse(raw) as { setup?: unknown; pageless?: unknown }) : null;
-    const setup = v ? parsePageSetup(v.setup) : null;
-    return setup ? { setup, pageless: v?.pageless === true } : null;
-  } catch { return null; }
-}
-
-/** Additions made to a document, kept per document until they are synced */
-const ADDITIONS_PREFIX = "syncstream_additions_";
-interface SavedAdditions { revisionId: string; doc: EditorNode }
-
-function readAdditions(docId: string): SavedAdditions | null {
-  try {
-    const raw = localStorage.getItem(ADDITIONS_PREFIX + docId);
-    return raw ? (JSON.parse(raw) as SavedAdditions) : null;
-  } catch { return null; }
-}
-
-function writeAdditions(docId: string, value: SavedAdditions | null) {
-  try {
-    if (value) localStorage.setItem(ADDITIONS_PREFIX + docId, JSON.stringify(value));
-    else localStorage.removeItem(ADDITIONS_PREFIX + docId);
-  } catch { /* storage full or blocked */ }
-}
-
-/** Mark everything in a document as an addition (text from before this version, or a sync to redo) */
-function markAllAdded(doc: EditorNode): EditorNode {
-  const mark = (n: EditorNode): EditorNode => {
-    if (n.type === "text" || n.type === "image" || n.type === "hardBreak") {
-      const marks = (n.marks ?? []).filter((m) => m.type !== PENDING_MARK);
-      return { ...n, marks: [...marks, { type: PENDING_MARK }] };
-    }
-    return n.content ? { ...n, content: n.content.map(mark) } : n;
-  };
-  return mark(doc);
-}
-
-/** Only the additions of a document, for when the document itself can't be shown */
-function additionsOnly(doc: EditorNode): EditorNode {
-  const content = (doc.content ?? [])
-    .filter((p) => !p.attrs?.locked)
-    .map((p) => ({ ...p, content: (p.content ?? []).filter((c) => c.marks?.some((m) => m.type === PENDING_MARK)) }))
-    .filter((p) => p.content.length);
-  return { type: "doc", content: content.length ? content : [{ type: "paragraph" }] };
-}
-
-function plainToDoc(text: string): JSONContent {
-  return {
-    type: "doc",
-    content: text.split("\n").map((line) => ({ type: "paragraph", content: line ? [{ type: "text", text: line }] : [] })),
-  };
-}
-
-function loadDraft(): Draft {
-  try {
-    const raw = localStorage.getItem(DRAFT_KEY);
-    if (raw) return JSON.parse(raw) as Draft;
-    const legacy = localStorage.getItem(LEGACY_DRAFT_KEY);
-    if (legacy) {
-      const old = JSON.parse(legacy) as { sourceText?: string; selectedDocId?: string; typoFrequency?: number; durationMinutes?: number | null; customBreaks?: number[]; breaksMode?: BreaksMode };
-      return { ...old, doc: old.sourceText ? plainToDoc(old.sourceText) : undefined };
-    }
-  } catch { /* unreadable draft */ }
-  return {};
-}
-
-async function postJson<T>(url: string, body: unknown): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
-  let res: Response;
-  try {
-    res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  } catch {
-    // Offline or the request never reached the server: report it, never throw into a debounce
-    return { ok: false, status: 0, data: { error: "You're offline, or Google can't be reached" } as T & { error?: string } };
-  }
-  let data = {} as T & { error?: string };
-  try { data = await res.json(); } catch { /* empty body */ }
-  return { ok: res.ok, status: res.status, data };
-}
-
-function useNow(active: boolean, intervalMs = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [active, intervalMs]);
-  return now;
-}
-
-interface Source { text: string; format: RichFormat | null; context?: { doc?: EditorNode; ranges?: [number, number][] } | null }
-
-/** What is known about the selected document's own content */
-interface DocContent {
-  docId: string;
-  status: "loading" | "ready" | "failed";
-  revisionId?: string;
-  /** The document's own default font, size and heading styles */
-  defaults?: DocDefaults;
-  /** Why it couldn't be opened */
-  error?: string;
-}
-
-/** Drop what the editor would reject (empty text nodes), so one odd paragraph can't block the page */
-function sanitize(node: EditorNode): EditorNode | null {
-  if (node.type === "text") return node.text ? node : null;
-  if (!node.content) return node;
-  return { ...node, content: node.content.map(sanitize).filter((n): n is EditorNode => n !== null) };
-}
+import type { EditorNode } from "@/lib/rich-text";
+import { countWords } from "@/lib/format";
+import { bodyEditorProps, bodyExtensions, useEditorDebugHook, viewerEditorProps, viewerExtensions, type ImageFilesHandler } from "./editor-config";
+import { useDocRefs, type DocContent } from "./doc-state";
+import { Snackbar, useSnack } from "./snack";
+import { useDocsList } from "./use-docs-list";
+import { useDialogs, WorkspaceDialogs } from "./use-dialogs";
+import { useAutosave } from "./use-autosave";
+import { useHeaderFooters } from "./use-header-footers";
+import { usePageSetup } from "./use-page-setup";
+import { useDraft } from "./use-draft";
+import { useDocLoader } from "./use-doc-loader";
+import { useSyncJobs } from "./use-sync-jobs";
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
   const router = useRouter();
-  // Documents
-  const [docs, setDocs] = useState<Doc[]>([]);
-  const [selectedDocId, setSelectedDocId] = useState("");
-  const [isCreatingDoc, setIsCreatingDoc] = useState(false);
+  const [snack, setSnack] = useSnack();
   const [scopeError, setScopeError] = useState(false);
-
-  // Draft settings
+  // Documents
+  const { docs, selectedDocId, setSelectedDocId, isCreatingDoc, renameDoc, fetchDocs, createDoc } = useDocsList({ setSnack, setScopeError });
   const [docJSON, setDocJSON] = useState<JSONContent | null>(null);
-  const [durationMinutes, setDurationMinutes] = useState<number | null>(null);
-  const [breaksMode, setBreaksMode] = useState<BreaksMode>("auto");
-  const [customBreaks, setCustomBreaks] = useState<number[]>([]);
-  const [typoFrequency, setTypoFrequency] = useState(0.5);
-  const [startInMinutes, setStartInMinutes] = useState(0);
-  const [seed, setSeed] = useState(() => randomSeed());
-  const [zoom, setZoom] = useState<number | "fit">("fit");
-  const canvasRef = useRef<HTMLElement>(null);
-  const [fitScale, setFitScale] = useState(1);
-  const [narrow, setNarrow] = useState(false);
-  const [pageless, setPageless] = useState(false);
-  const [pageSetup, setPageSetup] = useState<PageSetup>(DEFAULT_PAGE_SETUP);
-  const [pageSetupOpen, setPageSetupOpen] = useState(false);
-  const [spacingOpen, setSpacingOpen] = useState(false);
-  const [bordersOpen, setBordersOpen] = useState(false);
-  const [columnsOpen, setColumnsOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [outlineOpen, setOutlineOpen] = useState(true);
-  useEffect(() => {
-    const open = () => setShortcutsOpen(true);
-    window.addEventListener("ss-shortcuts", open);
-    return () => window.removeEventListener("ss-shortcuts", open);
-  }, []);
-  const renameDoc = useCallback(async (name: string): Promise<boolean> => {
-    const id = selectedDocId;
-    if (!id) return false;
-    const { ok, status, data } = await postJson<{ name: string }>("/api/docs/rename", { documentId: id, name });
-    if (!ok) { if (status === 401) setScopeError(true); setSnack(data.error || "Couldn't rename the document"); return false; }
-    setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, name: data.name ?? name } : d)));
-    return true;
-  }, [selectedDocId]);
-  // Headers and footers: each a Docs segment with the content as last saved
-  type Segment = { id: string; base: EditorNode[] };
-  const [segments, setSegments] = useState<{ header: Segment | null; footer: Segment | null; firstPageHeader: Segment | null; firstPageFooter: Segment | null }>({ header: null, footer: null, firstPageHeader: null, firstPageFooter: null });
-  const [hfSetup, setHfSetup] = useState({ useFirstPage: false, marginHeader: 36, marginFooter: 36 });
+  const dialogs = useDialogs();
   const [editingHf, setEditingHf] = useState<"header" | "footer" | null>(null);
-  const [footnotes, setFootnotes] = useState<Record<string, EditorNode[]>>({});
-  const footnotesRef = useRef(footnotes);
-  footnotesRef.current = footnotes;
   /** The header or footer editor being used, when one is; the body otherwise */
   const [segmentEditor, setSegmentEditor] = useState<Editor | null>(null);
-  const [draftLoaded, setDraftLoaded] = useState(false);
   const [docContent, setDocContent] = useState<DocContent | null>(null);
-  const contentReq = useRef(0);
-  const contentStale = useRef(false);
-  /** The document as last saved to Google Docs, and its revision */
-  const baseRef = useRef<EditorNode | null>(null);
-  const revisionRef = useRef("");
-  const legacyTextRef = useRef<EditorNode | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const savingRef = useRef<Promise<boolean> | null>(null);
+  const refs = useDocRefs();
+  refs.docContentRef.current = docContent;
 
   // Syncs
   const [jobs, setJobs] = useState<PublicJob[]>([]);
   const [ready, setReady] = useState(false);
   const [focusedJobId, setFocusedJobId] = useState<string | null>(null);
   const [composing, setComposing] = useState(true);
-  const [sources, setSources] = useState<Record<string, Source>>({});
-  const [busy, setBusy] = useState(false);
-  const [startError, setStartError] = useState<string | null>(null);
-  const [snack, setSnack] = useState<string | null>(null);
   const [railOpen, setRailOpen] = useState(false);
   const [wide, setWide] = useState(true);
 
   // Pasted or dropped image files are uploaded, then inserted (the handler is set below)
-  const imageFilesRef = useRef<(files: File[], at?: number) => void>(() => {});
-  const imageFilesOf = (list: FileList | null | undefined) => Array.from(list ?? []).filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
+  const imageFilesRef = useRef<ImageFilesHandler>(() => {});
 
   const editor = useEditor({
-    extensions: editorExtensions,
+    extensions: bodyExtensions,
     immediatelyRender: false,
     autofocus: "end",
-    editorProps: {
-      attributes: { class: "ss-doc", spellcheck: "true", "aria-label": "Text to sync" },
-      transformPastedHTML: (html) => inlinePastedStyles(flattenPastedLists(pastedEmptyLines(html))),
-      handlePaste: (view, event, slice) => {
-        const files = imageFilesOf(event.clipboardData?.files);
-        if (files.length) {
-          event.preventDefault();
-          imageFilesRef.current(files);
-          return true;
-        }
-        // Pasting formatted paragraphs into an empty one (or over whole paragraphs) keeps every
-        // pasted paragraph's own formatting, as Docs does; ProseMirror would merge the first into
-        // the paragraph being replaced. Plain text (no HTML, or paste without formatting) keeps the
-        // destination's formatting instead, also as Docs does.
-        const hasHTML = !!event.clipboardData?.types.includes("text/html") && !(view as unknown as { input: { shiftKey: boolean } }).input.shiftKey;
-        const { $from, $to } = view.state.selection;
-        const first = slice.content.firstChild;
-        const target = $from.parent;
-        const wholeParagraphs = $from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size;
-        if (hasHTML && wholeParagraphs && slice.openStart > 0 && first?.type.name === "paragraph" && target.type.name === "paragraph" && !target.attrs.locked && $from.depth === 1 && $to.depth === 1) {
-          const tr = view.state.tr.replace($from.before(), $to.after(), new Slice(slice.content, 0, 0)).scrollIntoView();
-          view.dispatch(tr.setMeta("paste", true).setMeta("uiEvent", "paste"));
-          event.preventDefault();
-          return true;
-        }
-        return false;
-      },
-      // Plain text takes the formatting of the paragraph it lands in
-      clipboardTextParser: (text, $context) => {
-        const schema = $context.doc.type.schema;
-        const parent = $context.parent.type.name === "paragraph" ? $context.parent : null;
-        const nodes = text.split(/\r\n?|\n/).map((line) => schema.nodes.paragraph.create(parent ? { ...parent.attrs, locked: false, span: null, bid: null, kind: null } : null, line ? schema.text(line, $context.marks()) : null));
-        return new Slice(Fragment.from(nodes), 1, 1);
-      },
-      handleDrop: (view, event, _slice, moved) => {
-        if (moved) return false;
-        const files = imageFilesOf(event.dataTransfer?.files);
-        if (!files.length) return false;
-        event.preventDefault();
-        imageFilesRef.current(files, view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos);
-        return true;
-      },
-    },
+    editorProps: bodyEditorProps(imageFilesRef),
     onUpdate: ({ editor: e }) => setDocJSON(e.getJSON()),
     onFocus: () => { setSegmentEditor(null); setEditingHf(null); },
   });
 
   // A read-only copy of the editor shows a running sync, paginated the same way
   const viewer = useEditor({
-    extensions: [...editorExtensions, ProgressMarks],
+    extensions: viewerExtensions,
     immediatelyRender: false,
     editable: false,
-    editorProps: { attributes: { class: "ss-doc", "aria-label": "Text being typed into Google Docs", "aria-readonly": "true" } },
+    editorProps: viewerEditorProps(),
   });
 
   const focusedJob = !composing ? jobs.find((j) => j.id === focusedJobId) ?? null : null;
   // A sync typing into the selected document: editing it waits until that finishes
   const docBusy = !!selectedDocId && jobs.some((j) => isActive(j) && j.documentId === selectedDocId);
   useEffect(() => { editor?.setEditable(!docBusy); }, [editor, docBusy]);
-  const anyActive = jobs.some(isActive);
-  const now = useNow(!!focusedJob && isActive(focusedJob));
+  refs.docBusyRef.current = docBusy;
 
   // Icons are ligatures in the Material Symbols font; reveal them once it has loaded
   const [iconsReady, setIconsReady] = useState(false);
@@ -335,767 +103,25 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
   }, []);
-
-  const geometry = useMemo(() => pageGeometry(pageSetup), [pageSetup]);
-  /** Width of the text area in points, for column widths */
-  const textWidthPt = pageSize(pageSetup).w - pageSetup.margins.left - pageSetup.margins.right;
   useEffect(() => { installLineMetrics(); }, []);
-  useEffect(() => {
-    const onHint = () => setSnack(`Use ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}V to paste, or ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}Shift+V to paste without formatting`);
-    const onLocked = () => setSnack("That part of the document can't be changed here. Tables' shapes, chips and section breaks are edited in Google Docs.");
-    window.addEventListener("ss-paste-hint", onHint);
-    window.addEventListener("ss-locked-hint", onLocked);
-    return () => { window.removeEventListener("ss-paste-hint", onHint); window.removeEventListener("ss-locked-hint", onLocked); };
-  }, []);
-  // "Fit" zoom: shrink the page to the space between the side columns.
-  // Below 720px the page reflows instead (see docs.css), so no scaling there.
-  useEffect(() => {
-    const el = canvasRef.current;
-    if (!el) return;
-    const measure = () => {
-      const w = el.clientWidth;
-      setFitScale(w < 720 ? 1 : Math.min(1, (w - 48) / geometry.w));
-      setNarrow(w < 720);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [ready, geometry.w]);
-  useEffect(() => {
-    editor?.commands.setPageGeometry(geometry);
-    viewer?.commands.setPageGeometry(geometry);
-  }, [editor, viewer, geometry]);
-  const scale = zoom === "fit" ? fitScale : zoom / 100;
-  // Narrow screens reflow the page, so page breaks would be wrong there
-  const effectivePageless = pageless || narrow;
-  useEffect(() => {
-    editor?.commands.setPaginated(!effectivePageless);
-    viewer?.commands.setPaginated(!effectivePageless);
-  }, [editor, viewer, effectivePageless]);
-
-  // Restore the draft once the editor exists
-  useEffect(() => {
-    if (!editor || draftLoaded) return;
-    const d = loadDraft();
-    if (d.doc) {
-      const text = markAllAdded(d.doc as EditorNode);
-      if (d.selectedDocId) legacyTextRef.current = hasPending(text) ? text : null;
-      else loadDocument(editor, text, false);
-    }
-    setDocJSON(editor.getJSON());
-    if (d.selectedDocId) setSelectedDocId(d.selectedDocId);
-    if (d.durationMinutes !== undefined) setDurationMinutes(d.durationMinutes);
-    if (d.breaksMode) setBreaksMode(d.breaksMode);
-    if (Array.isArray(d.customBreaks)) setCustomBreaks(d.customBreaks);
-    if (typeof d.typoFrequency === "number") setTypoFrequency(d.typoFrequency);
-    if (typeof d.zoom === "number" || d.zoom === "fit") setZoom(d.zoom);
-    if (typeof d.pageless === "boolean") setPageless(d.pageless);
-    const draftSetup = d.pageSetup ? parsePageSetup(d.pageSetup) : null;
-    const def = readPageDefault();
-    if (draftSetup) setPageSetup(draftSetup);
-    else if (def) { setPageSetup(def.setup); if (typeof d.pageless !== "boolean") setPageless(def.pageless); }
-    setDraftLoaded(true);
-  }, [editor, draftLoaded]);
-
-  // Text handed over from the Style engine tab goes in at the end, as new text to sync
-  useEffect(() => {
-    if (!editor || !draftLoaded) return;
-    const text = takeStyleHandoff();
-    if (!text) return;
-    editor.chain().focus("end").insertContent(plainToDoc(text).content ?? []).run();
-    setDocJSON(editor.getJSON());
-    setSnack("The text from the Style engine was added. It glows until a sync types it in.");
-  }, [editor, draftLoaded]);
-
-  useEffect(() => {
-    if (!draftLoaded) return;
-    const id = setTimeout(() => {
-      try {
-        const json = (docJSON ?? undefined) as EditorNode | undefined;
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({
-          // Text typed with no document stays here; additions to a document are kept per document
-          doc: !selectedDocId && json ? (json as JSONContent) : undefined,
-          selectedDocId,
-          durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless,
-          pageSetup: selectedDocId ? undefined : pageSetup,
-        } satisfies Draft));
-        localStorage.removeItem(LEGACY_DRAFT_KEY);
-        if (json && docContent?.status === "ready" && docContent.docId === selectedDocId) {
-          writeAdditions(selectedDocId, hasPending(json) ? { revisionId: revisionRef.current, doc: json } : null);
-        }
-      } catch { /* storage full or blocked */ }
-    }, 400);
-    return () => clearTimeout(id);
-  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, pageSetup, docContent]);
 
   // ── The selected Google Doc, editable ──
-  const docContentRef = useRef<DocContent | null>(null);
-  const retried = useRef(new Set<string>());
-  docContentRef.current = docContent;
-  const docBusyRef = useRef(false);
-  docBusyRef.current = docBusy;
-
-  /**
-   * Read the document back after a save. If Google applied the edit
-   * differently from what the editor expected, reload it (keeping the new
-   * text) so later edits land in the right places.
-   */
-  /** The document as Google has it now, or null when it can't be read */
-  const fetchFresh = useCallback(async (docId: string): Promise<EditorNode | null> => {
-    try {
-      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
-      if (!res.ok) return null;
-      const data = (await res.json()) as { nodes?: EditorNode[]; revisionId?: string };
-      if (!Array.isArray(data.nodes) || docContentRef.current?.docId !== docId) return null;
-      if (data.revisionId) revisionRef.current = data.revisionId;
-      return { type: "doc", content: groupColumns(data.nodes) };
-    } catch { return null; }
-  }, []);
-
-  const verifyAgainstGoogle = useCallback(async (docId: string) => {
-    try {
-      const fresh = await fetchFresh(docId);
-      if (!fresh || !editor) return;
-      if (signature(fresh) === signature(baseRef.current)) return;
-      console.warn("Google Docs applied an edit differently than expected; reloading the document");
-      baseRef.current = fresh;
-      loadDocument(editor, rebase(fresh, editor.getJSON() as EditorNode), true);
-      setDocJSON(editor.getJSON());
-      setSnack("Google Docs applied that change a little differently, so SyncStream reloaded the document. Your new text is kept.");
-    } catch { /* the next save or reload catches up */ }
-  }, [editor, fetchFresh]);
-
-  /**
-   * Save direct edits (formatting, deleting) to the Google Doc. Additions
-   * are left for a sync. Resolves false when the save failed.
-   */
-  const saveNow = useCallback(async (): Promise<boolean> => {
-    while (savingRef.current) await savingRef.current;
-    const content = docContentRef.current;
-    const base = baseRef.current;
-    if (!editor || !base || content?.status !== "ready" || docBusyRef.current) return true;
-    const target = editor.getJSON() as EditorNode;
-    const { requests, saved, structural } = directEdits(base, target);
-    if (!requests.length) return true;
-    const run = (async () => {
-      setSaveState("saving");
-      const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
-      if (ok) {
-        if (data.revisionId) revisionRef.current = data.revisionId;
-        if (structural) {
-          // Tables changed shape: read the document back, give the editor's tables the ids Google
-          // assigned, and only then save whatever else changed (text in the new cells stays an addition)
-          const fresh = await fetchFresh(content.docId);
-          if (fresh) {
-            baseRef.current = fresh;
-            loadDocument(editor, adoptStructure(fresh, editor.getJSON() as EditorNode), true);
-            setDocJSON(editor.getJSON());
-          } else baseRef.current = saved;
-          setSaveState("saved");
-          return "again" as const;
-        }
-        baseRef.current = saved;
-        setSaveState("saved");
-        await verifyAgainstGoogle(content.docId);
-        return true;
-      }
-      setSaveState("error");
-      if (status === 401) setScopeError(true);
-      else setSnack(data.error || "Couldn't save that change to Google Docs");
-      return false;
-    })();
-    const once = run.then((r) => r !== false);
-    savingRef.current = once;
-    let result: boolean | "again";
-    try {
-      result = await run;
-    } finally {
-      savingRef.current = null;
-    }
-    return result === "again" ? saveNow() : result;
-  }, [editor, verifyAgainstGoogle, fetchFresh]);
-
-  /**
-   * Show a Google Doc. `keep` is what the editor shows now: its additions are
-   * put back into the fresh copy (nothing reloads if the doc hasn't changed).
-   */
-  const loadDocContent = useCallback(async (docId: string, keep?: EditorNode) => {
-    if (!editor) return;
-    const prev = docContentRef.current;
-    if (prev?.status === "ready" && prev.docId !== docId) {
-      // Leaving a document: save its edits and keep its additions
-      await saveNow();
-      const json = editor.getJSON() as EditorNode;
-      writeAdditions(prev.docId, hasPending(json) ? { revisionId: revisionRef.current, doc: json } : null);
-    }
-    const req = ++contentReq.current;
-    // Text typed before a document was open becomes additions to it
-    if (!keep && prev?.status !== "ready" && !readAdditions(docId)) {
-      const json = editor.getJSON() as EditorNode;
-      if (hasPending(json)) legacyTextRef.current = additionsOnly(json);
-    }
-    if (!keep) setDocContent({ docId, status: "loading" });
-    try {
-      const startedWith = revisionRef.current;
-      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
-      const data = (await res.json().catch(() => ({}))) as { nodes?: EditorNode[]; revisionId?: string; empty?: boolean; pageSetup?: unknown; error?: string };
-      if (res.status === 401) setScopeError(true);
-      if (!res.ok || !Array.isArray(data.nodes)) throw new Error(data.error || "Couldn't open this document");
-      if (req !== contentReq.current) return;
-      const revision = data.revisionId ?? "";
-      if (keep && revision === revisionRef.current && docContentRef.current?.docId === docId) return; // unchanged
-      // A save landed while this copy was fetched: it is already stale, the next check reloads
-      if (keep && (revisionRef.current !== startedWith || savingRef.current)) return;
-      // The document's own page setup, headers and footers
-      const docSetup = parsePageSetup(data.pageSetup);
-      if (docSetup) setPageSetup(docSetup);
-      const seg = (v: unknown): { id: string; base: EditorNode[] } | null => (v && typeof v === "object" && typeof (v as { id?: unknown }).id === "string" && Array.isArray((v as { nodes?: unknown }).nodes) ? { id: (v as { id: string }).id, base: (v as { nodes: EditorNode[] }).nodes } : null);
-      const d = data as { header?: unknown; footer?: unknown; firstPageHeader?: unknown; firstPageFooter?: unknown; useFirstPage?: unknown; marginHeader?: unknown; marginFooter?: unknown };
-      setSegments({ header: seg(d.header), footer: seg(d.footer), firstPageHeader: seg(d.firstPageHeader), firstPageFooter: seg(d.firstPageFooter) });
-      setHfSetup({ useFirstPage: d.useFirstPage === true, marginHeader: typeof d.marginHeader === "number" ? d.marginHeader : 36, marginFooter: typeof d.marginFooter === "number" ? d.marginFooter : 36 });
-      const fns = (data as { footnotes?: Record<string, unknown> }).footnotes ?? {};
-      const next: Record<string, EditorNode[]> = {};
-      for (const [id, v] of Object.entries(fns)) { const s = seg(v); if (s) next[id] = s.base; }
-      setFootnotes(next);
-      const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
-      let target = fresh;
-      if (keep) target = rebase(fresh, editor.getJSON() as EditorNode);
-      else {
-        const saved = readAdditions(docId);
-        // Google's copy is the truth: only the glowing additions come back from last time
-        if (saved) target = rebase(fresh, saved.doc);
-        else if (legacyTextRef.current) target = { type: "doc", content: [...(fresh.content ?? []), ...(legacyTextRef.current.content ?? [])] };
-        legacyTextRef.current = null;
-      }
-      try {
-        loadDocument(editor, target, true);
-      } catch (err) {
-        console.error("The editor couldn't show this document as is:", err);
-        const clean = sanitize(target) ?? fresh;
-        try { loadDocument(editor, clean, true); } catch { loadDocument(editor, sanitize(fresh) ?? fresh, true); }
-      }
-      baseRef.current = fresh;
-      revisionRef.current = revision;
-      setDocJSON(editor.getJSON());
-      contentStale.current = false;
-      setSaveState("idle");
-      setDocContent({ docId, status: "ready", revisionId: revision, defaults: (data as { defaults?: DocDefaults }).defaults });
-      if (keep) setSnack("The document changed in Google Docs. SyncStream reloaded it and kept your new text.");
-    } catch (err) {
-      if (req !== contentReq.current) return;
-      if (keep) return; // keep editing what is shown
-      console.error("Couldn't open the document:", err);
-      baseRef.current = null;
-      // Show only the new text, still glowing; a sync would add it at the end of the document
-      loadDocument(editor, legacyTextRef.current ?? additionsOnly(editor.getJSON() as EditorNode), true);
-      setDocJSON(editor.getJSON());
-      setDocContent({ docId, status: "failed", error: err instanceof Error ? err.message : "Couldn't open this document" });
-      // One automatic retry: most failures are a slow or expired Google response
-      if (!retried.current.has(docId)) {
-        retried.current.add(docId);
-        setTimeout(() => { if (docContentRef.current?.docId === docId && docContentRef.current.status === "failed") loadDocContent(docId); }, 2000);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, saveNow]);
-
-  // Open the selected document (again after a sync into it finishes)
-  useEffect(() => {
-    if (!editor || !draftLoaded || !composing) return;
-    if (!selectedDocId) {
-      if (docContentRef.current) {
-        baseRef.current = null;
-        loadDocument(editor, additionsOnly(editor.getJSON() as EditorNode), false);
-        setDocContent(null);
-      }
-      return;
-    }
-    if (docContent?.docId === selectedDocId && !contentStale.current) return;
-    if (docBusy && docContent?.docId === selectedDocId) return;
-    loadDocContent(selectedDocId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, draftLoaded, composing, selectedDocId, docBusy]);
-
-  // Save direct edits shortly after they are made
-  useEffect(() => {
-    if (!docJSON || docContent?.status !== "ready" || docBusy) return;
-    const id = setTimeout(() => { saveNow(); }, 700);
-    return () => clearTimeout(id);
-  }, [docJSON, docContent, docBusy, saveNow]);
-
-  // Mirror changes made in Google Docs: on coming back to this tab, and every few seconds while
-  // it is visible (the doc may be open side by side), reload when Google's revision moved on
-  useEffect(() => {
-    let checking = false;
-    const refresh = async (force: boolean) => {
-      if (checking || document.visibilityState !== "visible" || !editor) return;
-      const content = docContentRef.current;
-      if (content?.status !== "ready" || docBusyRef.current) return;
-      checking = true;
-      try {
-        if (!force) {
-          const res = await fetch(`/api/docs/revision?id=${encodeURIComponent(content.docId)}`);
-          if (!res.ok) return;
-          const data = (await res.json().catch(() => ({}))) as { revisionId?: string };
-          if (!data.revisionId || data.revisionId === revisionRef.current) return;
-          if (docContentRef.current?.docId !== content.docId) return;
-        }
-        if (!(await saveNow())) return;
-        loadDocContent(content.docId, editor.getJSON() as EditorNode);
-      } finally {
-        checking = false;
-      }
-    };
-    const onVisible = () => { void refresh(true); };
-    const id = setInterval(() => { void refresh(false); }, 6000);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
-  }, [editor, saveNow, loadDocContent]);
-
-  // For browser automation: window.ssEditor when localStorage.ss_debug is set
-  useEffect(() => {
-    try { if (editor && localStorage.getItem("ss_debug")) (window as unknown as { ssEditor?: unknown }).ssEditor = editor; } catch { /* storage blocked */ }
-  }, [editor]);
-
-  // Snackbar auto-hide
-  useEffect(() => {
-    if (!snack) return;
-    const id = setTimeout(() => setSnack(null), 6000);
-    return () => clearTimeout(id);
-  }, [snack]);
-
-  // Documents
-  const fetchDocs = useCallback(async () => {
-    try {
-      const res = await fetch("/api/docs");
-      if (res.status === 401) { setScopeError(true); return; }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { docs: Doc[] };
-      setDocs(data.docs || []);
-      setSelectedDocId((cur) => (cur && data.docs?.some((d) => d.id === cur) ? cur : data.docs?.[0]?.id ?? ""));
-    } catch {
-      setSnack("Couldn't load your Google Docs. Try Refresh list.");
-    }
-  }, []);
-
-  const createDoc = useCallback(async () => {
-    setIsCreatingDoc(true);
-    try {
-      const { ok, status, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "Untitled document", pageSetup: readPageDefault()?.setup });
-      if (status === 401) throw new Error("Your Google sign-in expired. Choose Reconnect Google account in the account menu.");
-      if (!ok) throw new Error(data.error || "Couldn't create the document");
-      setDocs((prev) => [{ id: data.id, name: data.name, modifiedTime: new Date().toISOString() }, ...prev]);
-      setSelectedDocId(data.id);
-      setSnack(`Created "${data.name}"`);
-    } catch (err) {
-      setSnack(err instanceof Error ? err.message : "Couldn't create the document");
-    } finally {
-      setIsCreatingDoc(false);
-    }
-  }, []);
-
-  // ── Headers and footers ──
-  const segmentsRef = useRef(segments);
-  segmentsRef.current = segments;
-  const segmentTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const saveSegment = useCallback(async (key: keyof typeof segments, doc: JSONContent) => {
-    const seg = segmentsRef.current[key];
-    const content = docContentRef.current;
-    if (!seg || content?.status !== "ready") return;
-    const target = doc as EditorNode;
-    const { requests } = segmentEdits({ type: "doc", content: seg.base }, target, seg.id);
-    if (!requests.length) return;
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
-    if (ok) {
-      if (data.revisionId) revisionRef.current = data.revisionId;
-      setSegments((s) => (s[key] && s[key]!.id === seg.id ? { ...s, [key]: { id: seg.id, base: target.content ?? [] } } : s));
-      return;
-    }
-    if (status === 401) setScopeError(true);
-    setSnack(data.error || "Couldn't save the header or footer to Google Docs");
-  }, []);
-  const segmentChanged = useCallback((key: keyof typeof segments) => (doc: JSONContent) => {
-    clearTimeout(segmentTimers.current[key]);
-    segmentTimers.current[key] = setTimeout(() => { void saveSegment(key, doc); }, 600);
-  }, [saveSegment]);
-  const segmentFocused = (which: "header" | "footer") => (e: Editor) => { setSegmentEditor(e); setEditingHf(which); };
-  const footnoteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const saveFootnote = useCallback(async (id: string, doc: JSONContent) => {
-    const base = footnotesRef.current[id];
-    const content = docContentRef.current;
-    if (!base || content?.status !== "ready") return;
-    const { requests } = segmentEdits({ type: "doc", content: base }, doc as EditorNode, id);
-    if (!requests.length) return;
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
-    if (ok) {
-      if (data.revisionId) revisionRef.current = data.revisionId;
-      setFootnotes((f) => (f[id] ? { ...f, [id]: (doc as EditorNode).content ?? [] } : f));
-      return;
-    }
-    if (status === 401) setScopeError(true);
-    setSnack(data.error || "Couldn't save the footnote to Google Docs");
-  }, []);
-  const footnoteProps = useMemo(() => ({
-    items: Object.entries(footnotes).map(([id, base]) => ({ id, base })),
-    onChange: (id: string, doc: JSONContent) => { clearTimeout(footnoteTimers.current[id]); footnoteTimers.current[id] = setTimeout(() => { void saveFootnote(id, doc); }, 600); },
-    onFocus: (_id: string, e: Editor) => { setSegmentEditor(e); setEditingHf(null); },
-  }), [footnotes, saveFootnote]);
-  const headerEditor = useSegmentEditor(segments.header?.base ?? null, segmentChanged("header"), segmentFocused("header"));
-  const footerEditor = useSegmentEditor(segments.footer?.base ?? null, segmentChanged("footer"), segmentFocused("footer"));
-  const firstHeaderEditor = useSegmentEditor(segments.firstPageHeader?.base ?? null, segmentChanged("firstPageHeader"), segmentFocused("header"));
-  const firstFooterEditor = useSegmentEditor(segments.firstPageFooter?.base ?? null, segmentChanged("firstPageFooter"), segmentFocused("footer"));
-
-  /** Docs requests for the open document, with the replies (ids of what was created) */
-  const docEdit = useCallback(async (requests: Record<string, unknown>[]): Promise<Record<string, unknown>[] | null> => {
-    const content = docContentRef.current;
-    if (content?.status !== "ready") { setSnack("Open a Google Doc first"); return null; }
-    await saveNow();
-    const { ok, status, data } = await postJson<{ revisionId: string; replies?: Record<string, unknown>[] }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
-    if (!ok) {
-      if (status === 401) setScopeError(true);
-      setSnack(data.error || "Couldn't change the document");
-      return null;
-    }
-    if (data.revisionId) revisionRef.current = data.revisionId;
-    return data.replies ?? [];
-  }, [saveNow]);
-
-  /** Insert > Headers & footers: make the header or footer if the document has none, then edit it */
-  const openHeaderFooter = useCallback(async (which: "header" | "footer") => {
-    const cur = segmentsRef.current;
-    const first = hfSetup.useFirstPage;
-    const key = which === "header" ? (first ? "firstPageHeader" : "header") : first ? "firstPageFooter" : "footer";
-    if (!cur[key]) {
-      const req = which === "header" ? { createHeader: { type: first ? "FIRST_PAGE" : "DEFAULT" } } : { createFooter: { type: first ? "FIRST_PAGE" : "DEFAULT" } };
-      const replies = await docEdit([req]);
-      if (!replies) return;
-      const reply = replies[0] as { createHeader?: { headerId?: string }; createFooter?: { footerId?: string } } | undefined;
-      const id = reply?.createHeader?.headerId ?? reply?.createFooter?.footerId;
-      if (!id) { setSnack("Google Docs didn't return the new " + which); return; }
-      setSegments((s) => ({ ...s, [key]: { id, base: [{ type: "paragraph", attrs: {}, content: [] }] } }));
-    }
-    setEditingHf(which);
-    const ed = which === "header" ? (first ? firstHeaderEditor : headerEditor) : first ? firstFooterEditor : footerEditor;
-    setTimeout(() => ed?.commands.focus("end"), 50);
-  }, [docEdit, hfSetup.useFirstPage, headerEditor, footerEditor, firstHeaderEditor, firstFooterEditor]);
-
-  const removeHeaderFooter = useCallback(async (which: "header" | "footer") => {
-    const cur = segmentsRef.current;
-    const keys = which === "header" ? (["header", "firstPageHeader"] as const) : (["footer", "firstPageFooter"] as const);
-    const requests = keys.map((k) => cur[k]).filter(Boolean).map((seg) => (which === "header" ? { deleteHeader: { headerId: seg!.id } } : { deleteFooter: { footerId: seg!.id } }));
-    if (!requests.length) return;
-    if (!(await docEdit(requests))) return;
-    setSegments((s) => ({ ...s, [keys[0]]: null, [keys[1]]: null }));
-    setEditingHf(null);
-    setSegmentEditor(null);
-    editor?.commands.focus();
-  }, [docEdit, editor]);
-
-  const setHeaderFooterOptions = useCallback(async (next: Partial<typeof hfSetup>) => {
-    const merged = { ...hfSetup, ...next };
-    const style: Record<string, unknown> = {};
-    const fields: string[] = [];
-    if (next.useFirstPage != null) { style.useFirstPageHeaderFooter = next.useFirstPage; fields.push("useFirstPageHeaderFooter"); }
-    if (next.marginHeader != null) { style.marginHeader = { magnitude: next.marginHeader, unit: "PT" }; fields.push("marginHeader"); }
-    if (next.marginFooter != null) { style.marginFooter = { magnitude: next.marginFooter, unit: "PT" }; fields.push("marginFooter"); }
-    const requests: Record<string, unknown>[] = [{ updateDocumentStyle: { documentStyle: style, fields: fields.join(",") } }];
-    // Different first page: Docs keeps a separate header and footer for it
-    const cur = segmentsRef.current;
-    if (next.useFirstPage && !cur.firstPageHeader && cur.header) requests.push({ createHeader: { type: "FIRST_PAGE" } });
-    if (next.useFirstPage && !cur.firstPageFooter && cur.footer) requests.push({ createFooter: { type: "FIRST_PAGE" } });
-    const replies = await docEdit(requests);
-    if (!replies) return;
-    setHfSetup(merged);
-    // Only add what was created: a header saved meanwhile keeps its new base
-    setSegments((s) => {
-      const created = { ...s };
-      for (const r of replies as { createHeader?: { headerId?: string }; createFooter?: { footerId?: string } }[]) {
-        if (r.createHeader?.headerId) created.firstPageHeader = { id: r.createHeader.headerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
-        if (r.createFooter?.footerId) created.firstPageFooter = { id: r.createFooter.footerId, base: [{ type: "paragraph", attrs: {}, content: [] }] };
-      }
-      return created;
-    });
-  }, [docEdit, hfSetup]);
-
-  const headerFooters: HeaderFooters = {
-    header: segments.header ? headerEditor : null,
-    footer: segments.footer ? footerEditor : null,
-    firstPageHeader: segments.firstPageHeader ? firstHeaderEditor : null,
-    firstPageFooter: segments.firstPageFooter ? firstFooterEditor : null,
-    useFirstPage: hfSetup.useFirstPage,
-    marginHeader: hfSetup.marginHeader,
-    marginFooter: hfSetup.marginFooter,
-    editing: editingHf,
-    onDoubleClick: (which) => { void openHeaderFooter(which); },
-    options: editingHf ? (
-      <div className="ss-hf-options" onMouseDown={(e) => e.stopPropagation()}>
-        <label className="ss-checkbox text-[12px]"><input type="checkbox" checked={hfSetup.useFirstPage} onChange={(e) => { void setHeaderFooterOptions({ useFirstPage: e.target.checked }); }} /> Different first page</label>
-        <label className="flex items-center gap-2 text-[12px]">{editingHf === "header" ? "Header from top" : "Footer from bottom"}
-          <input className="ss-input" style={{ width: 64, height: 28 }} defaultValue={String(Math.round(((editingHf === "header" ? hfSetup.marginHeader : hfSetup.marginFooter) / 72) * 100) / 100)} aria-label="Margin in inches"
-            onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v >= 0) void setHeaderFooterOptions(editingHf === "header" ? { marginHeader: v * 72 } : { marginFooter: v * 72 }); }} />
-          <span className="text-[var(--ss-text-3)]">in</span>
-        </label>
-        <button type="button" className="ss-btn ss-btn-text" style={{ height: 28 }} onClick={() => { void removeHeaderFooter(editingHf); }}>Remove {editingHf}</button>
-      </div>
-    ) : null,
-  };
-
-  // ── Google's pagination ──
-  // After the document is opened or saved, Drive's PDF of it says where Docs starts each page;
-  // the preview pins its page breaks there and only measures what comes after
-  const pagesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pagesRevision = useRef("");
-  const pinGooglePages = useCallback(async (docId: string) => {
-    if (!editor) return;
-    let res: Response;
-    try { res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}`); } catch { return; } // pins are optional
-    if (!res.ok) return;
-    const data = (await res.json().catch(() => ({}))) as { pages?: string[] };
-    if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId) return;
-    // The saved text, token by token, so each offset maps to a document position
-    const positions = tokenPositions(editor.state.doc);
-    const all = tokenize(editor.getJSON() as EditorNode);
-    let body = "";
-    const tokenAt: number[] = [];
-    all.forEach((t, i) => {
-      if ((t.k === "c" || t.k === "img" || t.k === "pb") && t.pending) return;
-      const ch = t.k === "c" ? t.c : t.k === "nl" ? "\n" : t.k === "img" || t.k === "pb" || t.k === "fn" ? " " : "";
-      for (let k = 0; k < ch.length; k++) tokenAt.push(i);
-      body += ch;
-    });
-    const pins = pageStartOffsets(body, data.pages).map((o) => (o == null ? null : positions[tokenAt[o]])).filter((p): p is number => typeof p === "number");
-    editor.commands.setPinnedBreaks(pins);
-  }, [editor]);
-  useEffect(() => {
-    const content = docContent;
-    if (content?.status !== "ready" || !content.revisionId || content.revisionId === pagesRevision.current) return;
-    pagesRevision.current = content.revisionId;
-    if (pagesTimer.current) clearTimeout(pagesTimer.current);
-    pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId); }, 1500);
-  }, [docContent, pinGooglePages]);
-  useEffect(() => () => { if (pagesTimer.current) clearTimeout(pagesTimer.current); }, []);
-  useEffect(() => { if (docContent?.status !== "ready") editor?.commands.setPinnedBreaks([]); }, [docContent?.status, editor]);
-
-  // The page shows text that sets no font or size of its own in the document's own defaults
-  const docDefaults = docContent?.status === "ready" ? docContent.defaults : undefined;
-  useEffect(() => {
-    for (const e of [editor, viewer]) {
-      const dom = e?.view.dom as HTMLElement | undefined;
-      if (!dom) continue;
-      dom.style.setProperty("--ss-doc-font", docDefaults ? `"${docDefaults.fontFamily}", Arimo, sans-serif` : "");
-      dom.style.setProperty("--ss-doc-size", docDefaults ? `${docDefaults.fontSize}pt` : "");
-      for (const name of NAMED_STYLE_ORDER) {
-        const s = docDefaults?.styles[name];
-        dom.style.setProperty(`--ss-size-${name}`, s?.fontSize ? `${s.fontSize}pt` : "");
-        dom.style.setProperty(`--ss-font-${name}`, s?.fontFamily ? `"${s.fontFamily}", Arimo, sans-serif` : "");
-        dom.style.setProperty(`--ss-color-${name}`, s?.color ?? "");
-      }
-      dom.dataset.docFont = docDefaults?.fontFamily ?? "";
-    }
-  }, [editor, viewer, docDefaults]);
-
-  /** Page setup from the dialog: shown here, and written to the open Google Doc */
-  const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {
-    setPageless(nextPageless);
-    const prev = pageSetup;
-    if (samePageSetup(prev, next)) return;
-    setPageSetup(next);
-    const content = docContentRef.current;
-    if (content?.status !== "ready") return;
-    await saveNow();
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", {
-      documentId: content.docId,
-      revisionId: revisionRef.current,
-      requests: [documentStyleRequest(next)],
-    });
-    if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
-    setPageSetup(prev);
-    if (status === 401) setScopeError(true);
-    setSnack(data.error || "Couldn't change the page setup in Google Docs");
-  }, [pageSetup, saveNow]);
-  const setPageDefault = useCallback((setup: PageSetup, nextPageless: boolean) => {
-    try { localStorage.setItem(PAGE_DEFAULT_KEY, JSON.stringify({ setup, pageless: nextPageless })); } catch { /* storage blocked */ }
-    setSnack("New documents will use this page setup");
-  }, []);
+  const { saveNow, saveState, setSaveState } = useAutosave({ editor, refs, docJSON, docContent, docBusy, setDocJSON, setSnack, setScopeError });
+  const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor });
+  const page = usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent });
+  const { zoom, setZoom, canvasRef, pageless, pageSetup, geometry, textWidthPt, scale, effectivePageless } = page;
+  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON, setSnack });
+  const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
+  const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setSegments, setHfSetup, setFootnotes });
+  useEditorDebugHook(editor);
 
   // Syncs
-  const fetchJobs = useCallback(async () => {
-    try {
-      const res = await fetch("/api/sync/list");
-      if (!res.ok) return undefined;
-      const data = (await res.json()) as { jobs: PublicJob[] };
-      setJobs(data.jobs);
-      return data.jobs;
-    } catch {
-      return undefined;
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([fetchDocs(), fetchJobs()]).then(([, list]) => {
-      if (cancelled) return;
-      const active = list?.find(isActive);
-      if (active) { setFocusedJobId(active.id); setComposing(false); }
-      setReady(true);
-    });
-    return () => { cancelled = true; };
-  }, [fetchDocs, fetchJobs]);
-
-  useEffect(() => {
-    if (!anyActive) return;
-    const id = setInterval(fetchJobs, 4000);
-    const onVisible = () => { if (document.visibilityState === "visible") fetchJobs(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
-  }, [anyActive, fetchJobs]);
-
-  useEffect(() => {
-    if (!focusedJobId || sources[focusedJobId]) return;
-    let cancelled = false;
-    fetch(`/api/sync/source?jobId=${focusedJobId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d?.sourceText != null) setSources((s) => ({ ...s, [focusedJobId]: { text: d.sourceText, format: d.format ?? null, context: d.context ?? null } })); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [focusedJobId, sources]);
-
-  // Preview: the same seed the server will use, so this is the schedule that runs
-  // The preview of what a sync would type diffs the whole document: once typing pauses, not per keystroke
-  const [deferredJSON, setDeferredJSON] = useState(docJSON);
-  useEffect(() => {
-    const id = setTimeout(() => setDeferredJSON(docJSON), 300);
-    return () => clearTimeout(id);
-  }, [docJSON]);
-  // What a sync would type: the additions to the document, or everything when there is no document
-  const toType = useMemo(() => {
-    if (!deferredJSON) return { text: "", boundaries: [] as number[] };
-    if (docContent?.status === "ready" && baseRef.current) {
-      const a = additions(baseRef.current, deferredJSON as EditorNode);
-      return { text: a.text, boundaries: a.boundaries };
-    }
-    return { text: richFromEditorJSON(deferredJSON as EditorNode).text, boundaries: [] as number[] };
-  }, [deferredJSON, docContent]);
-  const hasText = toType.text.trim().length > 0;
-  const preview = useMemo(() => {
-    if (!hasText) return null;
-    return buildDripPlan(toType.text, {
-      targetMinutes: durationMinutes,
-      breaks: breaksMode === "auto" ? "auto" : breaksMode === "none" ? [] : customBreaks,
-      typoFrequency,
-      seed,
-      ...(toType.boundaries.length ? { boundaries: toType.boundaries } : {}),
-    });
-  }, [toType, hasText, durationMinutes, breaksMode, customBreaks, typoFrequency, seed]);
-
-  const upsertJob = (job: PublicJob) => setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j)));
-
-  const startSync = useCallback(async () => {
-    if (!editor || busy || !selectedDocId || docBusy) return;
-    setBusy(true);
-    setStartError(null);
-    try {
-      if (docContent?.docId === selectedDocId && docContent.status === "loading") throw new Error("The document is still opening. Try again in a moment.");
-      let payload: Record<string, unknown>;
-      let source: Source;
-      const inDoc = docContent?.docId === selectedDocId && docContent.status === "ready" && !!baseRef.current;
-      if (inDoc) {
-        if (!(await saveNow())) throw new Error("Couldn't save your other changes to the document. Try again.");
-        const target = editor.getJSON() as EditorNode;
-        const { segments, text } = additions(baseRef.current!, target);
-        if (!segments.length) throw new Error("Type the text you want to add first. New text glows until a sync types it in.");
-        const ctx = { doc: target, ranges: segments.map((x) => x.tokens) };
-        const context = JSON.stringify(ctx).length <= 350_000 ? ctx : null;
-        payload = { segments: segments.map(({ at, mode, text: t, format }) => ({ at, mode, text: t, format })), revisionId: revisionRef.current, context };
-        source = { text, format: null, context };
-      } else {
-        const current = richFromEditorJSON(editor.getJSON());
-        if (!current.text.trim()) return;
-        payload = { text: current.text, format: current.format };
-        source = { text: current.text, format: current.format };
-      }
-      const doc = docs.find((d) => d.id === selectedDocId);
-      const { ok, status, data } = await postJson<{ job: PublicJob; code?: string }>("/api/sync/start", {
-        ...payload,
-        documentId: selectedDocId,
-        documentName: doc?.name,
-        targetMinutes: durationMinutes,
-        breaks: breaksMode === "auto" ? "auto" : breaksMode === "none" ? [] : customBreaks,
-        typoFrequency,
-        seed,
-        startInMinutes,
-      });
-      if (status === 401) { setScopeError(true); return; }
-      if (status === 409) await loadDocContent(selectedDocId, editor.getJSON() as EditorNode);
-      if (!ok) throw new Error(data.error || `Couldn't start the sync (HTTP ${status})`);
-      setSources((s) => ({ ...s, [data.job.id]: source }));
-      setJobs((prev) => [data.job, ...prev]);
-      setFocusedJobId(data.job.id);
-      setComposing(false);
-      // The additions now belong to the sync; the editor shows the document without them
-      if (inDoc) {
-        writeAdditions(selectedDocId, null);
-        loadDocument(editor, baseRef.current!, true);
-        contentStale.current = true;
-      } else {
-        loadDocument(editor, { type: "doc", content: [{ type: "paragraph" }] }, false);
-      }
-      setDocJSON(editor.getJSON());
-      setStartInMinutes(0);
-      setSeed(randomSeed());
-      setSnack(startInMinutes > 0 ? `Sync scheduled for ${formatClock(data.job.startAt)}` : "Sync started");
-    } catch (err) {
-      setStartError(err instanceof Error ? err.message : "Couldn't start the sync");
-    } finally {
-      setBusy(false);
-    }
-  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow]);
-
-  const jobAction = useCallback(async (path: "pause" | "resume" | "cancel", jobId: string) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const { ok, data } = await postJson<{ job: PublicJob }>(`/api/sync/${path}`, { jobId });
-      if (!ok) throw new Error(data.error || `Couldn't ${path} the sync`);
-      upsertJob(data.job);
-      setSnack(path === "pause" ? "Sync paused" : path === "resume" ? "Sync resumed" : "Sync cancelled");
-    } catch (err) {
-      setSnack(err instanceof Error ? err.message : `Couldn't ${path} the sync`);
-      fetchJobs();
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, fetchJobs]);
-
-  const dismissJob = useCallback(async (jobId: string) => {
-    setJobs((prev) => prev.filter((j) => j.id !== jobId));
-    setFocusedJobId(null);
-    setComposing(true);
-    await postJson("/api/sync/dismiss", { jobId }).catch(() => {});
-  }, []);
-
-  const editAsNew = useCallback(async (job: PublicJob) => {
-    const src = sources[job.id];
-    setComposing(true);
-    if (!src || !editor) { setSelectedDocId(job.documentId); return; }
-    const sameDoc = job.documentId === selectedDocId && docContent?.status === "ready" && baseRef.current;
-    if (sameDoc && src.context?.doc) {
-      // Put the additions back where they were
-      loadDocument(editor, rebase(baseRef.current!, src.context.doc), true);
-    } else {
-      const extra = markAllAdded(richToEditorJSON(src.text, src.format));
-      const current = editor.getJSON() as EditorNode;
-      if (sameDoc) loadDocument(editor, { type: "doc", content: [...(current.content ?? []), ...(extra.content ?? [])] }, true);
-      else {
-        // Opening the other document adds this text at its end
-        legacyTextRef.current = extra;
-        writeAdditions(job.documentId, null);
-        setSelectedDocId(job.documentId);
-      }
-    }
-    setDocJSON(editor.getJSON());
-  }, [sources, editor, selectedDocId, docContent]);
+  const { now, busy, startError, hasText, preview, focusedSource, startSync, jobAction, dismissJob, editAsNew } = useSyncJobs({
+    editor, viewer, refs, canvasRef, jobs, setJobs, setReady, focusedJob, focusedJobId, setFocusedJobId, setComposing,
+    docs, selectedDocId, setSelectedDocId, docContent, docBusy, docJSON,
+    settings: { durationMinutes, breaksMode, customBreaks, typoFrequency, startInMinutes, setStartInMinutes, seed, setSeed },
+    fetchDocs, loadDocContent, saveNow, setDocJSON, setSnack, setScopeError,
+  });
 
   const insertImages = useCallback(async (files: File[], at?: number) => {
     if (!editor) return;
@@ -1115,7 +141,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       }
     }
     setSnack(files.length > 1 ? "Images added" : "Image added");
-  }, [editor]);
+  }, [editor, setSnack]);
   imageFilesRef.current = insertImages;
 
   const insertImageUrl = useCallback(async (url: string) => {
@@ -1125,37 +151,6 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, [editor]);
 
   // Header
-  const focusedSource = focusedJob ? sources[focusedJob.id] : undefined;
-
-  // Load the focused sync into the viewer, then move its caret as typing progresses
-  const loadedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!viewer || !focusedJob || !focusedSource) return;
-    if (loadedRef.current !== focusedJob.id) {
-      const ctx = focusedSource.context;
-      if (ctx?.doc && ctx.ranges) loadDocument(viewer, ctx.doc, true);
-      else loadDocument(viewer, richToEditorJSON(focusedSource.text, focusedSource.format), false);
-      loadedRef.current = focusedJob.id;
-    }
-  }, [viewer, focusedJob, focusedSource]);
-  const typed = focusedJob?.charsSent ?? 0;
-  useEffect(() => {
-    if (!viewer || !focusedJob || loadedRef.current !== focusedJob.id) return;
-    const ranges = focusedSource?.context?.doc ? focusedSource.context.ranges ?? null : null;
-    viewer.view.dispatch(viewer.state.tr.setMeta(progressKey, { typed, ranges }).setMeta("addToHistory", false));
-    const frame = requestAnimationFrame(() => {
-      const caret = viewer.view.dom.querySelector(".ss-caret");
-      const canvas = canvasRef.current;
-      if (!caret || !canvas) return;
-      const r = caret.getBoundingClientRect();
-      const c = canvas.getBoundingClientRect();
-      if (r.top < c.top + 60 || r.bottom > c.bottom - 60) {
-        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        caret.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [viewer, focusedJob, typed, focusedSource]);
   const subtitle = focusedJob
     ? statusLine(focusedJob)
     : !selectedDocId
@@ -1197,7 +192,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   const rail = (
     <div className="flex h-full flex-col">
-    {outlineOpen && !focusedJob && <Outline editor={editor} />}
+    {dialogs.outlineOpen && !focusedJob && <Outline editor={editor} />}
     <SyncRail
       jobs={jobs}
       focusedJobId={focusedJobId}
@@ -1264,14 +259,14 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onOpenStyle={() => router.push("/dashboard/style")}
             docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
             onSignOut={onSignOut}
-            onPageSetup={() => setPageSetupOpen(true)}
-            onCustomSpacing={() => setSpacingOpen(true)}
-            onBorders={() => setBordersOpen(true)}
+            onPageSetup={() => dialogs.setPageSetupOpen(true)}
+            onCustomSpacing={() => dialogs.setSpacingOpen(true)}
+            onBorders={() => dialogs.setBordersOpen(true)}
             onHeaderFooter={(which) => { void openHeaderFooter(which); }}
-            onColumns={(n) => { if (n === "options") setColumnsOpen(true); else editor?.chain().focus().setColumns({ columns: n, textWidth: textWidthPt }).run(); }}
-            outlineOpen={outlineOpen}
-            onToggleOutline={() => setOutlineOpen((o) => !o)}
-            onShortcuts={() => setShortcutsOpen(true)}
+            onColumns={(n) => { if (n === "options") dialogs.setColumnsOpen(true); else editor?.chain().focus().setColumns({ columns: n, textWidth: textWidthPt }).run(); }}
+            outlineOpen={dialogs.outlineOpen}
+            onToggleOutline={() => dialogs.setOutlineOpen((o) => !o)}
+            onShortcuts={() => dialogs.setShortcutsOpen(true)}
             docOpen={docContent?.status === "ready"}
           />
         }
@@ -1285,7 +280,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           onZoom={setZoom}
           onInsertImages={insertImages}
           onInsertImageUrl={insertImageUrl}
-          onCustomSpacing={() => setSpacingOpen(true)}
+          onCustomSpacing={() => dialogs.setSpacingOpen(true)}
         />
       </div>
 
@@ -1399,37 +394,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         </aside>
       </div>
 
-      <PageSetupDialog
-        open={pageSetupOpen}
-        setup={pageSetup}
-        pageless={pageless}
-        onClose={() => setPageSetupOpen(false)}
-        onApply={applyPageSetup}
-        onSetDefault={setPageDefault}
-      />
-      <CustomSpacingDialog editor={editor} open={spacingOpen} onClose={() => setSpacingOpen(false)} />
-      <BordersDialog editor={editor} open={bordersOpen} onClose={() => setBordersOpen(false)} />
-      <ColumnsDialog editor={editor} open={columnsOpen} onClose={() => setColumnsOpen(false)} textWidth={textWidthPt} />
-      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <WorkspaceDialogs editor={editor} dialogs={dialogs} pageSetup={pageSetup} pageless={pageless} onApplyPageSetup={page.applyPageSetup} onSetPageDefault={page.setPageDefault} textWidth={textWidthPt} />
       <ContextMenu editor={focusedJob ? null : editor} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
-      <AnimatePresence>
-        {snack && (
-          <motion.div
-            key={snack}
-            className="ss-snackbar"
-            role="status"
-            initial={{ opacity: 0, y: 16, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, transition: { duration: 0.15 } }}
-            transition={{ type: "spring", stiffness: 500, damping: 38 }}
-          >
-            <span className="text-[14px]">{snack}</span>
-            <button onClick={() => setSnack(null)}>Dismiss</button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <Snackbar snack={snack} onDismiss={() => setSnack(null)} />
     </div>
     </MotionConfig>
   );
