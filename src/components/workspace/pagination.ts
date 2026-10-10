@@ -1,6 +1,7 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
+import { flowColumns, type FlowBlock } from "./column-flow";
 
 /** Page and margins in CSS px (96 per inch); Letter with 1in margins by default */
 export interface PageGeometry { w: number; h: number; top: number; bottom: number; left: number; right: number }
@@ -9,9 +10,19 @@ export const DEFAULT_GEOMETRY: PageGeometry = { w: 816, h: 1056, top: 96, bottom
 export const PAGE_GAP = 16;
 const sameGeometry = (a: PageGeometry, b: PageGeometry) => a.w === b.w && a.h === b.h && a.top === b.top && a.bottom === b.bottom && a.left === b.left && a.right === b.right;
 
-interface Break { pos: number; height: number; block: boolean; /** The gap sits between table rows: a row spanning this many columns */ row?: number }
+interface Break {
+  pos: number;
+  height: number;
+  block: boolean;
+  /** The gap sits between table rows: a row spanning this many columns */
+  row?: number;
+  /** The gap sits inside a column section and spans its columns */
+  span?: boolean;
+}
 interface PaginationState {
   breaks: Break[];
+  /** Blocks inside column sections that start a new column (Docs fills a page's columns one after the other) */
+  colStarts: number[];
   pages: number;
   enabled: boolean;
   deco: DecorationSet;
@@ -37,10 +48,10 @@ declare module "@tiptap/core" {
   }
 }
 
-function gapElement(height: number, block: boolean, row = 0): HTMLElement {
+function gapElement(height: number, block: boolean, row = 0, span = false): HTMLElement {
   // Between table rows the gap is a row itself, so the table lays out normally around it
   const el = document.createElement(row ? "tr" : block ? "div" : "span");
-  el.className = "ss-page-gap";
+  el.className = span ? "ss-page-gap ss-page-gap-span" : "ss-page-gap";
   if (row) {
     const td = document.createElement("td");
     td.setAttribute("colspan", String(row));
@@ -53,13 +64,16 @@ function gapElement(height: number, block: boolean, row = 0): HTMLElement {
   return el;
 }
 
-function decorate(doc: Parameters<typeof DecorationSet.create>[0], breaks: Break[]): DecorationSet {
-  return DecorationSet.create(
-    doc,
-    breaks
-      .filter((b) => b.pos >= 0 && b.pos <= doc.content.size)
-      .map((b) => Decoration.widget(b.pos, () => gapElement(b.height, b.block, b.row), { side: -1, key: `gap:${b.row ? `r${b.row}` : b.block ? "b" : "i"}:${b.height}`, ignoreSelection: true }))
-  );
+function decorate(doc: Parameters<typeof DecorationSet.create>[0], breaks: Break[], colStarts: number[] = []): DecorationSet {
+  const gaps = breaks
+    .filter((b) => b.pos >= 0 && b.pos <= doc.content.size)
+    .map((b) => Decoration.widget(b.pos, () => gapElement(b.height, b.block, b.row, b.span), { side: -1, key: `gap:${b.row ? `r${b.row}` : b.span ? "s" : b.block ? "b" : "i"}:${b.height}`, ignoreSelection: true }));
+  // A column start is a forced column break on the block (CSS break-before), so the browser flows the columns as computed
+  const starts = colStarts.flatMap((pos) => {
+    const node = pos >= 0 && pos < doc.content.size ? doc.nodeAt(pos) : null;
+    return node?.isBlock ? [Decoration.node(pos, pos + node.nodeSize, { class: "ss-col-start" })] : [];
+  });
+  return DecorationSet.create(doc, gaps.concat(starts));
 }
 
 interface Fragment { node: Node; index: number; top: number; bottom: number; left: number; mid: number }
@@ -132,20 +146,21 @@ function lineStartPos(view: EditorView, line: Line, toLocal: (y: number) => numb
  * Where pages break. Measured in "flow" space (the layout minus our own
  * gaps), so adding gaps never changes the answer and the result is stable.
  */
-function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], pins: number[] = []): Break[] {
+function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], pins: number[] = []): { breaks: Break[]; colStarts: number[] } {
   const FULL_H = geom.h - geom.top - geom.bottom;
   // The current page's room for text: less where footnotes sit
   let CONTENT_H = FULL_H - (reserves[0] ?? 0);
   const BETWEEN = geom.bottom + PAGE_GAP + geom.top;
   const breaks: Break[] = [];
+  const colStarts: number[] = [];
   const nextPage = () => { CONTENT_H = FULL_H - (reserves[breaks.length] ?? 0); };
   // The gap before the next page: what is left of the sheet (footnotes included) plus the margins and the
   // space between sheets. Negative means something taller than a page: no gap can fix that
   const gapAfter = (used: number) => Math.round((FULL_H - used + BETWEEN) * 2) / 2;
-  const pushBreak = (pos: number, used: number, block: boolean, row = 0): boolean => {
+  const pushBreak = (pos: number, used: number, block: boolean, row = 0, span = false): boolean => {
     const height = gapAfter(used);
     if (height < 0) return false;
-    breaks.push({ pos, height, block, ...(row ? { row } : {}) });
+    breaks.push({ pos, height, block, ...(row ? { row } : {}), ...(span ? { span } : {}) });
     return true;
   };
   const dom = view.dom as HTMLElement;
@@ -161,14 +176,46 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
   const gapsAbove = (y: number) => Array.from(dom.querySelectorAll(".ss-page-gap")).reduce((s, g) => (toLocal(g.getBoundingClientRect().top) < y ? s + gapSize(g) : s), 0);
   for (const pos of pins) {
     if (pos <= 0 || pos >= view.state.doc.content.size) continue;
-    let y: number;
-    try { y = toLocal(view.coordsAtPos(pos).top); } catch { continue; }
-    const flowY = y - gapsAbove(y);
-    if (flowY <= pageStart + 1) continue;
     const $pos = view.state.doc.resolve(pos);
-    // At a paragraph's start the gap goes before the paragraph, as measured block breaks do
-    const block = $pos.parentOffset === 0 && $pos.depth === 1;
-    if (!pushBreak(block ? $pos.before(1) : pos, flowY - pageStart, block)) continue;
+    // At a paragraph's start the gap goes before the paragraph, as measured block breaks do. Inside a column
+    // section the gap spans the columns, so it goes before the block holding the page start (blocks stay whole there)
+    const inColumns = $pos.depth === 2 && $pos.node(1).type.name === "columnSection";
+    const block = inColumns || ($pos.parentOffset === 0 && $pos.depth === 1);
+    let flowY: number;
+    try {
+      if (inColumns) {
+        const blockDom = view.nodeDOM($pos.before(2));
+        if (!(blockDom instanceof HTMLElement)) continue;
+        const prev = blockDom.previousElementSibling;
+        if (prev?.classList.contains("ss-page-gap")) {
+          // Laid out already: the page above ends where its gap sits
+          const y = toLocal(prev.getBoundingClientRect().top);
+          flowY = y - gapsAbove(y);
+        } else {
+          // Not yet: the page above holds the section's blocks since its start, balanced over the columns, so
+          // estimate its height (the next pass measures the real one)
+          const section = blockDom.parentElement!;
+          const columns = Math.max(1, Number(section.getAttribute("data-columns")) || 1);
+          let sum = 0;
+          let tallest = 0;
+          let rowStart: Element | null = null;
+          for (let e = blockDom.previousElementSibling; e; e = e.previousElementSibling) {
+            if (e.classList.contains("ss-page-gap")) { rowStart = e; break; }
+            const cs = getComputedStyle(e);
+            const h = e.getBoundingClientRect().height / scale + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+            sum += h;
+            tallest = Math.max(tallest, h);
+          }
+          const y = rowStart ? toLocal(rowStart.getBoundingClientRect().bottom) : toLocal(section.getBoundingClientRect().top);
+          flowY = y - gapsAbove(y) + Math.min(Math.max(sum / columns, tallest), CONTENT_H);
+        }
+      } else {
+        const y = toLocal(view.coordsAtPos(pos).top);
+        flowY = y - gapsAbove(y);
+      }
+    } catch { continue; }
+    if (flowY <= pageStart + 1) continue;
+    if (!pushBreak(block ? $pos.before($pos.depth) : pos, flowY - pageStart, block, 0, inColumns)) continue;
     pageStart = flowY;
     pinnedUntil = pos;
     nextPage();
@@ -183,6 +230,62 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
   let ci = -1;
   // After a page break, or a next-page section break, the next paragraph starts a page
   let forceNext = false;
+
+  /**
+   * Breaks inside a column section, from its blocks' heights at the column width (the same in every
+   * layout of the section, so the answer is stable). False when the section is not one after all.
+   */
+  const paginateColumns = (el: HTMLElement, top: number, moveDown: () => boolean): boolean => {
+    const secPos = view.posAtDOM(el, 0) - 1;
+    const secNode = view.state.doc.nodeAt(secPos);
+    if (secNode?.type.name !== "columnSection") return false;
+    const columns = Math.max(1, Number(secNode.attrs.columns) || 1);
+    const inner = Array.from(el.querySelectorAll(":scope > .ss-page-gap"));
+    const innerGaps = inner.map((g) => ({ top: toLocal(g.getBoundingClientRect().top), size: gapSize(g) }));
+    // Flow position inside the section: the layout less our own gaps
+    const flowTopOf = (node: Element) => { const y = toLocal(node.getBoundingClientRect().top); return y - removed - innerGaps.filter((g) => g.top < y).reduce((s, g) => s + g.size, 0); };
+    const blocks: { pos: number; size: number; el: HTMLElement; flow: FlowBlock }[] = [];
+    secNode.forEach((node, offset) => {
+      const pos = secPos + 1 + offset;
+      const dom = view.nodeDOM(pos);
+      if (!(dom instanceof HTMLElement)) return;
+      const cs = getComputedStyle(dom);
+      blocks.push({ pos, size: node.nodeSize, el: dom, flow: { height: dom.getBoundingClientRect().height / scale, marginTop: parseFloat(cs.marginTop) || 0, marginBottom: parseFloat(cs.marginBottom) || 0 } });
+    });
+    if (!blocks.length) return false;
+    // What Google already paginated is left alone: measuring starts after the last pin
+    let startIdx = 0;
+    if (pinnedUntil >= 0) {
+      startIdx = blocks.findIndex((b) => b.pos + b.size > pinnedUntil);
+      if (startIdx < 0) return true;
+    }
+    // A pinned page start at the first measured block: that block is the page's top, wherever the layout has it so far
+    const pinnedHere = startIdx > 0 && breaks.length > 0 && breaks[breaks.length - 1].pos === blocks[startIdx].pos;
+    let startTop = startIdx === 0 ? top : pinnedHere ? pageStart : Math.max(pageStart, flowTopOf(blocks[startIdx].el));
+    const base = breaks.length;
+    const capacity = (k: number) => (k === 0 ? CONTENT_H - (startTop - pageStart) : FULL_H - (reserves[base + k] ?? 0));
+    const flows = blocks.slice(startIdx).map((b) => b.flow);
+    let parts = flowColumns(flows, columns, capacity);
+    if (!parts.length) {
+      // Nothing fits what is left of the page: the section (or what is measured of it) starts on the next one
+      const moved = startIdx === 0 ? moveDown() : startTop > pageStart + 1 && pushBreak(blocks[startIdx].pos, startTop - pageStart, true, 0, true);
+      if (moved) { if (startIdx > 0) { pageStart = startTop; lastBreakPara = ci; nextPage(); } startTop = Math.max(startTop, pageStart); }
+      parts = flowColumns(flows, columns, (k) => (k === 0 ? CONTENT_H - (startTop - pageStart) : FULL_H - (reserves[breaks.length + k] ?? 0)), true);
+    }
+    let rowBottom = startTop;
+    for (let k = 0; k < parts.length; k++) {
+      const part = parts[k];
+      for (const c of part.columnStarts) colStarts.push(blocks[startIdx + c].pos);
+      if (k === 0) continue;
+      const first = blocks[startIdx + part.start];
+      // The previous row ends where its gap already sits when the layout has it (margins at column tops may
+      // differ from the stacked estimate), else where the estimate says
+      const prev = first.el.previousElementSibling;
+      rowBottom = prev?.classList.contains("ss-page-gap") ? flowTopOf(prev) : rowBottom + parts[k - 1].height;
+      if (pushBreak(first.pos, rowBottom - pageStart, true, 0, true)) { pageStart = rowBottom; lastBreakPara = ci; nextPage(); }
+    }
+    return true;
+  };
 
   for (const child of all) {
     // Our own gaps are not part of the flow
@@ -226,8 +329,11 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       nextPage();
       return true;
     };
+    // A column section flows over pages as Docs does: column 1 down to the page bottom, then column 2, …,
+    // then the next page; only its last page is balanced. Blocks (paragraphs, tables) stay whole.
+    if (child.classList.contains("ss-section-cols") && paginateColumns(child, top, () => breakBefore(ci))) { removed += innerTotal; continue; }
     // A table that fits a page moves to the next one whole; a taller one breaks between rows, as Docs
-    // does (cells stay together). A column section moves whole.
+    // does (cells stay together). A column section with nothing measurable moves whole.
     if (child.classList.contains("tableWrapper") || child.tagName === "TABLE" || child.classList.contains("ss-section-cols")) {
       if (top > pageStart + 1 && fits) { breakBefore(ci); removed += innerTotal; continue; }
       if (!fits) {
@@ -295,11 +401,12 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     }
     removed += innerTotal;
   }
-  return breaks;
+  return { breaks, colStarts };
 }
 
 const same = (a: Break[], b: Break[]) =>
-  a.length === b.length && a.every((x, i) => x.pos === b[i].pos && x.block === b[i].block && Math.abs(x.height - b[i].height) < 1);
+  a.length === b.length && a.every((x, i) => x.pos === b[i].pos && x.block === b[i].block && !!x.span === !!b[i].span && Math.abs(x.height - b[i].height) < 1);
+const sameList = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Splits the editor into US Letter pages, like Docs' default layout. */
 export const Pagination = Extension.create<{ enabled: boolean }>({
@@ -342,9 +449,9 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
       new Plugin<PaginationState>({
         key: paginationKey,
         state: {
-          init: (_, state) => ({ breaks: [], pages: 1, enabled: initial, deco: DecorationSet.create(state.doc, []), geometry: DEFAULT_GEOMETRY, reserves: [], pins: [] }),
+          init: (_, state) => ({ breaks: [], colStarts: [], pages: 1, enabled: initial, deco: DecorationSet.create(state.doc, []), geometry: DEFAULT_GEOMETRY, reserves: [], pins: [] }),
           apply(tr, value) {
-            const meta = tr.getMeta(paginationKey) as Partial<Pick<PaginationState, "breaks" | "enabled" | "geometry" | "reserves" | "pins">> | undefined;
+            const meta = tr.getMeta(paginationKey) as Partial<Pick<PaginationState, "breaks" | "colStarts" | "enabled" | "geometry" | "reserves" | "pins">> | undefined;
             if (meta) {
               const enabled = meta.enabled ?? value.enabled;
               const geometry = meta.geometry ?? value.geometry;
@@ -353,13 +460,15 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
               // Turning pages on or changing the page starts from no breaks; they are measured again
               const reset = meta.enabled != null || meta.geometry != null || meta.pins != null;
               const breaks = enabled ? meta.breaks ?? (reset ? [] : value.breaks) : [];
-              return { breaks, pages: breaks.length + 1, enabled, deco: decorate(tr.doc, breaks), geometry, reserves, pins };
+              const colStarts = enabled ? meta.colStarts ?? (reset || meta.breaks ? [] : value.colStarts) : [];
+              return { breaks, colStarts, pages: breaks.length + 1, enabled, deco: decorate(tr.doc, breaks, colStarts), geometry, reserves, pins };
             }
             if (!tr.docChanged) return value;
             const breaks = value.breaks.map((b) => ({ ...b, pos: tr.mapping.map(b.pos, -1) }));
+            const colStarts = value.colStarts.map((p) => tr.mapping.map(p, -1));
             // Google's page starts stay with the text they precede
             const pins = value.pins.map((p) => tr.mapping.map(p, 1)).filter((p, i, all) => i === 0 || p > all[i - 1]);
-            return { ...value, breaks, pins, deco: value.deco.map(tr.mapping, tr.doc) };
+            return { ...value, breaks, colStarts, pins, deco: value.deco.map(tr.mapping, tr.doc) };
           },
         },
         props: {
@@ -376,10 +485,10 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
             const now = performance.now();
             if (now - windowStart > 1000) { windowStart = now; recent = 0; }
             if (recent > 8) return; // never loop
-            const breaks = measure(view, st.geometry, st.reserves, st.pins);
-            if (!same(breaks, st.breaks)) {
+            const { breaks, colStarts } = measure(view, st.geometry, st.reserves, st.pins);
+            if (!same(breaks, st.breaks) || !sameList(colStarts, st.colStarts)) {
               recent++;
-              view.dispatch(view.state.tr.setMeta(paginationKey, { breaks }).setMeta("addToHistory", false));
+              view.dispatch(view.state.tr.setMeta(paginationKey, { breaks, colStarts }).setMeta("addToHistory", false));
             }
           };
           const schedule = () => { if (!frame) frame = requestAnimationFrame(run); };
