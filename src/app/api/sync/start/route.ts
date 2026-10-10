@@ -182,7 +182,7 @@ export async function POST(req: NextRequest) {
       spots = planSpots(snap.chars, segments, (at, mode): DocListState => {
         const bullet = paragraphFor(at, mode)?.bullet;
         // A negative start marks a list that is not ours: new lines continue it
-        return bullet ? { type: listType(bullet), start: -1 } : null;
+        return bullet ? { type: listType(bullet), start: -1, level: bullet.nestingLevel ?? 0 } : null;
       });
     }
   } catch (err) {

@@ -111,8 +111,9 @@ const NEIGHBORS: Record<string, string[]> = {
 
 /** Distort a word-ish string so it looks like a real slip. Never returns the input unchanged. */
 export function distortText(rng: Rng, segment: string): string {
-  if (segment.length < 2) return segment + segment;
-  const chars = segment.split("");
+  // Code points, not UTF-16 units: a slip never splits an emoji into invalid halves
+  const chars = Array.from(segment);
+  if (chars.length < 2) return segment + segment;
   const strategy = rng.int(0, 3);
   if (strategy === 0) {
     // adjacent key
@@ -136,8 +137,10 @@ export function distortText(rng: Rng, segment: string): string {
   }
   let out = chars.join("");
   if (out === segment) {
-    const idx = rng.int(0, segment.length - 1);
-    out = segment.slice(0, idx) + segment[idx] + segment.slice(idx);
+    const cps = Array.from(segment);
+    const idx = rng.int(0, cps.length - 1);
+    cps.splice(idx, 0, cps[idx]);
+    out = cps.join("");
   }
   return out;
 }

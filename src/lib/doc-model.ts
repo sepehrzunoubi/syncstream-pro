@@ -99,12 +99,8 @@ export function tokenize(doc: EditorNode | null | undefined): Tok[] {
     }
     out.push({ k: "nl", attrs: node.attrs ?? {} });
   };
-  const blocks: EditorNode[] = [];
   // A column section only groups what follows a section break; its children are the document's blocks
-  for (const node of doc?.content ?? []) {
-    if (node.type === "columnSection") blocks.push(...(node.content ?? []));
-    else blocks.push(node);
-  }
+  const blocks = flattenColumns(doc?.content ?? []);
   for (const node of blocks) {
     if (node.type !== "table") { paragraph(node); continue; }
     // A table: its start, then each row's start, each cell's start and content, with ends after each
@@ -185,10 +181,15 @@ export function untokenize(tokens: Tok[]): EditorNode {
 const isSectionMarker = (n: EditorNode) => n.type === "paragraph" && n.attrs?.kind === "section";
 
 /** The blocks after a section break with columns go in a column section, up to the next break */
+/** The document's blocks with every column section opened up, however nested */
+function flattenColumns(blocks: EditorNode[]): EditorNode[] {
+  return blocks.flatMap((b) => (b.type === "columnSection" ? flattenColumns(b.content ?? []) : [b]));
+}
+
 export function groupColumns(blocks: EditorNode[]): EditorNode[] {
   const out: EditorNode[] = [];
   let open: EditorNode | null = null;
-  for (const b of blocks) {
+  for (const b of flattenColumns(blocks)) {
     if (isSectionMarker(b)) {
       open = null;
       out.push(b);
@@ -353,14 +354,22 @@ function regionsOf(base: Tok[], target: Tok[], match: number[]): Region[] {
 function rotate(base: Tok[], target: Tok[], match: number[]): void {
   for (const r of regionsOf(base, target, match)) {
     if (r.be !== r.bs || r.te === r.ts || r.ts === 0 || r.bs === 0) continue;
-    if (target[r.te - 1].k !== "nl" || target[r.ts - 1].k !== "nl") continue;
+    const last = target[r.te - 1];
+    const before = target[r.ts - 1];
+    if (last.k !== "nl" || before.k !== "nl") continue;
     if (match[r.ts - 1] !== r.bs - 1 || base[r.bs - 1].k !== "nl") continue;
+    if (!r.pending) {
+      // A direct edit only when both paragraphs are styled alike: otherwise the style of the wrong one would be sent
+      if (JSON.stringify(paragraphFromAttrs(last.attrs)) !== JSON.stringify(paragraphFromAttrs(before.attrs))) continue;
+      // Page and section breaks bring their own newline
+      if (target.slice(r.ts, r.te).some((t) => t.k === "pb" || t.k === "block")) continue;
+    }
     match[r.te - 1] = r.bs - 1;
     match[r.ts - 1] = -1;
   }
 }
 
-function diff(base: Tok[], target: Tok[], forTyping = true, firstIndex = 1) {
+export function diff(base: Tok[], target: Tok[], forTyping = true, firstIndex = 1) {
   const match = alignTokens(base, target);
   if (forTyping) rotate(base, target, match);
   const regions = regionsOf(base, target, match);
@@ -395,7 +404,7 @@ function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
     if (t.kind === "table") { cur = { id: t.id, at: index ? index[i] : i, rows: [], endAt: 0 }; out.push(cur); }
     else if (t.kind === "row" && cur) cur.rows.push({ rid: typeof t.attrs.rid === "string" ? t.attrs.rid : null, cells: [] });
     else if (t.kind === "cell" && cur) cur.rows[cur.rows.length - 1]?.cells.push({ cid: typeof t.attrs.cid === "string" ? t.attrs.cid : null });
-    else if (t.kind === "tableEnd" && cur) { cur.endAt = index ? index[i] : i; cur = null; }
+    else if (t.kind === "tableEnd" && cur) { cur.endAt = (index ? index[i] : i) + t.span; cur = null; }
   });
   return out;
 }
@@ -420,8 +429,9 @@ function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): Do
   // Where a new table goes: the Docs index of the first base token at or after it
   const match = alignTokens(base, target);
   const docIndexAt = (j: number) => {
-    for (let q = j; q < target.length; q++) if (match[q] >= 0) return index[match[q]];
-    return index[base.length];
+    const end = index[base.length];
+    for (let q = j; q < target.length; q++) if (match[q] >= 0) return Math.min(index[match[q]], end - 1);
+    return end - 1; // nothing goes after the final newline
   };
   const changes: { at: number; requests: DocsRequest[] }[] = [];
   for (const t of targetTables) {
@@ -486,6 +496,11 @@ function textStyleDiff(a: RunStyle, b: RunStyle): { textStyle: DocsRequest; fiel
   if (a.link !== b.link) {
     if (b.link) textStyle.link = { url: b.link };
     fields.push("link");
+    // Removing a link leaves its colour and underline behind unless they are reset too
+    if (a.link && !b.link) {
+      if (!b.u && !fields.includes("underline")) { textStyle.underline = false; fields.push("underline"); }
+      if (!b.color && !fields.includes("foregroundColor")) fields.push("foregroundColor");
+    }
     // Links look like links in Docs only with the colour and underline set
     if (b.link && !a.link) {
       if (!b.color && !fields.includes("foregroundColor")) { textStyle.foregroundColor = rgb(LINK_COLOR); fields.push("foregroundColor"); }
@@ -557,35 +572,13 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     }
   }
 
-  // Paragraph starts in the base, for paragraph ranges
-  const paraStart = new Array<number>(base.length);
-  let start = 0;
-  for (let i = 0; i < base.length; i++) {
-    paraStart[i] = start;
-    if (base[i].k === "nl" || base[i].k === "block" || base[i].k === "st") start = i + 1;
-  }
-
+  // Character styles of text the document already has (base coordinates, applied before the content changes)
   const styleRequests: DocsRequest[] = [];
-  const listRequests: DocsRequest[] = [];
   let run: { from: number; to: number; key: string; diff: NonNullable<ReturnType<typeof textStyleDiff>> } | null = null;
   const flushRun = () => {
     if (run) styleRequests.push({ updateTextStyle: { range: { startIndex: run.from, endIndex: run.to }, textStyle: run.diff.textStyle, fields: run.diff.fields.join(",") } });
     run = null;
   };
-  // Paragraphs whose bullets must be (re)made, with the list run each belongs to in the target
-  const changedLists = new Set<number>();
-  const runOf = (j: number): [number, number] => {
-    let s = j;
-    let e = j;
-    const kind = (q: number) => { const t = target[q]; return t.k === "nl" ? (paragraphFromAttrs(t.attrs).list ?? null) : null; };
-    const type = kind(j);
-    const nlBefore = (q: number) => { for (let k = q - 1; k >= 0; k--) { const t = target[k]; if (t.k === "nl") return k; if (t.k === "block") return -1; } return -1; };
-    const nlAfter = (q: number) => { for (let k = q + 1; k < target.length; k++) { const t = target[k]; if (t.k === "nl") return k; if (t.k === "block") return -1; } return -1; };
-    for (let k = nlBefore(s); k >= 0 && kind(k) === type; k = nlBefore(k)) s = k;
-    for (let k = nlAfter(e); k >= 0 && kind(k) === type; k = nlAfter(k)) e = k;
-    return [s, e];
-  };
-
   for (let j = 0; j < target.length; j++) {
     const i = match[j];
     if (i < 0) continue;
@@ -601,55 +594,32 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       continue;
     }
     flushRun();
-    if (b.k === "nl" && t.k === "nl" && !paragraphHasPending(target, j)) {
-      const pa = paragraphFromAttrs(b.attrs);
-      const pb = paragraphFromAttrs(t.attrs);
-      const range = { startIndex: index[paraStart[i]], endIndex: index[i] + 1 };
-      const listChanged = (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
-      if (listChanged) {
-        if (pa.list && !pb.list) listRequests.push({ deleteParagraphBullets: { range } });
-        if (pb.list) changedLists.add(j);
-      }
-      const d = paragraphDelta(pa, pb);
-      if (d) styleRequests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
-    }
   }
   flushRun();
-  // A changed list item is re-made together with its whole run (consecutive items of its kind), so the
-  // run stays one list with continuous numbering, each item at its own level. Runs are handled last
-  // to first: the tabs that set levels come and go inside each run's requests.
-  const runs: [number, number][] = [];
-  for (const j of Array.from(changedLists)) {
-    const r = runOf(j);
-    if (!runs.some(([s]) => s === r[0])) runs.push(r);
-  }
-  runs.sort((a, b) => b[0] - a[0]);
-  for (const [s, e] of runs) {
-    const items: { start: number; end: number; level: number }[] = [];
-    let preset = "";
-    for (let q = s; q <= e; q++) {
-      const t = target[q];
-      if (t.k !== "nl" || match[q] < 0) continue; // only paragraphs the document already has
-      const i = match[q];
-      const pb = paragraphFromAttrs(t.attrs);
-      if (!pb.list) continue;
-      preset = presetOf(pb);
-      items.push({ start: index[paraStart[i]], end: index[i] + 1, level: pb.level ?? 0 });
-    }
-    if (!items.length) continue;
-    listRequests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
-    listRequests.push(...bulletRequests(items, preset));
-  }
 
   // Content changes from the end backwards, so earlier indices stay valid
+  const end = index[base.length];
   const contentRequests: DocsRequest[] = [];
+  const extraNlAfter = new Set<Region>();
+  // A paragraph's final newline cannot be deleted when it ends the body or a table cell
+  const finalNl = (i: number) => { const next = base[i + 1]; return base[i]?.k === "nl" && (i + 1 === base.length || (next.k === "st" && next.kind === "cellEnd")); };
   for (const r of [...regions].reverse()) {
-    const at = index[r.bs];
-    if (r.be > r.bs) contentRequests.push({ deleteContentRange: { range: { startIndex: at, endIndex: index[r.be] } } });
+    let bs = r.bs;
+    let be = r.be;
+    // Deleting the last paragraphs: delete the ones before instead, which leaves the same text
+    while (be > bs && finalNl(be - 1) && bs > 0 && base[bs - 1].k === "nl") { bs--; be--; }
+    let at = index[bs];
+    if (be > bs) contentRequests.push({ deleteContentRange: { range: { startIndex: at, endIndex: index[be] } } });
     if (r.pending || r.te === r.ts) continue;
     // Text that came back without being an addition (undoing a deletion): put it back now.
     // New section breaks and page breaks are inserted as Docs inserts them (each with its newline).
     const inserted = target.slice(r.ts, r.te).filter((t) => (t.k !== "block" || isNewSection(t)) && t.k !== "st");
+    if (at >= end) {
+      // Nothing can follow the final newline: what goes after it goes before it, newline first
+      at = end - 1;
+      const last = inserted[inserted.length - 1];
+      if (last?.k === "nl") { inserted.pop(); inserted.unshift(last); }
+    }
     let text = "";
     const styled: { from: number; to: number; style: DocsRequest }[] = [];
     let pos = at;
@@ -677,8 +647,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       }
       if (t.k === "img") {
         if (text) { contentRequests.push({ insertText: { location: { index: pos }, text } }); pos += text.length; text = ""; }
-        if (typeof t.attrs.src === "string" && /^https:\/\//.test(t.attrs.src)) {
-          contentRequests.push({ insertInlineImage: { location: { index: pos }, uri: t.attrs.src } });
+        if (insertableImage(t)) {
+          contentRequests.push({ insertInlineImage: { location: { index: pos }, uri: t.attrs.src as string } });
           pos += 1;
         }
         continue;
@@ -690,32 +660,140 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       }
       text += ch;
     }
-    if (text) contentRequests.push({ insertText: { location: { index: pos }, text } });
+    if (text) { contentRequests.push({ insertText: { location: { index: pos }, text } }); pos += text.length; }
     for (const st of styled) contentRequests.push(textRequest(st.style, st.from, st.to));
+    // A page break at the end of a paragraph: Docs adds a newline with it, so the paragraph's own
+    // newline (which follows the break) goes, unless it is the final one, which cannot be deleted
+    const last = inserted[inserted.length - 1];
+    if (last?.k === "pb" && r.te < target.length && target[r.te].k === "nl" && match[r.te] === r.be) {
+      if (finalNl(r.be)) extraNlAfter.add(r);
+      else contentRequests.push({ deleteContentRange: { range: { startIndex: pos, endIndex: pos + 1 } } });
+    }
   }
 
-  const requests = [...sectionRequests, ...styleRequests, ...listRequests, ...contentRequests];
-
-  // What the base becomes: the target without additions, with paragraph
-  // changes that wait for an addition still at their saved values
+  // What the base becomes: the target without additions, with paragraph changes that wait for an
+  // addition still at their saved values. Each paragraph remembers what Docs has for it after the
+  // content changes: its own attrs when it already existed, those of the paragraph it was split
+  // from when it is new (a newline copies the style of the paragraph it is inserted into).
   const saved: Tok[] = [];
+  const docsAttrs = new Map<number, Record<string, unknown> | undefined>();
+  const prevNl = (tokens: Tok[], from: number) => { for (let q = from; q >= 0; q--) { const t = tokens[q]; if (t.k === "nl") return t; } return undefined; };
   const regionAt = new Map<number, Region>();
   for (const r of regions) regionAt.set(r.ts, r);
   for (let j = 0; j < target.length; j++) {
     const r = regionAt.get(j);
     if (r && r.te > r.ts) {
-      if (!r.pending) for (let q = r.ts; q < r.te; q++) saved.push(stripPending(target[q]));
+      if (!r.pending) {
+        const enclosing = (nextNl(base, r.be) ?? prevNl(base, r.bs - 1))?.attrs;
+        for (let q = r.ts; q < r.te; q++) {
+          const t = target[q];
+          if (t.k === "img" && !insertableImage(t)) continue; // never reached the document
+          if (isNewSection(t)) {
+            // Docs puts a newline before the break: an empty paragraph, then the break itself
+            saved.push({ k: "nl", attrs: enclosing ?? {} });
+            docsAttrs.set(saved.length - 1, enclosing);
+            saved.push({ k: "block", node: { ...t.node, attrs: { ...t.node.attrs, span: 1 } } });
+            continue;
+          }
+          saved.push(stripPending(t));
+          if (t.k === "nl") docsAttrs.set(saved.length - 1, enclosing);
+          if (t.k === "pb" && target[q + 1]?.k !== "nl") {
+            // Docs ends the paragraph after a page break
+            saved.push({ k: "nl", attrs: enclosing ?? {} });
+            docsAttrs.set(saved.length - 1, enclosing);
+          }
+        }
+        if (extraNlAfter.has(r)) {
+          // The newline Docs added with a page break before the final one stays as an empty paragraph
+          saved.push({ k: "nl", attrs: enclosing ?? {} });
+          docsAttrs.set(saved.length - 1, enclosing);
+        }
+      }
       j = r.te - 1;
       continue;
     }
     const i = match[j];
     if (i < 0) continue;
     const t = target[j];
-    if (t.k === "nl" && paragraphHasPending(target, j)) saved.push(base[i]);
-    else saved.push(stripPending(t));
+    if (t.k === "nl") {
+      saved.push(paragraphHasPending(target, j) ? base[i] : stripPending(t));
+      docsAttrs.set(saved.length - 1, (base[i] as Extract<Tok, { k: "nl" }>).attrs);
+    } else saved.push(stripPending(t));
   }
+
+  // Paragraph styles and lists, over the saved document (its indices are the ones Docs has after the
+  // content changes). Bullets first: removing them leaves an indent the paragraph style then resets.
+  const sIndex = new Array<number>(saved.length + 1);
+  const sParaStart = new Array<number>(saved.length);
+  let sAt = firstIndex;
+  let sStart = 0;
+  for (let p = 0; p < saved.length; p++) {
+    sIndex[p] = sAt;
+    sAt += sizeOf(saved[p]);
+    sParaStart[p] = sStart;
+    if (saved[p].k === "nl" || saved[p].k === "block" || saved[p].k === "st") sStart = p + 1;
+  }
+  sIndex[saved.length] = sAt;
+  const listRequests: DocsRequest[] = [];
+  const paraRequests: DocsRequest[] = [];
+  const changedLists = new Set<number>();
+  for (let p = 0; p < saved.length; p++) {
+    const t = saved[p];
+    if (t.k !== "nl" || !docsAttrs.has(p)) continue;
+    const pa = paragraphFromAttrs(docsAttrs.get(p));
+    const pb = paragraphFromAttrs(t.attrs);
+    const range = { startIndex: sIndex[sParaStart[p]], endIndex: sIndex[p] + 1 };
+    const listChanged = (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
+    if (listChanged) {
+      if (pa.list && !pb.list) listRequests.push({ deleteParagraphBullets: { range } });
+      if (pb.list) changedLists.add(p);
+    }
+    const d = paragraphDelta(pa, pb);
+    if (d) paraRequests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
+  }
+  // A changed list item is re-made together with its whole run (consecutive items of its kind), so the
+  // run stays one list with continuous numbering, each item at its own level. Runs are handled last
+  // to first: the tabs that set levels come and go inside each run's requests.
+  // Items of one run share a list type and preset: Docs makes one list per createParagraphBullets
+  const kindAt = (q: number) => { const t = saved[q]; if (t.k !== "nl") return null; const pf = paragraphFromAttrs(t.attrs); return pf.list ? `${pf.list}|${presetOf(pf)}` : null; };
+  const runOf = (j: number): [number, number] => {
+    let s = j;
+    let e = j;
+    const type = kindAt(j);
+    const nlBefore = (q: number) => { for (let k = q - 1; k >= 0; k--) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
+    const nlAfter = (q: number) => { for (let k = q + 1; k < saved.length; k++) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
+    for (let k = nlBefore(s); k >= 0 && kindAt(k) === type; k = nlBefore(k)) s = k;
+    for (let k = nlAfter(e); k >= 0 && kindAt(k) === type; k = nlAfter(k)) e = k;
+    return [s, e];
+  };
+  const runs: [number, number][] = [];
+  for (const p of Array.from(changedLists)) {
+    const r = runOf(p);
+    if (!runs.some(([s]) => s === r[0])) runs.push(r);
+  }
+  runs.sort((a, b) => b[0] - a[0]);
+  for (const [s, e] of runs) {
+    const items: { start: number; end: number; level: number }[] = [];
+    let preset = "";
+    for (let q = s; q <= e; q++) {
+      const t = saved[q];
+      if (t.k !== "nl") continue;
+      const pb = paragraphFromAttrs(t.attrs);
+      if (!pb.list) continue;
+      preset = presetOf(pb);
+      items.push({ start: sIndex[sParaStart[q]], end: sIndex[q] + 1, level: pb.level ?? 0 });
+    }
+    if (!items.length) continue;
+    listRequests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
+    listRequests.push(...bulletRequests(items, preset));
+  }
+
+  const requests = [...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
   return { requests, saved: untokenize(saved) };
 }
+
+/** An image Docs can fetch: only these are ever inserted */
+const insertableImage = (t: Tok) => t.k === "img" && typeof t.attrs.src === "string" && /^https:\/\//.test(t.attrs.src);
 
 function stripPending(t: Tok): Tok {
   if (t.k === "c" || t.k === "img" || t.k === "br" || t.k === "pb") return { ...t, marks: withoutPending(t.marks), pending: false };
@@ -812,7 +890,13 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     if (t.k === "block" || t.k === "st" || t.k === "fn") continue;
     const style = styleFromMarks(withoutPending(t.marks));
     lastStyle = style;
-    if (t.k === "pb") { text += PAGE_BREAK; push(1, style); continue; }
+    if (t.k === "pb") {
+      text += PAGE_BREAK;
+      push(1, style);
+      // Docs puts a page break at the end of a paragraph: what follows it starts a new one
+      if (target[q + 1]?.k !== "nl") { text += "\n"; push(1, style); paragraphs.push(paragraphFromAttrs(nextNl(target, q)?.attrs)); }
+      continue;
+    }
     if (t.k === "img") {
       const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) || 0 : 0);
       const src = typeof t.attrs.src === "string" ? t.attrs.src : "";
@@ -826,7 +910,8 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     let ch = t.c;
     // Keep one character per token: swap what Docs would drop, and a tab that would start a list item
     if (DROPPED_BY_DOCS.test(ch) || ch === OBJ) ch = " ";
-    if (ch === "\t" && paragraphs[paragraphs.length - 1]?.list && (text.length === 0 || text[text.length - 1] === "\n")) ch = " ";
+    const atParagraphStart = q === 0 || target[q - 1].k === "nl" || target[q - 1].k === "block" || target[q - 1].k === "st";
+    if (ch === "\t" && paragraphs[paragraphs.length - 1]?.list && atParagraphStart) ch = " ";
     text += ch;
     push(1, style);
   }
@@ -845,7 +930,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
  */
 export function rebase(newBase: EditorNode, oldTarget: EditorNode): EditorNode {
   const base = tokenize(newBase);
-  const target = tokenize(oldTarget);
+  const target = adoptTables(base, tokenize(oldTarget));
   const { regions } = diff(base, target, false);
   const regionAt = new Map<number, Region>();
   for (const r of regions) regionAt.set(r.bs, r);
@@ -863,4 +948,45 @@ export function rebase(newBase: EditorNode, oldTarget: EditorNode): EditorNode {
     i++;
   }
   return untokenize(out);
+}
+
+/**
+ * Tables the editor made that the document now has: each takes the ids and
+ * index spans of the next document table of the same shape, so its text
+ * (typed before the table existed in the document) is kept as additions and
+ * the next save carries on instead of seeing a different table.
+ */
+function adoptTables(base: Tok[], target: Tok[]): Tok[] {
+  type St = Extract<Tok, { k: "st" }>;
+  const tablesIn = (tokens: Tok[]) => {
+    const out: { at: number[]; kinds: string[]; id: string }[] = [];
+    let cur: { at: number[]; kinds: string[]; id: string } | null = null;
+    tokens.forEach((t, i) => {
+      if (t.k !== "st") return;
+      if (t.kind === "table") cur = { at: [], kinds: [], id: t.id };
+      if (!cur) return;
+      cur.at.push(i);
+      cur.kinds.push(t.kind);
+      if (t.kind === "tableEnd") { out.push(cur); cur = null; }
+    });
+    return out;
+  };
+  const mine = tablesIn(target).filter((t) => t.id.startsWith("new"));
+  if (!mine.length) return target;
+  const known = new Set(target.filter((t): t is St => t.k === "st").map((t) => t.id));
+  const theirs = tablesIn(base).filter((t) => !known.has(t.id));
+  const out = target.slice();
+  let k = 0;
+  for (const m of mine) {
+    while (k < theirs.length && theirs[k].kinds.join() !== m.kinds.join()) k++;
+    if (k >= theirs.length) break;
+    const b = theirs[k++];
+    m.at.forEach((pos, n) => { out[pos] = base[b.at[n]]; });
+  }
+  return out;
+}
+
+/** After tables were created in the document: the editor's content with the document's ids and spans */
+export function adoptStructure(newBase: EditorNode, target: EditorNode): EditorNode {
+  return untokenize(adoptTables(tokenize(newBase), tokenize(target)));
 }

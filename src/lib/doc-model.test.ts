@@ -164,7 +164,11 @@ test("page breaks and section breaks are saved as Docs inserts them", async () =
   const withSection = { type: "doc", content: [p([t("one two")]), p([], { locked: true, kind: "section", sectionType: "continuous" }), p([t("three")])] };
   const r2 = directEdits(base, withSection);
   assert.deepEqual(r2.requests, [{ insertSectionBreak: { location: { index: 9 }, sectionType: "CONTINUOUS" } }]);
-  assert.equal(r2.saved.content?.[1].attrs?.span, 2, "covers its newline and itself until the document is read again");
+  // Docs puts a newline before the break: an empty paragraph, then the break covering one index
+  assert.equal(r2.saved.content?.[1].type, "paragraph");
+  assert.equal((r2.saved.content?.[1].content ?? []).length, 0);
+  assert.equal(r2.saved.content?.[2].attrs?.kind, "section");
+  assert.equal(r2.saved.content?.[2].attrs?.span, 1);
   // A page break typed inside an addition travels with the text as a form feed and newline
   const added = { type: "doc", content: [p([t("one two")]), p([t("three"), { type: "text", text: "new", marks: [{ type: "syncAdd" }] }, { type: "pageBreak", marks: [{ type: "syncAdd" }] }]), p([{ type: "text", text: "next page", marks: [{ type: "syncAdd" }] }])] };
   const { segments } = additions(base, added);

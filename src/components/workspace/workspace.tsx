@@ -21,7 +21,7 @@ import { installLineMetrics } from "./line-metrics";
 import { pageStartOffsets } from "@/lib/page-offsets";
 import type { DocDefaults } from "@/lib/doc-import";
 import { tokenPositions } from "./pagination";
-import { tokenize } from "@/lib/doc-model";
+import { tokenize, adoptStructure } from "@/lib/doc-model";
 import { BordersDialog, ColumnsDialog, CustomSpacingDialog } from "./format-dialogs";
 import { FindBar } from "./find-bar";
 import { Outline } from "./outline";
@@ -439,14 +439,22 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
    * differently from what the editor expected, reload it (keeping the new
    * text) so later edits land in the right places.
    */
-  const verifyAgainstGoogle = useCallback(async (docId: string) => {
+  /** The document as Google has it now, or null when it can't be read */
+  const fetchFresh = useCallback(async (docId: string): Promise<EditorNode | null> => {
     try {
       const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
-      if (!res.ok || !editor) return;
+      if (!res.ok) return null;
       const data = (await res.json()) as { nodes?: EditorNode[]; revisionId?: string };
-      if (!Array.isArray(data.nodes) || docContentRef.current?.docId !== docId) return;
+      if (!Array.isArray(data.nodes) || docContentRef.current?.docId !== docId) return null;
       if (data.revisionId) revisionRef.current = data.revisionId;
-      const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
+      return { type: "doc", content: groupColumns(data.nodes) };
+    } catch { return null; }
+  }, []);
+
+  const verifyAgainstGoogle = useCallback(async (docId: string) => {
+    try {
+      const fresh = await fetchFresh(docId);
+      if (!fresh || !editor) return;
       if (signature(fresh) === signature(baseRef.current)) return;
       console.warn("Google Docs applied an edit differently than expected; reloading the document");
       baseRef.current = fresh;
@@ -454,7 +462,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       setDocJSON(editor.getJSON());
       setSnack("Google Docs applied that change a little differently, so SyncStream reloaded the document. Your new text is kept.");
     } catch { /* the next save or reload catches up */ }
-  }, [editor]);
+  }, [editor, fetchFresh]);
 
   /**
    * Save direct edits (formatting, deleting) to the Google Doc. Additions
@@ -466,14 +474,26 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     const base = baseRef.current;
     if (!editor || !base || content?.status !== "ready" || docBusyRef.current) return true;
     const target = editor.getJSON() as EditorNode;
-    const { requests, saved } = directEdits(base, target);
+    const { requests, saved, structural } = directEdits(base, target);
     if (!requests.length) return true;
     const run = (async () => {
       setSaveState("saving");
       const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
       if (ok) {
-        baseRef.current = saved;
         if (data.revisionId) revisionRef.current = data.revisionId;
+        if (structural) {
+          // Tables changed shape: read the document back, give the editor's tables the ids Google
+          // assigned, and only then save whatever else changed (text in the new cells stays an addition)
+          const fresh = await fetchFresh(content.docId);
+          if (fresh) {
+            baseRef.current = fresh;
+            loadDocument(editor, adoptStructure(fresh, editor.getJSON() as EditorNode), true);
+            setDocJSON(editor.getJSON());
+          } else baseRef.current = saved;
+          setSaveState("saved");
+          return "again" as const;
+        }
+        baseRef.current = saved;
         setSaveState("saved");
         await verifyAgainstGoogle(content.docId);
         return true;
@@ -483,13 +503,16 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       else setSnack(data.error || "Couldn't save that change to Google Docs");
       return false;
     })();
-    savingRef.current = run;
+    const once = run.then((r) => r !== false);
+    savingRef.current = once;
+    let result: boolean | "again";
     try {
-      return await run;
+      result = await run;
     } finally {
       savingRef.current = null;
     }
-  }, [editor, verifyAgainstGoogle]);
+    return result === "again" ? saveNow() : result;
+  }, [editor, verifyAgainstGoogle, fetchFresh]);
 
   /**
    * Show a Google Doc. `keep` is what the editor shows now: its additions are

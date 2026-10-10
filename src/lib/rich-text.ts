@@ -602,8 +602,9 @@ export function bulletRequests(paragraphs: { start: number; end: number; level: 
   requests.push({ createParagraphBullets: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end + tabs }, bulletPreset: preset } });
   return requests;
 }
+// A list the document already had (start < 0) is known by type and level only: its preset is kept
 const sameList = (a: DocListState, b: { list?: ListType; level?: number; preset?: string }) =>
-  !!a && !!b.list && a.type === b.list && (a.level ?? 0) === (b.level ?? 0) && (a.preset ?? LIST_PRESETS[a.type]) === presetOf(b);
+  !!a && !!b.list && a.type === b.list && (a.start < 0 ? a.level == null || a.level === (b.level ?? 0) : (a.level ?? 0) === (b.level ?? 0) && (a.preset ?? LIST_PRESETS[a.type]) === presetOf(b));
 
 /** Precomputed lookups for turning text ranges into Docs formatting requests. */
 export class FormatIndex {
@@ -881,7 +882,8 @@ export class SegmentFormat {
         }
       }
       const want = para.list ?? null;
-      if ((cur?.type ?? null) !== want || (want && !sameList(cur, para))) {
+      // A paragraph this sync continues keeps the bullets it has; only paragraphs it starts are (re)made
+      if (fresh && ((cur?.type ?? null) !== want || (want && !sameList(cur, para)))) {
         if (cur) requests.push({ deleteParagraphBullets: { range } });
         if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0 }], presetOf(para)));
         cur = want ? { type: want, start: lineStart, level: para.level ?? 0, preset: presetOf(para) } : null;
