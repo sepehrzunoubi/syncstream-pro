@@ -53,6 +53,8 @@ jobs:
             !.next/cache
           retention-days: 1
           if-no-files-found: error
+          # .next is a dot-directory, which the action skips unless told otherwise
+          include-hidden-files: true
 
   e2e:
     name: Browser tests
@@ -86,7 +88,6 @@ jobs:
   audit:
     name: Dependency audit (informational)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -94,4 +95,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm audit --omit=dev --audit-level=high
+      # Advisories surface as a warning annotation; they never fail the build
+      - run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit reports high-severity advisories in production dependencies; see this job's log"
