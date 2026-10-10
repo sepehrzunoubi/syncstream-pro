@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTokensFromCode, getUserInfo } from "@/lib/google";
 import { getBaseUrl } from "@/lib/base-url";
-import { setAccessCookie, setRefreshCookie, setUidCookie } from "@/lib/auth";
+import { OAUTH_STATE_COOKIE, setAccessCookie, setRefreshCookie, setUidCookie } from "@/lib/auth";
+import { secretEquals } from "@/lib/secret";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,12 @@ export async function GET(req: NextRequest) {
   if (!code) {
     return NextResponse.redirect(new URL("/?error=no_code", baseUrl));
   }
+  // The state must be the one this browser started with: stops login CSRF
+  const state = req.nextUrl.searchParams.get("state");
+  const expected = req.cookies.get(OAUTH_STATE_COOKIE)?.value;
+  if (!secretEquals(state, expected)) {
+    return NextResponse.redirect(new URL("/?error=state_mismatch", baseUrl));
+  }
 
   try {
     const tokens = await getTokensFromCode(code, `${baseUrl}/api/auth/callback`);
@@ -25,6 +32,7 @@ export async function GET(req: NextRequest) {
     }
 
     const response = NextResponse.redirect(new URL("/dashboard", baseUrl));
+    response.cookies.set(OAUTH_STATE_COOKIE, "", { maxAge: 0, path: "/api/auth" });
     setAccessCookie(response, tokens.access_token, tokens.expiry_date);
     if (tokens.refresh_token) setRefreshCookie(response, tokens.refresh_token);
 

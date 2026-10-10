@@ -3,6 +3,7 @@ import { getDocSnapshot, batchUpdate, deleteRange, refreshAccessToken } from "@/
 import { getStore } from "@/lib/sync-store";
 import { getQStashReceiver, enqueueProcess } from "@/lib/qstash";
 import { runJobWindow } from "@/lib/sync-runner";
+import { internalToken, secretEquals } from "@/lib/secret";
 
 export const dynamic = "force-dynamic";
 // Each invocation works for at most ~20s before handing the job back to the
@@ -25,8 +26,8 @@ export async function POST(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-  } else if (req.headers.get("x-syncstream-internal") !== "1") {
-    // Local development fallback only; production must configure signing keys.
+  } else if (!secretEquals(req.headers.get("x-syncstream-internal"), internalToken())) {
+    // Without QStash the server calls itself with a secret derived from its own configuration
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

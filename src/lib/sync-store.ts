@@ -1,4 +1,6 @@
 import { Redis } from "@upstash/redis";
+import { randomBytes } from "node:crypto";
+import { seal, unseal } from "./secret";
 import type { DripAction, StreamEvent } from "./drip-engine";
 import type { DocListState, RichFormat } from "./rich-text";
 
@@ -212,10 +214,12 @@ export interface SyncStore {
 function createRedisStore(redis: Redis): SyncStore {
   return {
     async getJob(id) {
-      return (await redis.get<SyncJob>(JOB_PREFIX + id)) ?? null;
+      const job = await redis.get<SyncJob>(JOB_PREFIX + id);
+      // Google tokens are sealed at rest
+      return job ? { ...job, accessToken: unseal(job.accessToken), refreshToken: unseal(job.refreshToken) } : null;
     },
     async setJob(job) {
-      await redis.set(JOB_PREFIX + job.id, job, { ex: TTL_SECONDS });
+      await redis.set(JOB_PREFIX + job.id, { ...job, accessToken: seal(job.accessToken), refreshToken: seal(job.refreshToken) }, { ex: TTL_SECONDS });
     },
     async getPlan(id) {
       return (await redis.get<SyncPlan>(PLAN_PREFIX + id)) ?? null;
@@ -335,5 +339,5 @@ export function hasRedis(): boolean {
 }
 
 export function createJobId(): string {
-  return `sync_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return `sync_${randomBytes(12).toString("base64url")}`;
 }

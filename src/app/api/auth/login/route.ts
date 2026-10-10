@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthUrl } from "@/lib/google";
 import { getBaseUrl } from "@/lib/base-url";
+import { setOAuthStateCookie } from "@/lib/auth";
+import { randomToken } from "@/lib/secret";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +18,8 @@ export async function GET(req: NextRequest) {
   }
 
   const redirectUri = `${getBaseUrl(req)}/api/auth/callback`;
-  const url = getAuthUrl(redirectUri);
-  return NextResponse.redirect(url);
+  const state = randomToken();
+  const res = NextResponse.redirect(getAuthUrl(redirectUri, state));
+  setOAuthStateCookie(res, state);
+  return res;
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStore, isTerminal } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
+import { secretEquals } from "@/lib/secret";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,8 @@ const LATE_MS = 2 * 60 * 1000;
  * needs to run occasionally.
  */
 export async function GET(req: NextRequest) {
-  if (req.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET?.trim();
+  if (!secret || !secretEquals(req.headers.get("authorization"), `Bearer ${secret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

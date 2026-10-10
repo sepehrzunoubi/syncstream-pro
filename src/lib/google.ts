@@ -33,11 +33,12 @@ export function getOAuth2Client(redirectUri?: string) {
   );
 }
 
-export function getAuthUrl(redirectUri?: string) {
+export function getAuthUrl(redirectUri?: string, state?: string) {
   const client = getOAuth2Client(redirectUri);
   return client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
+    ...(state ? { state } : {}),
     scope: [
       "https://www.googleapis.com/auth/documents",
       "https://www.googleapis.com/auth/drive.file",

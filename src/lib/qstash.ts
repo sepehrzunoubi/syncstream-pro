@@ -1,5 +1,6 @@
 import { Client, Receiver } from "@upstash/qstash";
 import { getBaseUrl } from "./base-url";
+import { internalToken } from "./secret";
 
 // ── QStash client (guaranteed-delivery message queue) ───────────────────────
 // Used to reliably chain process invocations and schedule delayed wakeups
@@ -89,7 +90,7 @@ export async function enqueueProcess(jobId: string, generation: number, delaySec
     const timer = setTimeout(() => controller.abort(), 30_000);
     fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-syncstream-internal": "1" },
+      headers: { "Content-Type": "application/json", "x-syncstream-internal": internalToken() },
       body: JSON.stringify(body),
       signal: controller.signal,
     })

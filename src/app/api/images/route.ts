@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { applyAuthCookies, resolveUser, unauthorized } from "@/lib/auth";
+import { applyAuthCookies, resolveUser, unauthorized, tooLarge } from "@/lib/auth";
 import { getBaseUrl } from "@/lib/base-url";
 import { IMAGE_TYPES, MAX_IMAGE_BYTES, saveImage } from "@/lib/image-store";
 
@@ -10,6 +10,8 @@ export async function POST(req: NextRequest) {
   const user = await resolveUser(req);
   if (!user) return unauthorized();
 
+  const big = tooLarge(req, MAX_IMAGE_BYTES * 2);
+  if (big) return big;
   const body = (await req.json().catch(() => null)) as { dataUrl?: unknown } | null;
   const dataUrl = typeof body?.dataUrl === "string" ? body.dataUrl : "";
   const m = /^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);

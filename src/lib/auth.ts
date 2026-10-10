@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserInfo, refreshAccessToken } from "./google";
+import { sign, verifySigned } from "./secret";
 
 export const ACCESS_COOKIE = "google_access_token";
 export const REFRESH_COOKIE = "google_refresh_token";
 /** Google user id, so job ownership checks do not need a Google API call per request */
 export const UID_COOKIE = "ss_uid";
+/** Pending OAuth state, set by /api/auth/login and checked by the callback */
+export const OAUTH_STATE_COOKIE = "ss_oauth_state";
 
-const secure = () => process.env.NODE_ENV === "production";
+const secure = () => process.env.NODE_ENV === "production" || /^https:/.test(process.env.NEXT_PUBLIC_BASE_URL ?? "");
 
 export interface SessionUser {
   userId: string;
@@ -25,7 +28,8 @@ export interface SessionUser {
 export async function resolveUser(req: NextRequest): Promise<SessionUser | null> {
   let accessToken = req.cookies.get(ACCESS_COOKIE)?.value ?? "";
   const refreshToken = req.cookies.get(REFRESH_COOKIE)?.value ?? "";
-  const uid = req.cookies.get(UID_COOKIE)?.value ?? "";
+  // The uid cookie is signed: an unsigned or altered one is ignored and Google is asked instead
+  const uid = verifySigned(req.cookies.get(UID_COOKIE)?.value, "uid") ?? "";
   if (!accessToken && !refreshToken) return null;
 
   let refreshed: SessionUser["refreshed"];
@@ -56,7 +60,7 @@ export async function resolveUser(req: NextRequest): Promise<SessionUser | null>
 }
 
 export function setUidCookie(res: NextResponse, userId: string): void {
-  res.cookies.set(UID_COOKIE, userId, {
+  res.cookies.set(UID_COOKIE, sign(userId, "uid"), {
     httpOnly: true,
     secure: secure(),
     sameSite: "lax",
@@ -92,10 +96,20 @@ export function applyAuthCookies(res: NextResponse, user: SessionUser): NextResp
   return res;
 }
 
+export function setOAuthStateCookie(res: NextResponse, state: string): void {
+  res.cookies.set(OAUTH_STATE_COOKIE, state, { httpOnly: true, secure: secure(), sameSite: "lax", maxAge: 600, path: "/api/auth" });
+}
+
 export function clearAuthCookies(res: NextResponse): void {
   for (const name of [ACCESS_COOKIE, REFRESH_COOKIE, UID_COOKIE, "syncstream_licensed", "google_user_id"]) {
     res.cookies.set(name, "", { maxAge: 0, path: "/" });
   }
+}
+
+/** 413 when the declared body size is over the limit, before anything is read */
+export function tooLarge(req: NextRequest, maxBytes: number): NextResponse | null {
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  return declared > maxBytes ? NextResponse.json({ error: "Request too large" }, { status: 413 }) : null;
 }
 
 export function unauthorized(): NextResponse {

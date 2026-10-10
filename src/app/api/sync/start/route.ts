@@ -10,7 +10,7 @@ import {
 import { createJobId, getStore, hasRedis, toPublicJob, type PlanSegment, type SpotState, type SyncContext, type SyncJob, type SyncPlan } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
 import { getDocument, snapshotOf } from "@/lib/google";
-import { applyAuthCookies, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
+import { applyAuthCookies, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { normalizeText, parseFormat, type DocListState, type ListType, type RichFormat } from "@/lib/rich-text";
 import { planSpots } from "@/lib/spots";
 
@@ -54,6 +54,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const big = tooLarge(req, 6_000_000);
+  if (big) return big;
   let body: StartBody;
   try {
     body = (await req.json()) as StartBody;

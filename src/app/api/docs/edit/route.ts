@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { editDocumentWithReplies } from "@/lib/google";
-import { applyAuthCookies, googleStatus, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
+import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,8 @@ const MAX_REQUESTS = 2000;
 export async function POST(req: NextRequest) {
   const user = await resolveUser(req);
   if (!user) return unauthorized();
+  const big = tooLarge(req, 4_000_000);
+  if (big) return big;
   let body: { documentId?: unknown; revisionId?: unknown; requests?: unknown };
   try {
     body = await req.json();
