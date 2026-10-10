@@ -456,7 +456,8 @@
 .ss-doc table.ss-table td > p, .ss-doc table.ss-table th > p { margin: 0; }
 .ss-doc table.ss-table .selectedCell::after { content: ""; position: absolute; inset: 0; background: rgba(11, 87, 208, 0.12); pointer-events: none; }
 .ss-doc table.ss-table td[data-locked] { background: var(--ss-soft); }
-.ss-doc img { display: inline-block; max-width: 6.5in; vertical-align: bottom; }
+/* An image never grows past the text area or a page, and keeps its proportions (its own width and height are inline styles) */
+.ss-doc img { display: inline-block; max-width: 100%; height: auto !important; max-height: calc(var(--ss-page-h, 11in) - var(--ss-m-top, 1in) - var(--ss-m-bottom, 1in)); vertical-align: bottom; }
 .ss-doc [data-resize-container] { vertical-align: bottom; max-width: 100%; }
 .ss-doc [data-resize-handle] {
   width: 9px;
@@ -495,6 +496,7 @@
   padding: 0 var(--ss-m-right, 1in) 0 var(--ss-m-left, 1in);
 }
 .ss-page-gap { display: block; pointer-events: none; user-select: none; }
+tr.ss-page-gap { display: table-row; }
 .ss-pageless .ss-sheet { height: auto; bottom: 0; }
 .ss-pageless .ss-sheet-content { padding-bottom: var(--ss-m-bottom, 1in); }
 @media (max-width: 720px) {

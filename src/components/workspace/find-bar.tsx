@@ -29,7 +29,13 @@ export function FindBar({ editor }: { editor: Editor | null }) {
       setMode(kind);
     };
     window.addEventListener("ss-find", onOpen);
-    return () => window.removeEventListener("ss-find", onOpen);
+    // From anywhere in the workspace, as in Docs (the editor's own keymap already handled it when focused)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (e.key === "f" || e.key === "h") { e.preventDefault(); onOpen(new CustomEvent("ss-find", { detail: e.key === "f" ? "bar" : "dialog" })); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("ss-find", onOpen); window.removeEventListener("keydown", onKey); };
   }, [editor]);
 
   // The input takes focus as soon as the bar or dialog is on screen

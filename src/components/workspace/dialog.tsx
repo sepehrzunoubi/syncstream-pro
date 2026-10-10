@@ -16,17 +16,31 @@ export function Dialog({ open, title, onClose, onSubmit, children, footer, width
   footer: React.ReactNode;
   width?: number;
 }) {
+  const formRef = React.useRef<HTMLFormElement>(null);
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const previous = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(formRef.current?.querySelectorAll<HTMLElement>("input, select, textarea, button, [tabindex]:not([tabindex='-1'])") ?? []).filter((el) => !el.hasAttribute("disabled"));
+    // Focus moves into the dialog and stays there until it closes, as in Docs
+    const first = focusable().find((el) => el.tagName !== "BUTTON") ?? focusable()[0];
+    first?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key !== "Tab") return;
+      const els = focusable();
+      if (!els.length) return;
+      const i = els.indexOf(document.activeElement as HTMLElement);
+      if (e.shiftKey && (i <= 0)) { e.preventDefault(); els[els.length - 1].focus(); }
+      else if (!e.shiftKey && (i === -1 || i === els.length - 1)) { e.preventDefault(); els[0].focus(); }
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); previous?.focus?.(); };
   }, [open, onClose]);
   if (!open) return null;
   const id = `ss-dialog-${title.replace(/\W+/g, "-").toLowerCase()}`;
   return createPortal(
     <div className="ss-dialog-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="ss-dialog" style={{ width }} role="dialog" aria-modal="true" aria-labelledby={id} onSubmit={(e) => { e.preventDefault(); onSubmit?.(); }}>
+      <form ref={formRef} className="ss-dialog" style={{ width }} role="dialog" aria-modal="true" aria-labelledby={id} onSubmit={(e) => { e.preventDefault(); onSubmit?.(); }}>
         <h2 id={id} className="ss-dialog-title">{title}</h2>
         {children}
         <div className="mt-6 flex items-center gap-2">{footer}</div>

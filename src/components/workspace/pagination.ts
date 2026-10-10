@@ -9,7 +9,7 @@ export const DEFAULT_GEOMETRY: PageGeometry = { w: 816, h: 1056, top: 96, bottom
 export const PAGE_GAP = 16;
 const sameGeometry = (a: PageGeometry, b: PageGeometry) => a.w === b.w && a.h === b.h && a.top === b.top && a.bottom === b.bottom && a.left === b.left && a.right === b.right;
 
-interface Break { pos: number; height: number; block: boolean }
+interface Break { pos: number; height: number; block: boolean; /** The gap sits between table rows: a row spanning this many columns */ row?: number }
 interface PaginationState {
   breaks: Break[];
   pages: number;
@@ -37,10 +37,16 @@ declare module "@tiptap/core" {
   }
 }
 
-function gapElement(height: number, block: boolean): HTMLElement {
-  const el = document.createElement(block ? "div" : "span");
+function gapElement(height: number, block: boolean, row = 0): HTMLElement {
+  // Between table rows the gap is a row itself, so the table lays out normally around it
+  const el = document.createElement(row ? "tr" : block ? "div" : "span");
   el.className = "ss-page-gap";
-  el.style.height = `${height}px`;
+  if (row) {
+    const td = document.createElement("td");
+    td.setAttribute("colspan", String(row));
+    td.style.cssText = `height: ${height}px; padding: 0; border: 0; background: transparent; line-height: 0; font-size: 0`;
+    el.appendChild(td);
+  } else el.style.height = `${height}px`;
   el.dataset.gap = String(height);
   el.setAttribute("contenteditable", "false");
   el.setAttribute("aria-hidden", "true");
@@ -52,7 +58,7 @@ function decorate(doc: Parameters<typeof DecorationSet.create>[0], breaks: Break
     doc,
     breaks
       .filter((b) => b.pos >= 0 && b.pos <= doc.content.size)
-      .map((b) => Decoration.widget(b.pos, () => gapElement(b.height, b.block), { side: -1, key: `gap:${b.block ? "b" : "i"}:${b.height}`, ignoreSelection: true }))
+      .map((b) => Decoration.widget(b.pos, () => gapElement(b.height, b.block, b.row), { side: -1, key: `gap:${b.row ? `r${b.row}` : b.block ? "b" : "i"}:${b.height}`, ignoreSelection: true }))
   );
 }
 
@@ -133,6 +139,15 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
   const BETWEEN = geom.bottom + PAGE_GAP + geom.top;
   const breaks: Break[] = [];
   const nextPage = () => { CONTENT_H = FULL_H - (reserves[breaks.length] ?? 0); };
+  // The gap before the next page: what is left of the sheet (footnotes included) plus the margins and the
+  // space between sheets. Negative means something taller than a page: no gap can fix that
+  const gapAfter = (used: number) => Math.round((FULL_H - used + BETWEEN) * 2) / 2;
+  const pushBreak = (pos: number, used: number, block: boolean, row = 0): boolean => {
+    const height = gapAfter(used);
+    if (height < 0) return false;
+    breaks.push({ pos, height, block, ...(row ? { row } : {}) });
+    return true;
+  };
   const dom = view.dom as HTMLElement;
   const box = dom.getBoundingClientRect();
   const scale = box.width / (dom.offsetWidth || box.width || 1) || 1;
@@ -153,7 +168,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     const $pos = view.state.doc.resolve(pos);
     // At a paragraph's start the gap goes before the paragraph, as measured block breaks do
     const block = $pos.parentOffset === 0 && $pos.depth === 1;
-    breaks.push({ pos: block ? $pos.before(1) : pos, height: Math.round((CONTENT_H - (flowY - pageStart) + BETWEEN) * 2) / 2, block });
+    if (!pushBreak(block ? $pos.before(1) : pos, flowY - pageStart, block)) continue;
     pageStart = flowY;
     pinnedUntil = pos;
     nextPage();
@@ -174,7 +189,9 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     if (child.classList.contains("ss-page-gap")) { removed += gapSize(child); continue; }
     ci++;
     const inner = Array.from(child.querySelectorAll(".ss-page-gap"));
-    const innerTotal = inner.reduce((s, g) => s + gapSize(g), 0);
+    // A gap between table rows takes its rendered height (the table's borders add to it); others render exactly
+    const innerSize = (g: Element) => (g.tagName === "TR" ? g.getBoundingClientRect().height / scale : gapSize(g));
+    const innerTotal = inner.reduce((s, g) => s + innerSize(g), 0);
     const r = child.getBoundingClientRect();
     const top = toLocal(r.top) - removed;
     const bottom = toLocal(r.bottom) - removed - innerTotal;
@@ -187,8 +204,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     }
     const forced = forceNext;
     forceNext = !!child.querySelector("[data-page-break]") || (child.getAttribute("data-kind") === "section" && child.getAttribute("data-section") !== "continuous");
-    if (forced && top > pageStart + 1) {
-      breaks.push({ pos: view.posAtDOM(child, 0) - 1, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
+    if (forced && top > pageStart + 1 && pushBreak(view.posAtDOM(child, 0) - 1, top - pageStart, true)) {
       pageStart = top;
       lastBreakPara = ci;
       nextPage();
@@ -204,15 +220,35 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       const t = flowTop.get(el) ?? top;
       if (t <= pageStart + 1) return false;
       const pos = view.posAtDOM(el, 0) - 1;
-      breaks.push({ pos, height: Math.round((CONTENT_H - (t - pageStart) + BETWEEN) * 2) / 2, block: true });
+      if (!pushBreak(pos, t - pageStart, true)) return false;
       pageStart = t;
       lastBreakPara = q;
       nextPage();
       return true;
     };
-    // A table moves to the next page whole (Docs breaks tables by row; cells here stay together); so does a column section
+    // A table that fits a page moves to the next one whole; a taller one breaks between rows, as Docs
+    // does (cells stay together). A column section moves whole.
     if (child.classList.contains("tableWrapper") || child.tagName === "TABLE" || child.classList.contains("ss-section-cols")) {
       if (top > pageStart + 1 && fits) { breakBefore(ci); removed += innerTotal; continue; }
+      if (!fits) {
+        const rows = Array.from(child.querySelectorAll("tr:not(.ss-page-gap)")) as HTMLElement[];
+        // Gaps already inside the table are not part of the flow either (their rendered height, since a
+        // row gap's exact size depends on the table's borders)
+        const innerGaps = inner.map((g) => ({ top: toLocal(g.getBoundingClientRect().top), size: innerSize(g) }));
+        const above = (y: number) => innerGaps.filter((g) => g.top < y).reduce((sum, g) => sum + g.size, 0);
+        for (let k = 1; k < rows.length; k++) {
+          const rr = rows[k].getBoundingClientRect();
+          const rb = toLocal(rr.bottom) - removed - above(toLocal(rr.bottom));
+          if (rb - pageStart <= CONTENT_H + 0.5) continue;
+          const rt = toLocal(rr.top) - removed - above(toLocal(rr.top));
+          if (rt <= pageStart + 1) continue;
+          const pos = view.posAtDOM(rows[k], 0) - 1;
+          if (!pushBreak(pos, rt - pageStart, true, Math.max(1, rows[0].children.length))) continue;
+          pageStart = rt;
+          lastBreakPara = ci;
+          nextPage();
+        }
+      }
       removed += innerTotal;
       continue;
     }
@@ -221,7 +257,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       if (bottom - pageStart <= CONTENT_H + 0.5) { removed += innerTotal; continue; }
     }
 
-    const gapTops = inner.map((g) => ({ top: toLocal(g.getBoundingClientRect().top), size: gapSize(g) }));
+    const gapTops = inner.map((g) => ({ top: toLocal(g.getBoundingClientRect().top), size: innerSize(g) }));
     const lines = linesOf(child, toLocal).map((l) => {
       const above = gapTops.filter((g) => g.top < l.top).reduce((s, g) => s + g.size, 0);
       return { ...l, ft: l.top - removed - above, fb: l.bottom - removed - above };
@@ -239,9 +275,9 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       if (singleLines && at === 1 && fits) at = 0; // an orphan: move the whole paragraph
       else if (singleLines && at === 1 && lines.length >= 4) at = 2;
       if (singleLines && at === lines.length - 1 && at >= 2) at = lines.length - 2; // a widow: take one more line along
+      if (singleLines && at === 1 && fits) at = 0; // taking a line along may have left one alone
       if (at === 0) {
-        if (!breakBefore(ci) && top > pageStart + 1) {
-          breaks.push({ pos: view.posAtDOM(child, 0) - 1, height: Math.round((CONTENT_H - (top - pageStart) + BETWEEN) * 2) / 2, block: true });
+        if (!breakBefore(ci) && top > pageStart + 1 && pushBreak(view.posAtDOM(child, 0) - 1, top - pageStart, true)) {
           pageStart = top;
           nextPage();
         }
@@ -249,8 +285,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
         const Lb = lines[at];
         const breakTop = (lines[at - 1].fb + Lb.ft) / 2;
         const pos = lineStartPos(view, Lb, toLocal);
-        if (pos != null && breakTop > pageStart + 1) {
-          breaks.push({ pos, height: Math.round((CONTENT_H - (breakTop - pageStart) + BETWEEN) * 2) / 2, block: false });
+        if (pos != null && breakTop > pageStart + 1 && pushBreak(pos, breakTop - pageStart, false)) {
           pageStart = breakTop;
           lastBreakPara = ci;
           nextPage();

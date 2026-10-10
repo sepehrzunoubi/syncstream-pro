@@ -105,6 +105,8 @@ const listLabelKey = new PluginKey<DecorationSet>("ssListLabels");
 /** True while text dragged from inside the editor is being dropped (a move, not an addition) */
 let draggingInside = false;
 
+let lastLockedHint = 0;
+
 export const DocSync = Extension.create({
   name: "docSync",
   priority: 1000,
@@ -119,7 +121,8 @@ export const DocSync = Extension.create({
       unsetFormattingMarks: () => ({ tr, state }) => {
         for (const range of state.selection.ranges) {
           for (const type of Object.values(state.schema.marks)) {
-            if (type.name !== PENDING_MARK) tr.removeMark(range.$from.pos, range.$to.pos, type);
+            // Docs' Clear formatting keeps links
+            if (type.name !== PENDING_MARK && type.name !== "link") tr.removeMark(range.$from.pos, range.$to.pos, type);
           }
         }
         return true;
@@ -146,7 +149,13 @@ export const DocSync = Extension.create({
         },
         filterTransaction(tr) {
           if (!tr.docChanged || tr.getMeta(LOAD_META)) return true;
-          return !touchesLocked(tr);
+          if (!touchesLocked(tr)) return true;
+          // Say why nothing happened instead of swallowing the edit silently
+          if (typeof window !== "undefined" && Date.now() - lastLockedHint > 1500) {
+            lastLockedHint = Date.now();
+            window.dispatchEvent(new CustomEvent("ss-locked-hint"));
+          }
+          return false;
         },
         // Whatever is typed or pasted becomes an addition; text dragged within the document keeps what it was
         appendTransaction(transactions, _old, newState) {

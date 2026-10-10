@@ -281,7 +281,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <button className="ss-icon-btn" data-on={s?.underline} onMouseDown={keep} onClick={() => run((c) => c.toggleUnderline())} title={`Underline (${mod}U)`} aria-label="Underline" aria-pressed={!!s?.underline}>
         <Icon name="format_underlined" />
       </button>
-      <button className="ss-icon-btn" data-on={s?.strike} onMouseDown={keep} onClick={() => run((c) => c.toggleStrike())} title={`Strikethrough (${mod}Shift+S)`} aria-label="Strikethrough" aria-pressed={!!s?.strike}>
+      <button className="ss-icon-btn" data-on={s?.strike} onMouseDown={keep} onClick={() => run((c) => c.toggleStrike())} title="Strikethrough (Alt+Shift+5)" aria-label="Strikethrough" aria-pressed={!!s?.strike}>
         <Icon name="format_strikethrough" />
       </button>
       <ColorMenu editor={editor} kind="text" current={s?.color ?? null} />

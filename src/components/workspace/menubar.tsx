@@ -229,7 +229,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item checkable checked={st?.bold} shortcut={`${mod}B`} onSelect={() => run((c) => c.toggleBold())}>Bold</Item>
           <Item checkable checked={st?.italic} shortcut={`${mod}I`} onSelect={() => run((c) => c.toggleItalic())}>Italic</Item>
           <Item checkable checked={st?.underline} shortcut={`${mod}U`} onSelect={() => run((c) => c.toggleUnderline())}>Underline</Item>
-          <Item checkable checked={st?.strike} shortcut={`${mod}Shift+X`} onSelect={() => run((c) => c.toggleStrike())}>Strikethrough</Item>
+          <Item checkable checked={st?.strike} shortcut="Alt+Shift+5" onSelect={() => run((c) => c.toggleStrike())}>Strikethrough</Item>
           <Item checkable checked={st?.sup} shortcut={`${mod}.`} onSelect={() => run((c) => c.toggleMark("superscript"))}>Superscript</Item>
           <Item checkable checked={st?.sub} shortcut={`${mod},`} onSelect={() => run((c) => c.toggleMark("subscript"))}>Subscript</Item>
           <Item checkable checked={st?.sc} onSelect={() => run((c) => c.toggleMark("smallCaps"))}>Small caps</Item>

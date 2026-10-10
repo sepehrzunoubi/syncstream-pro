@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Fragment, Slice } from "@tiptap/pm/model";
 import { useEditor, type JSONContent } from "@tiptap/react";
@@ -342,8 +342,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   useEffect(() => { installLineMetrics(); }, []);
   useEffect(() => {
     const onHint = () => setSnack(`Use ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}V to paste, or ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}Shift+V to paste without formatting`);
+    const onLocked = () => setSnack("That part of the document can't be changed here. Tables' shapes, chips and section breaks are edited in Google Docs.");
     window.addEventListener("ss-paste-hint", onHint);
-    return () => window.removeEventListener("ss-paste-hint", onHint);
+    window.addEventListener("ss-locked-hint", onLocked);
+    return () => { window.removeEventListener("ss-paste-hint", onHint); window.removeEventListener("ss-locked-hint", onLocked); };
   }, []);
   // "Fit" zoom: shrink the page to the space between the side columns.
   // Below 720px the page reflows instead (see docs.css), so no scaling there.
@@ -960,7 +962,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, [focusedJobId, sources]);
 
   // Preview: the same seed the server will use, so this is the schedule that runs
-  const deferredJSON = useDeferredValue(docJSON);
+  // The preview of what a sync would type diffs the whole document: once typing pauses, not per keystroke
+  const [deferredJSON, setDeferredJSON] = useState(docJSON);
+  useEffect(() => {
+    const id = setTimeout(() => setDeferredJSON(docJSON), 300);
+    return () => clearTimeout(id);
+  }, [docJSON]);
   // What a sync would type: the additions to the document, or everything when there is no document
   const toType = useMemo(() => {
     if (!deferredJSON) return { text: "", boundaries: [] as number[] };

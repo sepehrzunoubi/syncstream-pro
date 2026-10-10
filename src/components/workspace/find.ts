@@ -49,6 +49,10 @@ function textOf(doc: PMNode): { text: string; pos: number[] } {
   doc.descendants((node, p) => {
     if (node.isText && node.text) {
       for (let i = 0; i < node.text.length; i++) { text += node.text[i]; pos.push(p + i); }
+    } else if (node.isInline) {
+      // An image, page break or footnote mark is a character, never part of a match
+      text += "\uFFFC";
+      pos.push(p);
     } else if (node.isBlock && text.length && text[text.length - 1] !== "\n") {
       text += "\n";
       pos.push(p);
@@ -62,7 +66,8 @@ function search(doc: PMNode, o: FindOptions): { matches: FindState["matches"]; e
   if (!o.query) return { matches: [], error: false };
   const { text, pos } = textOf(doc);
   // Diacritics are stripped character for character, so positions line up
-  const hay = o.ignoreDiacritics ? Array.from(text).map((c) => strip(c)[0] ?? c).join("") : text;
+  // Stripped unit by unit (not by code point), so positions stay aligned after an emoji
+  const hay = o.ignoreDiacritics ? text.split("").map((c) => strip(c)[0] ?? c).join("") : text;
   const needle = o.ignoreDiacritics ? strip(o.query) : o.query;
   let re: RegExp;
   try {

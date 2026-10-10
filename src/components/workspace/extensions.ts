@@ -120,6 +120,10 @@ function pastedBox(el: HTMLElement): { start: number; first: number; above: numb
 
 /** Paragraphs carry the Google Docs paragraph properties we support. */
 const DocParagraph = Paragraph.extend({
+  addKeyboardShortcuts() {
+    // Docs' Ctrl+Alt+0: Normal text (the stock paragraph shortcut would only keep the node a paragraph)
+    return { "Mod-Alt-0": () => this.editor.commands.setNamedStyle("normal") };
+  },
   parseHTML() {
     return [{ tag: "p" }, ...["h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => ({ tag }))];
   },
@@ -512,7 +516,9 @@ const DocFormat = Extension.create({
         const node = state.schema.nodes.paragraph.create({ locked: true, kind: "section", sectionType: type });
         const at = $to.after();
         tr.insert(at, node);
-        tr.setSelection(TextSelection.near(tr.doc.resolve(at + node.nodeSize), 1));
+        // A paragraph to type into always follows the break
+        if (!tr.doc.resolve(at + node.nodeSize).nodeAfter) tr.insert(at + node.nodeSize, state.schema.nodes.paragraph.create());
+        tr.setSelection(TextSelection.create(tr.doc, at + node.nodeSize + 1));
         if (dispatch) dispatch(tr.scrollIntoView());
         return true;
       },
@@ -567,7 +573,8 @@ const DocFormat = Extension.create({
         const { selection } = editor.state;
         const parent = selection.$from.parent;
         if (selection.empty && selection.$from.parentOffset === 0 && parent.attrs.list) {
-          return editor.commands.updateAttributes("paragraph", NO_LIST);
+          // Docs: a nested item outdents first, then loses its bullet
+          return (parent.attrs.level ?? 0) > 0 ? editor.commands.outdent() : editor.commands.updateAttributes("paragraph", NO_LIST);
         }
         return false;
       },
@@ -580,7 +587,7 @@ const DocFormat = Extension.create({
       },
       Tab: ({ editor }) => {
         const { selection } = editor.state;
-        if (editor.isActive("table")) return editor.commands.goToNextCell() || editor.commands.addRowAfter();
+        if (editor.isActive("table")) return editor.commands.goToNextCell() || editor.chain().addRowAfter().goToNextCell().run();
         // At the start of a list item, Tab nests it one level deeper, as in Docs
         if (selection.$from.parent.attrs.list && selection.$from.parentOffset === 0) return editor.commands.indent();
         const paragraphs = paragraphsInSelection(editor, selection.from, selection.to);
@@ -702,7 +709,8 @@ const DocImage = Image.extend({
           const v = parseFloat(el.getAttribute("height") ?? el.style.height ?? "");
           return Number.isFinite(v) && v > 0 ? Math.round(v) : null;
         },
-        renderHTML: (a: { height?: number | null }) => (a.height ? { height: a.height } : {}),
+        // The document's own proportions, kept when the image is narrowed to fit the page
+        renderHTML: (a: { width?: number | null; height?: number | null }) => (a.height ? { height: a.height, ...(a.width ? { style: `aspect-ratio: ${a.width} / ${a.height}` } : {}) } : {}),
       },
     };
   },
@@ -830,6 +838,22 @@ const Subscript = Mark.create({
   parseHTML: () => [{ tag: "sub" }, { style: "vertical-align", getAttrs: (v: string | HTMLElement) => (v === "sub" ? {} : false) }],
   renderHTML: () => ["sub", 0],
 });
+/** Text colour that is only an attribute when the element has one (a styled span with no colour gets none) */
+const DocColor = Color.extend({
+  addGlobalAttributes() {
+    return [{
+      types: this.options.types,
+      attributes: {
+        color: {
+          default: null,
+          parseHTML: (el: HTMLElement) => el.style.color?.replace(/['"]+/g, "") || null,
+          renderHTML: (attrs: { color?: string | null }) => (attrs.color ? { style: `color: ${attrs.color}` } : {}),
+        },
+      },
+    }];
+  },
+});
+
 const SmallCaps = Mark.create({
   name: "smallCaps",
   parseHTML: () => [
@@ -918,7 +942,7 @@ export const segmentExtensions = () => [
   DocParagraph,
   TextStyle,
   FontAttributes,
-  Color,
+  DocColor,
   DocHighlight,
   Superscript,
   Subscript,
@@ -946,7 +970,7 @@ export const editorExtensions = [
   DocParagraph,
   TextStyle,
   FontAttributes,
-  Color,
+  DocColor,
   DocHighlight,
   Superscript,
   Subscript,
