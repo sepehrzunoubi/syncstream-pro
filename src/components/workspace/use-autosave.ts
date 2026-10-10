@@ -13,6 +13,9 @@ import type { DocContent, DocRefs, Setter } from "./doc-state";
 
 export type SaveState = "idle" | "saving" | "saved" | "error";
 
+/** Structural saves (table shape) read the document back and save again; this many rounds at most */
+const MAX_STRUCTURAL_ROUNDS = 3;
+
 export function useAutosave({ editor, refs, docJSON, docContent, docBusy, setDocJSON, setSnack, setScopeError }: {
   editor: Editor | null;
   refs: DocRefs;
@@ -60,7 +63,7 @@ export function useAutosave({ editor, refs, docJSON, docContent, docBusy, setDoc
    * Save direct edits (formatting, deleting) to the Google Doc. Additions
    * are left for a sync. Resolves false when the save failed.
    */
-  const saveNow = useCallback(async (): Promise<boolean> => {
+  const saveNow = useCallback(async (round = 0): Promise<boolean> => {
     while (savingRef.current) await savingRef.current;
     const content = docContentRef.current;
     const base = baseRef.current;
@@ -75,8 +78,17 @@ export function useAutosave({ editor, refs, docJSON, docContent, docBusy, setDoc
         if (data.revisionId) revisionRef.current = data.revisionId;
         if (structural) {
           // Tables changed shape: read the document back, give the editor's tables the ids Google
-          // assigned, and only then save whatever else changed (text in the new cells stays an addition)
-          const fresh = await fetchFresh(content.docId);
+          // assigned, and only then save whatever else changed (text in the new cells stays an addition).
+          // A read that keeps coming back without the change (a stale or failing read) must not make
+          // the editor send the same table request again and again: after a few rounds, trust the
+          // save and let the next verification or reload reconcile.
+          const fresh = round < MAX_STRUCTURAL_ROUNDS ? await fetchFresh(content.docId) : null;
+          if (round >= MAX_STRUCTURAL_ROUNDS) {
+            console.warn("Google Docs did not return the table change after several reads; keeping the editor's version");
+            baseRef.current = saved;
+            setSaveState("saved");
+            return true;
+          }
           if (fresh) {
             baseRef.current = fresh;
             loadDocument(editor, adoptStructure(fresh, editor.getJSON() as EditorNode), true);
@@ -103,7 +115,7 @@ export function useAutosave({ editor, refs, docJSON, docContent, docBusy, setDoc
     } finally {
       savingRef.current = null;
     }
-    return result === "again" ? saveNow() : result;
+    return result === "again" ? saveNow(round + 1) : result;
   }, [editor, verifyAgainstGoogle, fetchFresh, savingRef, docContentRef, baseRef, docBusyRef, revisionRef, setDocJSON, setScopeError, setSnack]);
 
   // Save direct edits shortly after they are made

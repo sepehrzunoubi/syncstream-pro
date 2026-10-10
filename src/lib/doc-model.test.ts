@@ -112,6 +112,18 @@ test("text that comes back without glowing (undoing a deletion) is put back dire
   const { requests } = directEdits(saved, target);
   assert.deepEqual(requests[0], { insertText: { location: { index: 7 }, text: "es" } });
   assert.ok(requests.slice(1).every((r) => r.updateTextStyle));
+  // Identically styled characters share one style request
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].updateTextStyle?.range, { startIndex: 7, endIndex: 9 });
+});
+
+test("restored text with mixed styles gets one style request per run", () => {
+  const saved = doc(p("Why?", { list: "ordered" }), p("Y."), p("End"));
+  const target = doc(p("Why?", { list: "ordered" }), p(["Ye", { text: "ss", marks: [{ type: "bold" }] }, "."]), p("End"));
+  const { requests } = directEdits(saved, target);
+  assert.deepEqual(requests[0], { insertText: { location: { index: 7 }, text: "ess" } });
+  const ranges = requests.slice(1).map((r) => r.updateTextStyle?.range);
+  assert.deepEqual(ranges, [{ startIndex: 7, endIndex: 8 }, { startIndex: 8, endIndex: 10 }]);
 });
 
 test("line breaks and empty lines are saved directly, not synced", () => {

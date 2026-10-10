@@ -621,7 +621,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       if (last?.k === "nl") { inserted.pop(); inserted.unshift(last); }
     }
     let text = "";
-    const styled: { from: number; to: number; style: DocsRequest }[] = [];
+    // One updateTextStyle per run of identically styled characters, not one per character
+    const styled: { from: number; to: number; key: string; style: DocsRequest }[] = [];
     let pos = at;
     for (let q = 0; q < inserted.length; q++) {
       const t = inserted[q];
@@ -656,7 +657,12 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       // Docs drops soft line breaks sent through the API, so a line break becomes a new paragraph
       const ch = t.k === "c" ? t.c : "\n";
       if (t.k === "c") {
-        styled.push({ from: pos + text.length, to: pos + text.length + 1, style: resolveTextStyle(styleFromMarks(withoutPending(t.marks))) });
+        const style = resolveTextStyle(styleFromMarks(withoutPending(t.marks)));
+        const key = JSON.stringify(style);
+        const from = pos + text.length;
+        const last = styled[styled.length - 1];
+        if (last && last.key === key && last.to === from) last.to = from + 1;
+        else styled.push({ from, to: from + 1, key, style });
       }
       text += ch;
     }
