@@ -109,9 +109,7 @@ export interface DocSnapshot {
 
 /** The whole document, as documents.get returns it */
 export async function getDocument(accessToken: string, documentId: string): Promise<docs_v1.Schema$Document> {
-  const client = getOAuth2Client();
-  client.setCredentials({ access_token: accessToken });
-  const docs = google.docs({ version: "v1", auth: client });
+  const docs = docsClient(accessToken);
   const doc = await withRetry(() => docs.documents.get({ documentId }));
   return doc.data;
 }
@@ -150,26 +148,21 @@ export function snapshotOf(data: docs_v1.Schema$Document, tailChars = 400): DocS
   return { endIndex, tail: body.slice(-tailChars), wordCount, chars, revisionId: data.revisionId ?? "" };
 }
 
-export async function deleteRange(
-  accessToken: string,
-  documentId: string,
-  startIndex: number,
-  endIndex: number
-) {
+/** A Docs client whose calls give up after a while, so a slow Google never outlives a worker's lock */
+function docsClient(accessToken: string) {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
-  const docs = google.docs({ version: "v1", auth: client });
+  return google.docs({ version: "v1", auth: client, timeout: 20_000 });
+}
+
+export async function deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string) {
+  const docs = docsClient(accessToken);
   await withRetry(() =>
     docs.documents.batchUpdate({
       documentId,
       requestBody: {
-        requests: [
-          {
-            deleteContentRange: {
-              range: { startIndex, endIndex },
-            },
-          },
-        ],
+        requests: [{ deleteContentRange: { range: { startIndex, endIndex } } }],
+        ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}),
       },
     })
   );
@@ -215,13 +208,15 @@ export async function exportPdf(accessToken: string, documentId: string): Promis
   return new Uint8Array(res.data as ArrayBuffer);
 }
 
-/** Apply Docs requests in one atomic batchUpdate */
-export async function batchUpdate(accessToken: string, documentId: string, requests: object[]) {
+/**
+ * Apply Docs requests in one atomic batchUpdate. With `requiredRevisionId`
+ * Google refuses the batch (400) when the document changed since that
+ * revision was read, so indices computed from it are never applied stale.
+ */
+export async function batchUpdate(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string) {
   if (requests.length === 0) return;
-  const client = getOAuth2Client();
-  client.setCredentials({ access_token: accessToken });
-  const docs = google.docs({ version: "v1", auth: client });
-  await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests } }));
+  const docs = docsClient(accessToken);
+  await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests, ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}) } }));
 }
 
 export async function insertAtIndex(

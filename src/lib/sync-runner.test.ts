@@ -187,7 +187,7 @@ test("long waits are handed to the queue with the exact delay, not slept in the 
 
 test("a second delivery while the job is locked is rejected and schedules one re-kick", async () => {
   const h = await makeHarness(TEXT);
-  assert.equal(await h.store.acquireLock(h.jobId, 60), true);
+  assert.ok(await h.store.acquireLock(h.jobId, 60));
   const r1 = await runJobWindow(h.jobId, 0, h.deps);
   const r2 = await runJobWindow(h.jobId, 0, h.deps);
   assert.equal(r1.outcome, "busy");
@@ -305,7 +305,7 @@ test("cancel is honoured between actions and the lock is released", async () => 
   };
   const r = await runJobWindow(h.jobId, 0, h.deps);
   assert.equal(r.outcome, "cancelled");
-  assert.equal(await h.store.acquireLock(h.jobId, 1), true, "lock must be released");
+  assert.ok(await h.store.acquireLock(h.jobId, 1), "lock must be released");
 });
 
 test("scheduled jobs wait in the queue until their start time", async () => {
@@ -329,7 +329,8 @@ test("an expired access token is refreshed and the write retried", async () => {
   const r = await runJobWindow(h.jobId, 0, h.deps);
   assert.equal(r.outcome, "done");
   assert.equal(h.doc.text, "ok");
-  assert.equal((await h.store.getJob(h.jobId))!.accessToken, "fresh");
+  // The refreshed token was used; a finished job keeps no credentials
+  assert.equal((await h.store.getJob(h.jobId))!.accessToken, "");
 });
 
 test("finished jobs are not re-run by late deliveries", async () => {

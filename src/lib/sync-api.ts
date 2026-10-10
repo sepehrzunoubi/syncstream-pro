@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { enqueueProcess } from "./qstash";
 import { applyAuthCookies, resolveUser, unauthorized, type SessionUser } from "./auth";
 import { getStore, toPublicJob, type ControlCommand, type SyncJob } from "./sync-store";
 import { applyControl } from "./sync-runner";
@@ -54,6 +55,7 @@ export async function mutateJob(
     locked = await store.acquireLock(jobId, 10);
   }
   if (locked) {
+    const token = locked;
     try {
       const fresh = await store.getJob(jobId);
       if (!fresh) return NextResponse.json({ error: "Job not found" }, { status: 404 });
@@ -67,7 +69,7 @@ export async function mutateJob(
       await store.setJob(result);
       return result;
     } finally {
-      await store.releaseLock(jobId);
+      await store.releaseLock(jobId, token);
     }
   }
   if (!intent) {
@@ -76,6 +78,8 @@ export async function mutateJob(
   const current = await store.getJob(jobId);
   if (!current) return NextResponse.json({ error: "Job not found" }, { status: 404 });
   await store.setControl(jobId, intent);
+  // A worker applies the intent within seconds instead of at the next scheduled delivery
+  try { await enqueueProcess(jobId, current.generation, 2); } catch { /* the running worker still sees it at its next check */ }
   const t = Date.now();
   return intent === "pause"
     ? { ...current, status: "paused", activity: "Pausing", pausedAt: t, lastUpdate: t }

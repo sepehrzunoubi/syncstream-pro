@@ -86,6 +86,12 @@ export interface SyncJob {
   /** Per-segment typing positions, for plans with segments */
   spots?: SpotState[];
   failures: number;
+  /** Consecutive quota waits (429), separate from failures */
+  quotaWaits?: number;
+  /** When the last action was due: the schedule is anchored here, not on the clock */
+  lastDueAt?: number;
+  /** Counts hand-offs; a delivery made for an older tick is a duplicate */
+  tick?: number;
 
   // Credentials for the Docs API
   accessToken: string;
@@ -200,9 +206,12 @@ export interface SyncStore {
   addActiveJob(id: string): Promise<void>;
   removeActiveJob(id: string): Promise<void>;
   getActiveJobIds(): Promise<string[]>;
-  /** SET NX EX: true when this caller now owns the lock */
-  acquireLock(id: string, ttlSeconds: number): Promise<boolean>;
-  releaseLock(id: string): Promise<void>;
+  /** SET NX EX: the lock's token when this caller now owns it, else null */
+  acquireLock(id: string, ttlSeconds: number): Promise<string | null>;
+  /** Releases the lock only while `token` still owns it */
+  releaseLock(id: string, token: string): Promise<void>;
+  /** Keeps the lock alive while `token` still owns it; false when it was lost */
+  extendLock(id: string, ttlSeconds: number, token: string): Promise<boolean>;
   /** True at most once per ttl window, used to avoid scheduling duplicate re-kicks */
   tryScheduleKick(id: string, ttlSeconds: number): Promise<boolean>;
   /** A pause/cancel request left for the running worker to apply (it is the only writer while locked) */
@@ -220,6 +229,8 @@ function createRedisStore(redis: Redis): SyncStore {
     },
     async setJob(job) {
       await redis.set(JOB_PREFIX + job.id, { ...job, accessToken: seal(job.accessToken), refreshToken: seal(job.refreshToken) }, { ex: TTL_SECONDS });
+      // The plan and context live as long as the job does
+      await Promise.all([redis.expire(PLAN_PREFIX + job.id, TTL_SECONDS), redis.expire(CONTEXT_PREFIX + job.id, TTL_SECONDS)]);
     },
     async getPlan(id) {
       return (await redis.get<SyncPlan>(PLAN_PREFIX + id)) ?? null;
@@ -256,11 +267,17 @@ function createRedisStore(redis: Redis): SyncStore {
       return (await redis.smembers(ACTIVE_JOBS_KEY)) as string[];
     },
     async acquireLock(id, ttlSeconds) {
-      const res = await redis.set(LOCK_PREFIX + id, "1", { nx: true, ex: ttlSeconds });
-      return res === "OK";
+      const token = randomBytes(12).toString("base64url");
+      const res = await redis.set(LOCK_PREFIX + id, token, { nx: true, ex: ttlSeconds });
+      return res === "OK" ? token : null;
     },
-    async releaseLock(id) {
-      await redis.del(LOCK_PREFIX + id);
+    async releaseLock(id, token) {
+      // Compare and delete: never release a lock another worker took after ours expired
+      await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0", [LOCK_PREFIX + id], [token]);
+    },
+    async extendLock(id, ttlSeconds, token) {
+      const res = await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) end return 0", [LOCK_PREFIX + id], [token, String(ttlSeconds)]);
+      return res === 1;
     },
     async tryScheduleKick(id, ttlSeconds) {
       const res = await redis.set(KICK_PREFIX + id, "1", { nx: true, ex: ttlSeconds });
@@ -280,6 +297,8 @@ function createRedisStore(redis: Redis): SyncStore {
 }
 
 export function createMemoryStore(now: () => number = Date.now): SyncStore {
+  let lockSeq = 0;
+  const lockOwner = new Map<string, string>();
   const jobs = new Map<string, SyncJob>();
   const plans = new Map<string, SyncPlan>();
   const contexts = new Map<string, SyncContext>();
@@ -307,11 +326,23 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
     async removeActiveJob(id) { active.delete(id); },
     async getActiveJobIds() { return Array.from(active); },
     async acquireLock(id, ttl) {
-      if (live(LOCK_PREFIX + id)) return false;
+      if (live(LOCK_PREFIX + id)) return null;
+      expiring.set(LOCK_PREFIX + id, now() + ttl * 1000);
+      const token = `t${++lockSeq}`;
+      lockOwner.set(id, token);
+      return token;
+    },
+    async releaseLock(id, token) {
+      // Only the current owner releases; a worker whose lock expired and was taken over leaves it alone
+      if (lockOwner.get(id) !== token) return;
+      expiring.delete(LOCK_PREFIX + id);
+      lockOwner.delete(id);
+    },
+    async extendLock(id, ttl, token) {
+      if (!live(LOCK_PREFIX + id) || lockOwner.get(id) !== token) return false;
       expiring.set(LOCK_PREFIX + id, now() + ttl * 1000);
       return true;
     },
-    async releaseLock(id) { expiring.delete(LOCK_PREFIX + id); },
     async tryScheduleKick(id, ttl) {
       if (live(KICK_PREFIX + id)) return false;
       expiring.set(KICK_PREFIX + id, now() + ttl * 1000);

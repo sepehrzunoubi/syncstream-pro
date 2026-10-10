@@ -58,10 +58,10 @@ function getOrigin(): string {
  * @param generation  The job generation this message belongs to (stale ones are ignored)
  * @param delaySec    Seconds to wait before delivery
  */
-export async function enqueueProcess(jobId: string, generation: number, delaySec = 0): Promise<void> {
+export async function enqueueProcess(jobId: string, generation: number, delaySec = 0, tick?: number): Promise<void> {
   const client = getQStashClient();
   const url = `${getOrigin()}/api/sync/process`;
-  const body = { jobId, generation };
+  const body = { jobId, generation, ...(tick != null ? { tick } : {}) };
 
   if (client) {
     try {

@@ -33,10 +33,12 @@ export async function POST(req: NextRequest) {
 
   let jobId: string | undefined;
   let generation: number | undefined;
+  let tick: number | undefined;
   try {
-    const parsed = JSON.parse(rawBody) as { jobId?: string; generation?: number };
+    const parsed = JSON.parse(rawBody) as { jobId?: string; generation?: number; tick?: number };
     jobId = parsed.jobId;
     generation = typeof parsed.generation === "number" ? parsed.generation : undefined;
+    tick = typeof parsed.tick === "number" ? parsed.tick : undefined;
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
@@ -46,7 +48,8 @@ export async function POST(req: NextRequest) {
     store: getStore(),
     docs: { snapshot: getDocSnapshot, batch: batchUpdate, deleteRange },
     refresh: (refreshToken) => refreshAccessToken(refreshToken),
-    enqueue: (id, gen, delaySec) => enqueueProcess(id, gen, delaySec),
+    enqueue: (id, gen, delaySec, t) => enqueueProcess(id, gen, delaySec, t),
+    tick,
     log: (message) => console.log(`[sync] ${message}`),
   });
 

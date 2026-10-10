@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
     "cancel"
   );
   if (result instanceof NextResponse) return result;
-  if (result.status === "cancelled") await getStore().removeActiveJob(job.id);
+  // Only a cancel that was applied leaves the active set; an intent is applied by the worker
+  if (result.status === "cancelled" && result.activity === "Cancelled") await getStore().removeActiveJob(job.id);
   return jobResponse(user, result);
 }

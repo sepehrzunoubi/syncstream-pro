@@ -22,16 +22,28 @@ import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan
 
 export interface DocsApi {
   snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
-  /** One atomic batchUpdate */
-  batch(accessToken: string, documentId: string, requests: object[]): Promise<unknown>;
-  deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number): Promise<unknown>;
+  /** One atomic batchUpdate; refused by Google when the document moved past `requiredRevisionId` */
+  batch(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string): Promise<unknown>;
+  deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string): Promise<unknown>;
 }
+
+/** HTTP status of a Google API error */
+export function errorStatus(err: unknown): number | undefined {
+  const e = err as { code?: number | string; status?: number; response?: { status?: number } };
+  const code = typeof e?.code === "number" ? e.code : undefined;
+  return code ?? e?.status ?? e?.response?.status;
+}
+
+/** Google refused a batch because the document changed since it was read */
+const isStaleRevision = (err: unknown) => errorStatus(err) === 400 && /revision/i.test(err instanceof Error ? err.message : String(err));
 
 export interface RunnerDeps {
   store: SyncStore;
   docs: DocsApi;
   refresh(refreshToken: string): Promise<{ access_token: string } | null>;
-  enqueue(jobId: string, generation: number, delaySec: number): Promise<void>;
+  enqueue(jobId: string, generation: number, delaySec: number, tick?: number): Promise<void>;
+  /** The hand-off this delivery was made for; an older one than the job's is a duplicate */
+  tick?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** How long one invocation may work before handing off. Default 20s. */
@@ -60,6 +72,12 @@ export interface RunResult {
 }
 
 const MAX_FAILURES = 3;
+/** 429s tolerated before the job gives up */
+const MAX_QUOTA_WAITS = 10;
+/** How far behind schedule a job may be before it simply runs late */
+const MAX_CATCHUP_MS = 30_000;
+/** Immediate re-reads after Google refused a batch for a stale revision */
+const STALE_RETRIES = 4;
 const PAUSE_CHECK_MS = 3_000;
 /** How soon a delivery that found the job busy asks for another go */
 const BUSY_RETRY_SEC = 25;
@@ -84,7 +102,8 @@ export async function runJobWindow(
   const lockTtlSec = deps.lockTtlSec ?? 60;
   const log = deps.log ?? (() => {});
 
-  if (!(await store.acquireLock(jobId, lockTtlSec))) {
+  const lock = await store.acquireLock(jobId, lockTtlSec);
+  if (!lock) {
     // Someone else is working on this job. If that worker died, the lock
     // expires; make sure exactly one re-kick is waiting for that moment.
     if (await store.tryScheduleKick(jobId, BUSY_RETRY_SEC)) {
@@ -100,11 +119,17 @@ export async function runJobWindow(
     job = await store.getJob(jobId);
     const plan = job ? await store.getPlan(jobId) : null;
     if (!job || !plan) {
+      if (job && !isTerminal(job.status)) {
+        // The plan expired before the job finished: say so instead of leaving it "running"
+        const expired: SyncJob = { ...job, status: "error", error: "This sync expired before it could finish.", activity: "Error", finishedAt: now(), lastUpdate: now(), accessToken: "", refreshToken: "" };
+        await store.setJob(expired);
+      }
       await store.removeActiveJob(jobId);
       return { outcome: "not_found" };
     }
 
     if (generation != null && generation !== job.generation) return { outcome: "stale", job: toPublicJob(job) };
+    if (deps.tick != null && job.tick != null && deps.tick < job.tick) return { outcome: "stale", job: toPublicJob(job) };
     const pending = await store.getControl(jobId);
     if (pending && !isTerminal(job.status)) {
       const applied = await applyControl(store, job, pending, now);
@@ -128,21 +153,34 @@ export async function runJobWindow(
       job.startedAt = now();
       job.activity = "Starting";
     }
+    job.startedAt ??= now();
 
-    const ctx = new Context(job, plan, deps, now, sleep, log);
+    const ctx = new Context(job, plan, deps, now, sleep, log, lock);
     const windowStart = now();
     const handOff = async (delaySec: number) => {
+      // A pause or cancel asked for since the last check is applied now, not a delivery later
+      const control = await store.getControl(jobId);
+      if (control && ctx.job.currentAction < plan.actions.length) {
+        const applied = await applyControl(store, ctx.job, control, now);
+        throw new Interrupted(applied.status === "paused" ? "paused" : "cancelled", applied);
+      }
       handedOff = true;
-      await store.releaseLock(jobId);
-      await deps.enqueue(jobId, ctx.job.generation, delaySec);
+      ctx.job.tick = (ctx.job.tick ?? 0) + 1;
+      await store.setJob(ctx.job);
+      await store.releaseLock(jobId, lock);
+      await deps.enqueue(jobId, ctx.job.generation, delaySec, ctx.job.tick);
     };
 
     while (ctx.job.currentAction < plan.actions.length) {
       const action = plan.actions[ctx.job.currentAction];
+      if (!(await store.extendLock(jobId, lockTtlSec, lock))) throw new Interrupted("busy", ctx.job);
 
       if (ctx.job.nextActionAt == null) {
         const delay = ctx.job.typoSubStep === 1 ? action.holdMs ?? 1_000 : action.delayMs;
-        ctx.job.nextActionAt = now() + delay;
+        // Anchored on when the last action was due, so Google round trips and late deliveries
+        // do not stretch the plan; a backlog is caught up by at most a little
+        const due = ctx.job.lastDueAt != null ? ctx.job.lastDueAt + delay : now() + delay;
+        ctx.job.nextActionAt = Math.max(due, now() - MAX_CATCHUP_MS);
         ctx.job.activity = ctx.job.typoSubStep === 1 ? "Fixing a typo" : action.activity;
         ctx.refreshEstimates();
       }
@@ -158,6 +196,7 @@ export async function runJobWindow(
 
       await ctx.execute(action);
 
+      ctx.job.lastDueAt = ctx.job.nextActionAt;
       ctx.job.currentAction++;
       ctx.job.nextActionAt = undefined;
       ctx.job.typoSubStep = 0;
@@ -179,6 +218,9 @@ export async function runJobWindow(
     ctx.job.etaTargetAt = now();
     ctx.job.nextBreakAction = undefined;
     ctx.job.nextBreakAt = undefined;
+    // A finished job keeps no credentials
+    ctx.job.accessToken = "";
+    ctx.job.refreshToken = "";
     await ctx.persist();
     await store.removeActiveJob(jobId);
     return { outcome: "done", job: toPublicJob(ctx.job) };
@@ -195,27 +237,64 @@ export async function runJobWindow(
     }
     // Keep our cursor (job) but honour the latest generation.
     const merged: SyncJob = { ...latest, ...(job ?? {}), generation: latest.generation, status: latest.status };
-    merged.failures = (merged.failures ?? 0) + 1;
     merged.lastUpdate = now();
+    merged.nextActionAt = undefined;
+    const status = errorStatus(err);
+    if (status === 401 || status === 403) {
+      // Access is gone: park the job so that signing in again and resuming continues it
+      merged.status = "paused";
+      merged.pausedAt = now();
+      merged.error = "SyncStream lost access to your Google account. Sign in again, then resume this sync.";
+      merged.activity = "Paused: sign in again";
+      await store.setJob(merged);
+      return { outcome: "paused", job: toPublicJob(merged) };
+    }
+    if (status === 404) {
+      merged.status = "error";
+      merged.error = "The document was deleted or is no longer shared with you.";
+      merged.activity = "Error";
+      merged.finishedAt = now();
+      merged.accessToken = "";
+      merged.refreshToken = "";
+      await store.setJob(merged);
+      await store.removeActiveJob(jobId);
+      return { outcome: "error", job: toPublicJob(merged) };
+    }
+    if (status === 429) {
+      // Quota: wait longer each time, without using up the failure budget
+      merged.quotaWaits = (merged.quotaWaits ?? 0) + 1;
+      if (merged.quotaWaits <= MAX_QUOTA_WAITS) {
+        const delaySec = 60 * Math.min(merged.quotaWaits, 5);
+        merged.activity = "Waiting for Google Docs quota";
+        await store.setJob(merged);
+        handedOff = true;
+        await store.releaseLock(jobId, lock);
+        await deps.enqueue(jobId, merged.generation, delaySec);
+        return { outcome: "retry", job: toPublicJob(merged) };
+      }
+    }
+    merged.failures = (merged.failures ?? 0) + 1;
     if (merged.failures <= MAX_FAILURES) {
       const delaySec = 15 * merged.failures;
       merged.activity = `Retrying after a Google Docs error (attempt ${merged.failures} of ${MAX_FAILURES})`;
       merged.nextActionAt = undefined;
       await store.setJob(merged);
       handedOff = true;
-      await store.releaseLock(jobId);
+      await store.releaseLock(jobId, lock);
       await deps.enqueue(jobId, merged.generation, delaySec);
       return { outcome: "retry", job: toPublicJob(merged) };
     }
     merged.status = "error";
-    merged.error = message;
+    merged.error = status === 429 ? "Google Docs kept refusing because of its usage quota. Resume the sync later." : status === 400 ? "Google Docs rejected an edit. Resume to try again from where it stopped." : message;
     merged.activity = "Error";
     merged.finishedAt = now();
+    merged.accessToken = "";
+    merged.refreshToken = "";
     await store.setJob(merged);
     await store.removeActiveJob(jobId);
     return { outcome: "error", job: toPublicJob(merged) };
   } finally {
-    if (!handedOff) await store.releaseLock(jobId);
+    if (!handedOff) await store.releaseLock(jobId, lock);
   }
 }
 
@@ -260,7 +339,8 @@ class Context {
     private readonly deps: RunnerDeps,
     private readonly now: () => number,
     private readonly sleep: (ms: number) => Promise<void>,
-    private readonly log: (m: string) => void
+    private readonly log: (m: string) => void,
+    private readonly lock: string
   ) {}
 
   /**
@@ -277,6 +357,11 @@ class Context {
     if (latest.status === "cancelled") throw new Interrupted("cancelled", latest);
     const control = await store.getControl(this.job.id);
     if (control) {
+      if (this.job.currentAction >= this.plan.actions.length) {
+        // Everything is typed: a pause or cancel now would only mislabel a finished sync
+        await store.clearControl(this.job.id);
+        return;
+      }
       const applied = await applyControl(store, this.job, control, this.now);
       throw new Interrupted(applied.status === "paused" ? "paused" : "cancelled", applied);
     }
@@ -294,6 +379,7 @@ class Context {
     while (left > 0) {
       await this.sleep(Math.min(PAUSE_CHECK_MS, left));
       await this.checkInterrupt();
+      if (!(await this.deps.store.extendLock(this.job.id, this.deps.lockTtlSec ?? 60, this.lock))) throw new Interrupted("busy", this.job);
       left = target - this.now();
     }
   }
@@ -415,6 +501,20 @@ class Context {
    */
   private async write(text: string, step: number, isSource: boolean): Promise<void> {
     if (text.length === 0) return;
+    // Indices come from one read of the document; the batch is only applied to that revision.
+    // When a collaborator's edit lands in between, Google refuses it and the place is found again.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.writeOnce(text, step, isSource);
+        return;
+      } catch (err) {
+        if (!isStaleRevision(err) || attempt >= STALE_RETRIES) throw err;
+        this.log(`job ${this.job.id}: the document changed while writing, reading it again`);
+      }
+    }
+  }
+
+  private async writeOnce(text: string, step: number, isSource: boolean): Promise<void> {
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
     const marker = this.job.inFlight;
     const markerMatches =
@@ -466,7 +566,7 @@ class Context {
           requests.push(...fx.uniformStyleRequests(offset, text.length, index));
         }
       }
-      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests));
+      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined));
       if (isSource && place?.repair) place.repaired();
       this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
     } else if (fx && isSource) {
@@ -545,11 +645,13 @@ class Context {
   }
 
   private async withToken<T>(fn: (token: string) => Promise<T>): Promise<T> {
+    // The lock outlives every Google call made while it is held
+    await this.deps.store.extendLock(this.job.id, this.deps.lockTtlSec ?? 60, this.lock);
     try {
       return await fn(this.job.accessToken);
     } catch (err: unknown) {
-      const code = (err as { code?: number })?.code ?? (err as { status?: number })?.status;
-      if ((code === 401 || code === 403) && this.job.refreshToken) {
+      const code = errorStatus(err);
+      if (code === 401 && this.job.refreshToken) {
         const refreshed = await this.deps.refresh(this.job.refreshToken);
         if (refreshed) {
           this.job.accessToken = refreshed.access_token;
