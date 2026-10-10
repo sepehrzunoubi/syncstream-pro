@@ -76,10 +76,7 @@ test.describe("pages", () => {
   });
 
   test("Ctrl+Enter inserts a page break and the text after it starts a new page", async ({ app, page }) => {
-    // The command chains insertContent(pageBreak).splitBlock(); splitBlock maps the already-moved
-    // selection through the insert step as well, so the split lands one character late ("Closing [break]t" /
-    // "houghts..."), and at the end of a paragraph no new paragraph is made at all. Enable when fixed.
-    test.fixme(true, "insertPageBreak splits one character after the caret (extensions.ts)");
+    // The split must land exactly at the caret, in the same transaction as the break
     await app.open();
     const before = await app.sheets();
     await app.caretBefore("thoughts on the whole program.");
