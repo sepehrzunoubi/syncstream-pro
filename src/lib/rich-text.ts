@@ -689,6 +689,8 @@ export class FormatIndex {
             const qe = q === p ? segEnd : (this.paraStarts[q + 1] ?? this.text.length);
             items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0 });
           }
+          // Paragraphs already bulleted keep their level whatever their tabs: remove the bullets first
+          if (items.length > 1) requests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
           requests.push(...bulletRequests(items, presetOf(para)));
         }
         processed.set(p, { type: para.list, start: listStart, level: para.level ?? 0, preset: presetOf(para) });
@@ -884,6 +886,24 @@ export class SegmentFormat {
       const want = para.list ?? null;
       // A paragraph this sync continues keeps the bullets it has; only paragraphs it starts are (re)made
       if (fresh && ((cur?.type ?? null) !== want || (want && !sameList(cur, para)))) {
+        // Docs reads nesting from leading tabs relative to the other paragraphs of the same
+        // createParagraphBullets request, and only for paragraphs not already bulleted: a
+        // paragraph created on its own always lands at level 0. So a list this sync started is
+        // re-created from its first item, every item at its level, after its bullets are removed.
+        const ours = !!cur && want && cur.start >= 0 && cur.type === want && (cur.preset ?? LIST_PRESETS[cur.type]) === presetOf(para);
+        if (ours) {
+          const firstLine = lastLE(this.lineStarts, cur!.start);
+          const items: { start: number; end: number; level: number }[] = [];
+          for (let q = firstLine; q <= l; q++) {
+            const qs = this.lineStarts[q] ?? this.text.length;
+            const qe = q === l ? to : (this.lineStarts[q + 1] ?? this.text.length);
+            items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0 });
+          }
+          requests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: range.endIndex } } });
+          requests.push(...bulletRequests(items, presetOf(para)));
+          cur = { type: want, start: cur!.start, level: para.level ?? 0, preset: presetOf(para) };
+          continue;
+        }
         if (cur) requests.push({ deleteParagraphBullets: { range } });
         if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0 }], presetOf(para)));
         cur = want ? { type: want, start: lineStart, level: para.level ?? 0, preset: presetOf(para) } : null;

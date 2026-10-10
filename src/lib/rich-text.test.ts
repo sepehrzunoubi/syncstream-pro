@@ -269,14 +269,24 @@ test("list levels and styles: bullets are created with leading tabs that Docs re
     { insertText: { location: { index: 5 }, text: "\t\t" } },
     { createParagraphBullets: { range: { startIndex: 1, endIndex: 11 }, bulletPreset: "NUMBERED_DECIMAL_NESTED" } },
   ]);
-  // A segment whose second line is one level deeper re-creates bullets for that line at its level
-  const fmt = { v: 1 as const, paragraphs: [paragraphFromAttrs({ list: "bullet" }), paragraphFromAttrs({ list: "bullet", level: 1, preset: "BULLET_STAR_CIRCLE_SQUARE" })], runs: [{ len: 7 }] };
+  // A segment whose second line is one level deeper re-creates the whole list (Docs nests relative to
+  // the request's other paragraphs, and only paragraphs without bullets): delete, tab, one create
+  const fmt = { v: 1 as const, paragraphs: [paragraphFromAttrs({ list: "bullet", preset: "BULLET_STAR_CIRCLE_SQUARE" }), paragraphFromAttrs({ list: "bullet", level: 1, preset: "BULLET_STAR_CIRCLE_SQUARE" })], runs: [{ len: 7 }] };
   const sf = new SegmentFormat("one\ntwo", fmt);
   const r = sf.writeRequests(0, 7, 10, null);
   const creates = r.requests.filter((q) => q.createParagraphBullets);
   assert.equal(creates.length, 2);
-  assert.deepEqual(r.docList, { type: "bullet", start: 4, level: 1, preset: "BULLET_STAR_CIRCLE_SQUARE" });
-  assert.ok(r.requests.some((q) => (q.insertText as { text?: string } | undefined)?.text === "\t"));
+  assert.deepEqual(creates[1], { createParagraphBullets: { range: { startIndex: 10, endIndex: 18 }, bulletPreset: "BULLET_STAR_CIRCLE_SQUARE" } });
+  assert.deepEqual(r.requests.find((q) => q.deleteParagraphBullets), { deleteParagraphBullets: { range: { startIndex: 10, endIndex: 17 } } });
+  assert.deepEqual(r.docList, { type: "bullet", start: 0, level: 1, preset: "BULLET_STAR_CIRCLE_SQUARE" });
+  assert.deepEqual(r.requests.find((q) => (q.insertText as { text?: string } | undefined)?.text === "\t"), { insertText: { location: { index: 14 }, text: "\t" } });
+  // Typed chunk by chunk: the newline that opens the deeper line re-creates the list from its first
+  // item over the opened paragraph, and the text typed into it afterwards inherits the level
+  const a = sf.writeRequests(0, 4, 10, null);
+  assert.deepEqual(a.requests.find((q) => q.deleteParagraphBullets), { deleteParagraphBullets: { range: { startIndex: 10, endIndex: 15 } } });
+  assert.deepEqual(a.requests.filter((q) => q.createParagraphBullets)[1], { createParagraphBullets: { range: { startIndex: 10, endIndex: 16 }, bulletPreset: "BULLET_STAR_CIRCLE_SQUARE" } });
+  const b = sf.writeRequests(4, 7, 14, a.docList);
+  assert.equal(b.requests.filter((q) => q.createParagraphBullets || q.deleteParagraphBullets).length, 0);
   // Right indent reaches Docs and comes back
   const p = paragraphFromAttrs({ indentEnd: 54 });
   assert.equal(p.end, 54);

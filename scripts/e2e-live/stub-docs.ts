@@ -352,13 +352,22 @@ export class StubDocument {
     if (!paragraphs.length) throw bad(`No paragraph in [${start}, ${end})`);
     const listId = `kix.list${++this.listSeq}`;
     this.lists[listId] = listFor(preset);
-    // Last to first: removing a paragraph's leading tabs shifts everything after it
-    for (const p of [...paragraphs].reverse()) {
+    // As Google does it: the nesting level is the paragraph's leading tabs relative to the fewest
+    // tabs among the paragraphs of this request that are not bulleted yet; a paragraph already in a
+    // list keeps its level. Leading tabs are removed either way.
+    const tabsOf = (p: { start: number }) => {
       let tabs = 0;
       while (this.items[p.start + tabs]?.k === "c" && (this.items[p.start + tabs] as { ch: string }).ch === "\t") tabs++;
+      return tabs;
+    };
+    const fresh = paragraphs.filter((p) => !(this.items[p.nl] as Extract<Item, { k: "nl" }>).bullet);
+    const baseline = fresh.length ? Math.min(...fresh.map(tabsOf)) : 0;
+    // Last to first: removing a paragraph's leading tabs shifts everything after it
+    for (const p of [...paragraphs].reverse()) {
+      const tabs = tabsOf(p);
       this.items.splice(p.start, tabs);
       const nl = this.items[p.nl - tabs] as Extract<Item, { k: "nl" }>;
-      nl.bullet = { listId, nestingLevel: Math.min(8, tabs) };
+      nl.bullet = { listId, nestingLevel: nl.bullet ? nl.bullet.nestingLevel ?? 0 : Math.min(8, tabs - baseline) };
       nl.ps.indentFirstLine = { magnitude: 18 + 36 * nl.bullet.nestingLevel, unit: "PT" };
       nl.ps.indentStart = { magnitude: 36 * (nl.bullet.nestingLevel + 1), unit: "PT" };
     }
