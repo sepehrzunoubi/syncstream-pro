@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { motion, useInView } from "framer-motion";
 import {
   MoveRight,
@@ -139,7 +140,7 @@ export function LoginScreen() {
       {/* Top Navbar */}
       <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.04] bg-[#09090b]/80 backdrop-blur-md">
         <div className="container mx-auto flex items-center justify-between px-6 py-4">
-          <a
+          <Link
             href="/"
             className="flex items-center gap-2 hover:opacity-80 transition-opacity"
           >
@@ -151,7 +152,7 @@ export function LoginScreen() {
             <span className="text-sm font-semibold text-white tracking-tight">
               SyncStream
             </span>
-          </a>
+          </Link>
           <div className="flex items-center gap-8">
             <a
               href="#features"

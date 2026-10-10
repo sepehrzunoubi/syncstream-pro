@@ -364,13 +364,13 @@ export class App {
 }
 
 export const test = base.extend<{ api: FakeGoogle; app: App }>({
-  api: async ({}, use) => { // eslint-disable-line no-empty-pattern
-    await use(new FakeGoogle());
+  api: async ({}, provide) => { // eslint-disable-line no-empty-pattern
+    await provide(new FakeGoogle());
   },
-  app: async ({ page, api }, use) => {
+  app: async ({ page, api }, provide) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await use(new App(page, api));
+    await provide(new App(page, api));
     expect(errors, "no uncaught errors in the page").toEqual([]);
     expect(api.unexpected, "every API call had a fake").toEqual([]);
   },

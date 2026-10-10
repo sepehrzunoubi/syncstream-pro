@@ -5,8 +5,9 @@ import { withRoute } from "@/lib/route";
 export const dynamic = "force-dynamic";
 
 /** Public on purpose: Google fetches the image from here when it inserts it. */
-export const GET = withRoute(async (_req: NextRequest, { params }: { params: { id: string } }) => {
-  const image = await loadImage(params.id);
+export const GET = withRoute(async (_req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
+  const { id } = await params;
+  const image = await loadImage(id);
   if (!image) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return new NextResponse(new Uint8Array(image.bytes), {
     headers: {

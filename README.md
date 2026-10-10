@@ -6,7 +6,7 @@ Sign in with any Google account and start syncing. There is no license key or al
 
 ## Tech Stack
 
-- **Framework:** Next.js 14 (App Router), TypeScript
+- **Framework:** Next.js 15 (App Router), React 19, TypeScript
 - **Editor:** TipTap 3 / ProseMirror with a pagination plugin; Radix menus
 - **Styling:** Tailwind CSS for the shell, `docs.css` for the Docs-like workspace (light, like Docs)
 - **Animations:** Framer Motion, tsParticles on the landing page

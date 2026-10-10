@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import "./legal.css";
 
@@ -76,11 +77,11 @@ export function LegalPage({
       {/* eslint-disable-next-line @next/next/no-page-custom-font */}
       <link rel="stylesheet" href={FONTS} />
       <header className="lg-bar" data-scrolled={scrolled ? "" : undefined}>
-        <a href="/" className="lg-brand" aria-label="SyncStream home">
+        <Link href="/" className="lg-brand" aria-label="SyncStream home">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/sync-icon.png" alt="" />
           <span>SyncStream</span>
-        </a>
+        </Link>
         <nav className="lg-tabs" aria-label="Legal">
           <a className="lg-tab" href="/privacy" aria-current={kind === "privacy" ? "page" : undefined}>Privacy Policy</a>
           <a className="lg-tab" href="/tos" aria-current={kind === "terms" ? "page" : undefined}>Terms of Service</a>
