@@ -256,3 +256,44 @@ test("columns: sections group into column sections for the editor and restyle th
   assert.deepEqual(r2.range, { startIndex: 9, endIndex: 20 });
   assert.deepEqual(r2.sectionStyle.columnProperties, []);
 });
+
+test("deleting across a section break removes the text on both sides and keeps the break", () => {
+  // "Alpha one\n" is indices 1–10, the break 11, "Gamma three\n" 12–23
+  const brk = p([], { locked: true, kind: "section", sectionType: "next", span: 1, bid: "b1" });
+  const base = doc(p("Alpha one"), brk, p("Gamma three"));
+  const target = doc(p("Alpha"), brk, p("three"));
+  const { requests, saved, structural } = directEdits(base, target);
+  assert.ok(!structural);
+  assert.deepEqual(requests, [
+    { deleteContentRange: { range: { startIndex: 12, endIndex: 18 } } },
+    { deleteContentRange: { range: { startIndex: 6, endIndex: 10 } } },
+  ]);
+  assert.deepEqual(saved, target);
+  // Every paragraph around two breaks emptied (Select all, Delete): the breaks stay, the paragraphs stay separate
+  const brk2 = p([], { locked: true, kind: "section", sectionType: "next", span: 1, bid: "b2" });
+  const base2 = doc(p("Alpha"), brk, p("Beta"), brk2, p("Gamma"));
+  const target2 = doc(p(""), brk, p(""), brk2, p(""));
+  // "Alpha\n" 1–6, break 7, "Beta\n" 8–12, break 13, "Gamma\n" 14–19
+  assert.deepEqual(directEdits(base2, target2).requests, [
+    { deleteContentRange: { range: { startIndex: 14, endIndex: 19 } } },
+    { deleteContentRange: { range: { startIndex: 8, endIndex: 12 } } },
+    { deleteContentRange: { range: { startIndex: 1, endIndex: 6 } } },
+  ]);
+  assert.deepEqual(directEdits(base2, target2).saved, target2);
+});
+
+test("deleting across a table removes the text on both sides and keeps the table as it is", () => {
+  const cell = (cid: string, text: string) => ({ type: "tableCell", attrs: { cid, span: 1 }, content: [p(text)] });
+  const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  const table = { type: "table", attrs: { tid: "t1", span: 1 }, content: [row("r0", cell("c0", "A"), cell("c1", "B"))] };
+  // "Intro one\n" 1–10, table at 11: table(1) row(1) cell(1) "A\n" cell(1) "B\n" = 11–18, "After two\n" 19–28
+  const base = doc(p("Intro one"), table, p("After two"));
+  const target = doc(p("Intro"), table, p("two"));
+  const { requests, saved, structural } = directEdits(base, target);
+  assert.ok(!structural, "the table's shape did not change");
+  assert.deepEqual(requests, [
+    { deleteContentRange: { range: { startIndex: 19, endIndex: 25 } } },
+    { deleteContentRange: { range: { startIndex: 6, endIndex: 10 } } },
+  ]);
+  assert.deepEqual(saved, target);
+});
