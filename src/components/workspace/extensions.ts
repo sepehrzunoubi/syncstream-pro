@@ -484,9 +484,15 @@ const DocFormat = Extension.create({
         if (dispatch) dispatch(tr);
         return true;
       },
-      insertPageBreak: () => ({ chain, state }) => {
+      insertPageBreak: () => ({ tr, state, dispatch }) => {
         if (state.selection.$from.parent.attrs.locked) return false;
-        return chain().insertContent({ type: "pageBreak" }).splitBlock().run();
+        // The break replaces the selection and the paragraph splits right after it, in one transaction:
+        // splitting as a second command would map the caret through the insertion and land one place late
+        const { from } = state.selection;
+        tr.replaceSelectionWith(state.schema.nodes.pageBreak.create());
+        tr.split(from + 1);
+        if (dispatch) dispatch(tr.scrollIntoView());
+        return true;
       },
       setColumns: (layout) => ({ tr, state, dispatch }) => {
         // The section marker before the selection (the first section's hidden one is made if missing)

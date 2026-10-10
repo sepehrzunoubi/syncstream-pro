@@ -5,7 +5,9 @@
  * addition: it gets the syncAdd mark, glows, and is typed into the Google
  * Doc by a sync. Everything else the user does (formatting, deleting) is a
  * direct edit that the workspace saves to the Google Doc right away.
- * Locked paragraphs (tables, smart chips) are shown but can't be changed.
+ * Locked paragraphs (tables, smart chips) are shown but can't be changed;
+ * a selection that spans them and editable text edits the text around them
+ * (see locked-edits.ts).
  */
 
 import { Extension, Mark, type Editor } from "@tiptap/core";
@@ -16,6 +18,7 @@ import { AddMarkStep, AttrStep, RemoveMarkStep, ReplaceStep } from "@tiptap/pm/t
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { EditorNode } from "@/lib/rich-text";
 import { PENDING_MARK, groupColumns } from "@/lib/doc-model";
+import { deleteParts, editableParts, lockedRanges } from "./locked-edits";
 
 /** Transactions that load a document: not additions, not undoable */
 export const LOAD_META = "ssLoad";
@@ -37,14 +40,6 @@ export const SyncAdd = Mark.create({
   parseHTML: () => [],
   renderHTML: () => ["span", { class: "ss-add" }, 0],
 });
-
-const isLocked = (node: PMNode) => node.attrs.locked === true;
-
-function lockedRanges(doc: PMNode): [number, number][] {
-  const ranges: [number, number][] = [];
-  doc.descendants((node, pos) => { if (isLocked(node)) { ranges.push([pos, pos + node.nodeSize]); return false; } return node.type.name === "columnSection"; });
-  return ranges;
-}
 
 /** True when a step of the transaction would change a locked paragraph */
 function touchesLocked(tr: Transaction): boolean {
@@ -107,13 +102,39 @@ let draggingInside = false;
 
 let lastLockedHint = 0;
 
+/**
+ * Delete, Backspace and their variants on a selection that spans locked
+ * content: the editable parts go, the locked blocks stay. False when the
+ * selection reaches nothing locked, or nothing editable (the usual commands
+ * run, and a change to locked content is refused with the hint).
+ */
+function deleteAcrossLocked(editor: Editor): boolean {
+  const parts = editableParts(editor.state);
+  if (!parts?.length) return false;
+  const tr = editor.state.tr;
+  deleteParts(tr, parts);
+  editor.view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
 export const DocSync = Extension.create({
   name: "docSync",
   priority: 1000,
 
   addKeyboardShortcuts() {
-    // Google Docs doesn't accept soft line breaks through its API, so Shift+Enter starts a new line like Enter
-    return { "Shift-Enter": () => this.editor.commands.splitBlock() };
+    const del = ({ editor }: { editor: Editor }) => deleteAcrossLocked(editor);
+    return {
+      // Google Docs doesn't accept soft line breaks through its API, so Shift+Enter starts a new line like Enter
+      "Shift-Enter": () => this.editor.commands.splitBlock(),
+      Backspace: del,
+      "Mod-Backspace": del,
+      "Shift-Backspace": del,
+      "Alt-Backspace": del,
+      Delete: del,
+      "Mod-Delete": del,
+      "Shift-Delete": del,
+      "Alt-Delete": del,
+    };
   },
 
   addCommands() {
@@ -204,9 +225,43 @@ export const DocSync = Extension.create({
           return tr.setMeta("ssAddMarked", true);
         },
         props: {
+          // Typing over a selection that spans locked content replaces its editable parts, where it began
+          handleTextInput(view, _from, _to, text) {
+            const parts = editableParts(view.state);
+            if (!parts?.length) return false;
+            const tr = view.state.tr;
+            const at = deleteParts(tr, parts);
+            tr.insertText(text, at);
+            view.dispatch(tr.scrollIntoView());
+            return true;
+          },
+          // Pasting over such a selection: the editable parts go first, then the paste lands where they began
+          handlePaste(view) {
+            const parts = editableParts(view.state);
+            if (!parts?.length) return false;
+            const tr = view.state.tr;
+            deleteParts(tr, parts);
+            view.dispatch(tr);
+            return false;
+          },
           handleDOMEvents: {
             dragstart: () => { draggingInside = true; return false; },
             dragend: () => { draggingInside = false; return false; },
+            // Cutting such a selection copies all of it and deletes its editable parts
+            cut: (view, event) => {
+              const parts = editableParts(view.state);
+              const data = event.clipboardData;
+              if (!parts?.length || !data) return false;
+              const { dom, text } = view.serializeForClipboard(view.state.selection.content());
+              event.preventDefault();
+              data.clearData();
+              data.setData("text/html", dom.innerHTML);
+              data.setData("text/plain", text);
+              const tr = view.state.tr;
+              deleteParts(tr, parts);
+              view.dispatch(tr.scrollIntoView().setMeta("uiEvent", "cut"));
+              return true;
+            },
           },
           attributes: (state: EditorState): Record<string, string> => (docSyncKey.getState(state)?.glow ? { class: "ss-glow" } : {}),
         },
