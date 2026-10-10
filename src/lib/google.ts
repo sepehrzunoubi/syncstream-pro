@@ -115,6 +115,15 @@ export async function getDocument(accessToken: string, documentId: string): Prom
   return doc.data;
 }
 
+/** Just the document's revision id: a cheap way to notice changes made in Google Docs */
+export async function getRevisionId(accessToken: string, documentId: string): Promise<string> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const docs = google.docs({ version: "v1", auth: client });
+  const doc = await withRetry(() => docs.documents.get({ documentId, fields: "revisionId" }));
+  return doc.data.revisionId ?? "";
+}
+
 /** One documents.get that yields everything the runner needs about the target doc. */
 export async function getDocSnapshot(accessToken: string, documentId: string, tailChars = 400): Promise<DocSnapshot> {
   return snapshotOf(await getDocument(accessToken, documentId), tailChars);

@@ -577,18 +577,39 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     return () => clearTimeout(id);
   }, [docJSON, docContent, docBusy, saveNow]);
 
-  // Pick up changes made in Google Docs when coming back to this tab
+  // Mirror changes made in Google Docs: on coming back to this tab, and every few seconds while
+  // it is visible (the doc may be open side by side), reload when Google's revision moved on
   useEffect(() => {
-    const onVisible = async () => {
-      if (document.visibilityState !== "visible" || !editor) return;
+    let checking = false;
+    const refresh = async (force: boolean) => {
+      if (checking || document.visibilityState !== "visible" || !editor) return;
       const content = docContentRef.current;
       if (content?.status !== "ready" || docBusyRef.current) return;
-      if (!(await saveNow())) return;
-      loadDocContent(content.docId, editor.getJSON() as EditorNode);
+      checking = true;
+      try {
+        if (!force) {
+          const res = await fetch(`/api/docs/revision?id=${encodeURIComponent(content.docId)}`);
+          if (!res.ok) return;
+          const data = (await res.json().catch(() => ({}))) as { revisionId?: string };
+          if (!data.revisionId || data.revisionId === revisionRef.current) return;
+          if (docContentRef.current?.docId !== content.docId) return;
+        }
+        if (!(await saveNow())) return;
+        loadDocContent(content.docId, editor.getJSON() as EditorNode);
+      } finally {
+        checking = false;
+      }
     };
+    const onVisible = () => { void refresh(true); };
+    const id = setInterval(() => { void refresh(false); }, 6000);
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
   }, [editor, saveNow, loadDocContent]);
+
+  // For browser automation: window.ssEditor when localStorage.ss_debug is set
+  useEffect(() => {
+    try { if (editor && localStorage.getItem("ss_debug")) (window as unknown as { ssEditor?: unknown }).ssEditor = editor; } catch { /* storage blocked */ }
+  }, [editor]);
 
   // Snackbar auto-hide
   useEffect(() => {
