@@ -19,6 +19,8 @@ import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
 import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef } from "./rich-text";
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
+import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
+import { reportError } from "./monitor";
 
 export interface DocsApi {
   snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
@@ -50,7 +52,6 @@ export interface RunnerDeps {
   windowMs?: number;
   /** Lock TTL; also the re-kick delay when a delivery finds the job busy. Default 60s. */
   lockTtlSec?: number;
-  log?: (message: string) => void;
 }
 
 export type RunOutcome =
@@ -100,13 +101,16 @@ export async function runJobWindow(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const windowMs = deps.windowMs ?? 20_000;
   const lockTtlSec = deps.lockTtlSec ?? 60;
-  const log = deps.log ?? (() => {});
+  /** Fields every line about this job carries */
+  let tag: Fields = { job: jobId };
 
   const lock = await store.acquireLock(jobId, lockTtlSec);
   if (!lock) {
     // Someone else is working on this job. If that worker died, the lock
     // expires; make sure exactly one re-kick is waiting for that moment.
-    if (await store.tryScheduleKick(jobId, BUSY_RETRY_SEC)) {
+    const rekick = await store.tryScheduleKick(jobId, BUSY_RETRY_SEC);
+    log.info("sync.busy", { ...tag, rekick });
+    if (rekick) {
       const j = await store.getJob(jobId);
       if (j && !isTerminal(j.status)) await deps.enqueue(jobId, j.generation, BUSY_RETRY_SEC);
     }
@@ -118,8 +122,10 @@ export async function runJobWindow(
   try {
     job = await store.getJob(jobId);
     const plan = job ? await store.getPlan(jobId) : null;
+    if (job) tag = { job: jobId, uid: uidTag(job.userId) };
     if (!job || !plan) {
       if (job && !isTerminal(job.status)) {
+        log.warn("sync.expired", { ...tag, action: job.currentAction });
         // The plan expired before the job finished: say so instead of leaving it "running"
         const expired: SyncJob = { ...job, status: "error", error: "This sync expired before it could finish.", activity: "Error", finishedAt: now(), lastUpdate: now(), accessToken: "", refreshToken: "" };
         await store.setJob(expired);
@@ -128,10 +134,17 @@ export async function runJobWindow(
       return { outcome: "not_found" };
     }
 
-    if (generation != null && generation !== job.generation) return { outcome: "stale", job: toPublicJob(job) };
-    if (deps.tick != null && job.tick != null && deps.tick < job.tick) return { outcome: "stale", job: toPublicJob(job) };
+    if (generation != null && generation !== job.generation) {
+      log.debug("sync.stale_delivery", { ...tag, generation, current: job.generation });
+      return { outcome: "stale", job: toPublicJob(job) };
+    }
+    if (deps.tick != null && job.tick != null && deps.tick < job.tick) {
+      log.debug("sync.stale_delivery", { ...tag, tick: deps.tick, current: job.tick });
+      return { outcome: "stale", job: toPublicJob(job) };
+    }
     const pending = await store.getControl(jobId);
     if (pending && !isTerminal(job.status)) {
+      log.info("sync.control", { ...tag, command: pending, action: job.currentAction });
       const applied = await applyControl(store, job, pending, now);
       return { outcome: applied.status === "paused" ? "paused" : "cancelled", job: toPublicJob(applied) };
     }
@@ -144,23 +157,26 @@ export async function runJobWindow(
     if (job.status === "scheduled") {
       const untilStart = job.startAt - now();
       if (untilStart > 1_000) {
+        log.info("sync.waiting", { ...tag, untilStartSec: Math.ceil(untilStart / 1000) });
         await deps.enqueue(jobId, job.generation, Math.ceil(untilStart / 1000));
         return { outcome: "waiting", job: toPublicJob(job) };
       }
     }
     if (job.status === "scheduled" || job.status === "pending") {
+      log.info("sync.started", { ...tag, scheduled: job.status === "scheduled", totalActions: job.totalActions, totalChars: job.totalChars, lateSec: Math.max(0, Math.round((now() - job.startAt) / 1000)) });
       job.status = "running";
       job.startedAt = now();
       job.activity = "Starting";
     }
     job.startedAt ??= now();
 
-    const ctx = new Context(job, plan, deps, now, sleep, log, lock);
+    const ctx = new Context(job, plan, deps, now, sleep, lock);
     const windowStart = now();
     const handOff = async (delaySec: number) => {
       // A pause or cancel asked for since the last check is applied now, not a delivery later
       const control = await store.getControl(jobId);
       if (control && ctx.job.currentAction < plan.actions.length) {
+        log.info("sync.control", { ...tag, command: control, action: ctx.job.currentAction });
         const applied = await applyControl(store, ctx.job, control, now);
         throw new Interrupted(applied.status === "paused" ? "paused" : "cancelled", applied);
       }
@@ -168,12 +184,16 @@ export async function runJobWindow(
       ctx.job.tick = (ctx.job.tick ?? 0) + 1;
       await store.setJob(ctx.job);
       await store.releaseLock(jobId, lock);
+      log.info("sync.handoff", { ...tag, action: ctx.job.currentAction, totalActions: plan.actions.length, delaySec, tick: ctx.job.tick, windowMs: now() - windowStart, charsSent: ctx.job.charsSent });
       await deps.enqueue(jobId, ctx.job.generation, delaySec, ctx.job.tick);
     };
 
     while (ctx.job.currentAction < plan.actions.length) {
       const action = plan.actions[ctx.job.currentAction];
-      if (!(await store.extendLock(jobId, lockTtlSec, lock))) throw new Interrupted("busy", ctx.job);
+      if (!(await store.extendLock(jobId, lockTtlSec, lock))) {
+        log.warn("sync.lock_lost", { ...tag, action: ctx.job.currentAction });
+        throw new Interrupted("busy", ctx.job);
+      }
 
       if (ctx.job.nextActionAt == null) {
         const delay = ctx.job.typoSubStep === 1 ? action.holdMs ?? 1_000 : action.delayMs;
@@ -223,13 +243,17 @@ export async function runJobWindow(
     ctx.job.refreshToken = "";
     await ctx.persist();
     await store.removeActiveJob(jobId);
+    log.info("sync.done", { ...tag, chars: ctx.job.charsSent, actions: plan.actions.length, elapsedMs: ctx.job.startedAt ? now() - ctx.job.startedAt : undefined, wpm: ctx.job.wpm });
     return { outcome: "done", job: toPublicJob(ctx.job) };
   } catch (err) {
     if (err instanceof Interrupted) {
+      log.info("sync.interrupted", { ...tag, outcome: err.outcome, action: err.job.currentAction });
       return { outcome: err.outcome, job: toPublicJob(err.job) };
     }
     const message = err instanceof Error ? err.message : String(err);
-    log(`job ${jobId} failed at action ${job?.currentAction}: ${message}`);
+    const status = errorStatus(err);
+    const kind = status === 401 || status === 403 ? "auth" : status === 404 ? "not_found" : status === 429 ? "quota" : status === 400 ? "rejected" : "transient";
+    log.error("sync.failed", { ...tag, action: job?.currentAction, status, kind, err: errorFields(err, kind === "transient") });
     const latest = await store.getJob(jobId);
     if (!latest) return { outcome: "not_found" };
     if (latest.status === "paused" || latest.status === "cancelled" || isTerminal(latest.status)) {
@@ -239,7 +263,6 @@ export async function runJobWindow(
     const merged: SyncJob = { ...latest, ...(job ?? {}), generation: latest.generation, status: latest.status };
     merged.lastUpdate = now();
     merged.nextActionAt = undefined;
-    const status = errorStatus(err);
     if (status === 401 || status === 403) {
       // Access is gone: park the job so that signing in again and resuming continues it
       merged.status = "paused";
@@ -247,6 +270,7 @@ export async function runJobWindow(
       merged.error = "SyncStream lost access to your Google account. Sign in again, then resume this sync.";
       merged.activity = "Paused: sign in again";
       await store.setJob(merged);
+      log.warn("sync.paused_auth", { ...tag, action: merged.currentAction, status });
       return { outcome: "paused", job: toPublicJob(merged) };
     }
     if (status === 404) {
@@ -258,6 +282,7 @@ export async function runJobWindow(
       merged.refreshToken = "";
       await store.setJob(merged);
       await store.removeActiveJob(jobId);
+      log.warn("sync.error", { ...tag, action: merged.currentAction, status, kind });
       return { outcome: "error", job: toPublicJob(merged) };
     }
     if (status === 429) {
@@ -266,6 +291,7 @@ export async function runJobWindow(
       if (merged.quotaWaits <= MAX_QUOTA_WAITS) {
         const delaySec = 60 * Math.min(merged.quotaWaits, 5);
         merged.activity = "Waiting for Google Docs quota";
+        log.warn("sync.quota_wait", { ...tag, action: merged.currentAction, waits: merged.quotaWaits, maxWaits: MAX_QUOTA_WAITS, delaySec });
         await store.setJob(merged);
         handedOff = true;
         await store.releaseLock(jobId, lock);
@@ -278,6 +304,7 @@ export async function runJobWindow(
       const delaySec = 15 * merged.failures;
       merged.activity = `Retrying after a Google Docs error (attempt ${merged.failures} of ${MAX_FAILURES})`;
       merged.nextActionAt = undefined;
+      log.warn("sync.retry", { ...tag, action: merged.currentAction, failures: merged.failures, maxFailures: MAX_FAILURES, delaySec, status, kind });
       await store.setJob(merged);
       handedOff = true;
       await store.releaseLock(jobId, lock);
@@ -292,9 +319,18 @@ export async function runJobWindow(
     merged.refreshToken = "";
     await store.setJob(merged);
     await store.removeActiveJob(jobId);
+    // A job that gave up is something the operator should hear about
+    await reportError(err, { event: "sync.error", route: "/api/sync/process", ...tag, action: merged.currentAction, status, kind, failures: merged.failures, quotaWaits: merged.quotaWaits });
     return { outcome: "error", job: toPublicJob(merged) };
   } finally {
-    if (!handedOff) await store.releaseLock(jobId, lock);
+    if (!handedOff) {
+      try {
+        await store.releaseLock(jobId, lock);
+      } catch (err) {
+        // The lock expires on its own; a failed release only delays the next delivery
+        log.warn("sync.lock_release_failed", { ...tag, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
   }
 }
 
@@ -332,6 +368,8 @@ class Context {
   private formatIndex: FormatIndex | null | undefined;
   private sourceText: string | undefined;
   private segmentFormats = new Map<number, SegmentFormat>();
+  /** Fields every line about this job carries */
+  private readonly tag: Fields;
 
   constructor(
     public job: SyncJob,
@@ -339,9 +377,10 @@ class Context {
     private readonly deps: RunnerDeps,
     private readonly now: () => number,
     private readonly sleep: (ms: number) => Promise<void>,
-    private readonly log: (m: string) => void,
     private readonly lock: string
-  ) {}
+  ) {
+    this.tag = { job: job.id, uid: uidTag(job.userId) };
+  }
 
   /**
    * Stop if someone paused, cancelled or resumed the job underneath us.
@@ -379,7 +418,10 @@ class Context {
     while (left > 0) {
       await this.sleep(Math.min(PAUSE_CHECK_MS, left));
       await this.checkInterrupt();
-      if (!(await this.deps.store.extendLock(this.job.id, this.deps.lockTtlSec ?? 60, this.lock))) throw new Interrupted("busy", this.job);
+      if (!(await this.deps.store.extendLock(this.job.id, this.deps.lockTtlSec ?? 60, this.lock))) {
+        log.warn("sync.lock_lost", { ...this.tag, action: this.job.currentAction, during: "wait" });
+        throw new Interrupted("busy", this.job);
+      }
       left = target - this.now();
     }
   }
@@ -509,13 +551,15 @@ class Context {
         return;
       } catch (err) {
         if (!isStaleRevision(err) || attempt >= STALE_RETRIES) throw err;
-        this.log(`job ${this.job.id}: the document changed while writing, reading it again`);
+        log.warn("sync.stale_revision", { ...this.tag, action: this.job.currentAction, step, attempt: attempt + 1, maxAttempts: STALE_RETRIES });
       }
     }
   }
 
   private async writeOnce(text: string, step: number, isSource: boolean): Promise<void> {
+    const snapTimer = startTimer(this.now);
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    const snapshotMs = snapTimer();
     const marker = this.job.inFlight;
     const markerMatches =
       marker != null &&
@@ -544,7 +588,7 @@ class Context {
       }
     }
     if (alreadyLanded) {
-      this.log(`job ${this.job.id}: write for action ${this.job.currentAction} already landed, skipping`);
+      log.info("sync.write_skipped", { ...this.tag, action: this.job.currentAction, step, chars: text.length, snapshotMs });
       this.job.liveWordCount = snap.wordCount;
     } else {
       this.job.inFlight = { action: this.job.currentAction, step, text };
@@ -566,7 +610,9 @@ class Context {
           requests.push(...fx.uniformStyleRequests(offset, text.length, index));
         }
       }
+      const batchTimer = startTimer(this.now);
       await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined));
+      log.info("sync.write", { ...this.tag, action: this.job.currentAction, step, chars: text.length, requests: requests.length, docsMs: batchTimer(), snapshotMs, opened: open.length > 0, inPlace: !!place, charsSent: this.job.charsSent + (isSource ? text.length : 0), totalChars: this.job.totalChars });
       if (isSource && place?.repair) place.repaired();
       this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
     } else if (fx && isSource) {
@@ -632,7 +678,9 @@ class Context {
         place.state.cursor = at;
         return;
       }
+      const eraseTimer = startTimer(this.now);
       await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end));
+      log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: true });
       place.state.cursor = end - wrong.length;
       return;
     }
@@ -640,13 +688,17 @@ class Context {
     const end = snap.endIndex - 1;
     const start = Math.max(1, end - wrong.length);
     if (start < end) {
+      const eraseTimer = startTimer(this.now);
       await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end));
+      log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: false });
     }
   }
 
   private async withToken<T>(fn: (token: string) => Promise<T>): Promise<T> {
     // The lock outlives every Google call made while it is held
-    await this.deps.store.extendLock(this.job.id, this.deps.lockTtlSec ?? 60, this.lock);
+    if (!(await this.deps.store.extendLock(this.job.id, this.deps.lockTtlSec ?? 60, this.lock))) {
+      log.warn("sync.lock_extend_failed", { ...this.tag, action: this.job.currentAction });
+    }
     try {
       return await fn(this.job.accessToken);
     } catch (err: unknown) {
@@ -654,9 +706,11 @@ class Context {
       if (code === 401 && this.job.refreshToken) {
         const refreshed = await this.deps.refresh(this.job.refreshToken);
         if (refreshed) {
+          log.info("sync.token_refreshed", { ...this.tag, action: this.job.currentAction });
           this.job.accessToken = refreshed.access_token;
           return await fn(this.job.accessToken);
         }
+        log.warn("sync.token_refresh_failed", { ...this.tag, action: this.job.currentAction });
       }
       throw err;
     }

@@ -1,5 +1,6 @@
 import { google, type docs_v1 } from "googleapis";
 import { indexedText } from "./doc-import";
+import { log } from "./log";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -14,6 +15,7 @@ async function withRetry<T>(
       const isRetryable = code === 429 || (typeof code === "number" && code >= 500);
       if (!isRetryable || attempt === maxAttempts) throw err;
       const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500;
+      log.warn("google.retry", { attempt, maxAttempts, status: code, delayMs: Math.round(delay) });
       await new Promise((r) => setTimeout(r, delay));
     }
   }
@@ -22,9 +24,7 @@ async function withRetry<T>(
 
 export function getOAuth2Client(redirectUri?: string) {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-    console.error(
-      "Missing required environment variables: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env.local"
-    );
+    log.error("google.misconfigured", { message: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env.local" });
   }
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -257,7 +257,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
     }
     return null;
   } catch (error) {
-    console.error("Token refresh error:", error);
+    log.warn("google.token_refresh_failed", { err: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }

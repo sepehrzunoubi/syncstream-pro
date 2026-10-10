@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadOwnedJob, readJobId, jobResponse, mutateJob } from "@/lib/sync-api";
+import { withRoute } from "@/lib/route";
+import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
+export const POST = withRoute(async (req: NextRequest) => {
   const loaded = await loadOwnedJob(req, await readJobId(req));
   if (loaded instanceof NextResponse) return loaded;
   const { user, job } = loaded;
+  const limited = await rateLimited(req, "sync.control", { max: 60, windowMs: 60_000, userId: user.userId });
+  if (limited) return limited;
 
   const result = await mutateJob(
     job.id,
@@ -22,4 +26,4 @@ export async function POST(req: NextRequest) {
   );
   if (result instanceof NextResponse) return result;
   return jobResponse(user, result);
-}
+});

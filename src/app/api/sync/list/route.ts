@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { applyAuthCookies, resolveUser, unauthorized } from "@/lib/auth";
 import { getStore, toPublicJob } from "@/lib/sync-store";
+import { withRoute } from "@/lib/route";
+import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 /** All of the signed-in user's jobs, newest first. Vanished ids are pruned. */
-export async function GET(req: NextRequest) {
+export const GET = withRoute(async (req: NextRequest) => {
   const user = await resolveUser(req);
   if (!user) return unauthorized();
+  const limited = await rateLimited(req, "sync.read", { max: 240, windowMs: 60_000, userId: user.userId });
+  if (limited) return limited;
   const store = getStore();
   const ids = await store.listUserJobIds(user.userId);
   const jobs = await Promise.all(ids.map((id) => store.getJob(id)));
@@ -22,4 +26,4 @@ export async function GET(req: NextRequest) {
   }
   result.sort((a, b) => b.createdAt - a.createdAt);
   return applyAuthCookies(NextResponse.json({ jobs: result, now: Date.now() }), user);
-}
+});

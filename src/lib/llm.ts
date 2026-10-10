@@ -12,6 +12,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { log } from "./log";
 
 export type Role = "system" | "user" | "assistant";
 export interface ChatMessage { role: Role; content: string }
@@ -261,7 +262,7 @@ export function streamChat(req: ChatRequest, env: NodeJS.ProcessEnv = process.en
         }
         if (!finished) send({ error: "The model closed the connection before finishing." });
       } catch (err) {
-        if (!(req.signal?.aborted)) console.error("Style engine request failed:", err);
+        if (!(req.signal?.aborted)) log.error("style.request_failed", { provider: cfg.provider, err });
         send({ error: describeLlmError(err, cfg) });
       } finally {
         controller.close();

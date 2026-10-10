@@ -13,6 +13,10 @@ import { getDocument, snapshotOf } from "@/lib/google";
 import { applyAuthCookies, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { normalizeText, parseFormat, type DocListState, type ListType, type RichFormat } from "@/lib/rich-text";
 import { planSpots } from "@/lib/spots";
+import { withRoute } from "@/lib/route";
+import { rateLimited } from "@/lib/rate-limit";
+import { log, startTimer, uidTag } from "@/lib/log";
+import { reportError } from "@/lib/monitor";
 
 export const dynamic = "force-dynamic";
 
@@ -43,9 +47,11 @@ const MAX_CONTEXT_JSON = 400_000;
 const MAX_SEGMENTS = 300;
 const DOC_CHANGED = "This document changed in Google Docs. SyncStream reloaded it with your additions in place. Check them, then start again.";
 
-export async function POST(req: NextRequest) {
+export const POST = withRoute(async (req: NextRequest) => {
   const user = await resolveUser(req);
   if (!user) return unauthorized();
+  const limited = await rateLimited(req, "sync.start", { max: 10, windowMs: 60_000, userId: user.userId });
+  if (limited) return limited;
 
   if (process.env.VERCEL && !hasRedis()) {
     return NextResponse.json(
@@ -54,6 +60,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const done = startTimer();
   const big = tooLarge(req, 6_000_000);
   if (big) return big;
   let body: StartBody;
@@ -268,15 +275,16 @@ export async function POST(req: NextRequest) {
     await enqueueProcess(id, 0, Math.ceil(startInMinutes * 60));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("Sync start failed:", err);
+    await reportError(err, { event: "sync.start_failed", route: "/api/sync/start", method: "POST", uid: uidTag(user.userId), jobId: id, ms: done() });
     await store.deleteJob(id).catch(() => {});
     await store.removeUserJob(user.userId, id).catch(() => {});
     await store.removeActiveJob(id).catch(() => {});
     return NextResponse.json({ error: `Failed to start sync: ${message}` }, { status: 500 });
   }
 
+  log.info("sync.start", { job: id, uid: uidTag(user.userId), chars: plan.totalChars, actions: plan.actions.length, segments: segments?.length ?? 0, totalMin: Math.round(plan.totalMs / 60_000), startInMin: startInMinutes, ms: done() });
   return applyAuthCookies(
     NextResponse.json({ job: toPublicJob(job), totalMs: plan.totalMs, breaks: plan.breaks, seed: plan.seed }),
     user
   );
-}
+});

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getStore, isTerminal } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
 import { secretEquals } from "@/lib/secret";
+import { withRoute } from "@/lib/route";
+import { log } from "@/lib/log";
+import { reportError } from "@/lib/monitor";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +18,7 @@ const LATE_MS = 2 * 60 * 1000;
  * recovers from crashes on its own (lock expiry + re-kick), so this only
  * needs to run occasionally.
  */
-export async function GET(req: NextRequest) {
+export const GET = withRoute(async (req: NextRequest) => {
   const secret = process.env.CRON_SECRET?.trim();
   if (!secret || !secretEquals(req.headers.get("authorization"), `Bearer ${secret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -41,12 +44,16 @@ export async function GET(req: NextRequest) {
     const overdue = now - dueAt;
     if (idle > STALL_MS && overdue > LATE_MS) {
       if (await store.tryScheduleKick(id, 120)) {
-        console.warn(`[sync-watchdog] job ${id} looks stuck (${Math.round(idle / 1000)}s idle) — re-kicking`);
-        await enqueueProcess(id, job.generation, 0).catch((err) => console.error("[sync-watchdog] enqueue failed", err));
+        const idleSec = Math.round(idle / 1000);
+        log.warn("sync.watchdog_rekick", { job: id, idleSec, overdueSec: Math.round(overdue / 1000), status: job.status });
+        // The runner recovers on its own; a stuck job means a queue message was lost, which the operator should know about
+        await reportError(new Error(`Sync job stuck for ${idleSec}s, re-kicked`), { event: "sync.stuck", route: "/api/cron/sync-watchdog", jobId: id, idleSec, status: job.status });
+        await enqueueProcess(id, job.generation, 0).catch((err) => reportError(err, { event: "sync.watchdog_enqueue_failed", route: "/api/cron/sync-watchdog", jobId: id }));
         restarted++;
       }
     }
   }
 
+  if (restarted || cleaned) log.info("sync.watchdog", { scanned: ids.length, restarted, cleaned });
   return NextResponse.json({ scanned: ids.length, restarted, cleaned });
-}
+});

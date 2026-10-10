@@ -5,6 +5,10 @@ import { getBaseUrl } from "@/lib/base-url";
 import { getQStashBaseUrl } from "@/lib/qstash";
 import { llmConfig } from "@/lib/llm";
 import { styleReady } from "@/lib/style-spec";
+import { hasRedis } from "@/lib/sync-store";
+import { withRoute } from "@/lib/route";
+import { rateLimited } from "@/lib/rate-limit";
+import pkg from "../../../../package.json";
 
 export const dynamic = "force-dynamic";
 
@@ -20,15 +24,33 @@ function describe(name: string): { present: boolean; length: number; prefix: str
   };
 }
 
+/** What any uptime monitor may see: liveness and which backends are configured, never a secret */
+function summary() {
+  return {
+    service: "syncstream",
+    version: pkg.version,
+    deployment: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local",
+    env: process.env.VERCEL_ENV || process.env.NODE_ENV || "development",
+    uptime: Math.round(process.uptime()),
+    redis: { configured: hasRedis() },
+    qstash: { configured: !!process.env.QSTASH_TOKEN?.trim(), signing: !!(process.env.QSTASH_CURRENT_SIGNING_KEY?.trim() && process.env.QSTASH_NEXT_SIGNING_KEY?.trim()) },
+    errorWebhook: { configured: !!process.env.ERROR_WEBHOOK_URL?.trim() },
+    rateLimit: { enabled: process.env.RATE_LIMIT_DISABLED !== "1", store: hasRedis() ? "redis" : "memory" },
+  };
+}
+
 /**
- * Live configuration check. Only available to a signed-in user.
- * Never returns secret values, only whether they are present and whether
- * the service accepts them.
+ * Health check. Anyone gets the liveness summary ({ok, version, uptime,
+ * what is configured}); a signed-in user also gets the live configuration
+ * checks. Secret values are never returned, only whether they are present
+ * and whether the service accepts them.
  */
-export async function GET(req: NextRequest) {
+export const GET = withRoute(async (req: NextRequest) => {
+  const limited = await rateLimited(req, "health", { max: 30, windowMs: 60_000 });
+  if (limited) return limited;
   const signedIn = req.cookies.has("google_access_token") || req.cookies.has("google_refresh_token");
   if (!signedIn) {
-    return NextResponse.json({ error: "Sign in first, then open this page again." }, { status: 401 });
+    return NextResponse.json({ ok: true, ...summary() }, { headers: { "Cache-Control": "no-store" } });
   }
 
   const env = {
@@ -42,6 +64,7 @@ export async function GET(req: NextRequest) {
     QSTASH_CURRENT_SIGNING_KEY: describe("QSTASH_CURRENT_SIGNING_KEY"),
     QSTASH_NEXT_SIGNING_KEY: describe("QSTASH_NEXT_SIGNING_KEY"),
     CRON_SECRET: describe("CRON_SECRET"),
+    ERROR_WEBHOOK_URL: describe("ERROR_WEBHOOK_URL"),
     LLM_PROVIDER: describe("LLM_PROVIDER"),
     LLM_BASE_URL: describe("LLM_BASE_URL"),
     LLM_MODEL: describe("LLM_MODEL"),
@@ -113,5 +136,5 @@ export async function GET(req: NextRequest) {
   };
 
   const allOk = Object.entries(checks).every(([name, c]) => c.ok || name === "styleEngine");
-  return NextResponse.json({ ok: allOk, deployment: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local", checks, env });
-}
+  return NextResponse.json({ ok: allOk, ...summary(), checks, env }, { headers: { "Cache-Control": "no-store" } });
+});

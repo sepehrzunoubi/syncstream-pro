@@ -2,14 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { applyAuthCookies, resolveUser, unauthorized, tooLarge } from "@/lib/auth";
 import { getBaseUrl } from "@/lib/base-url";
 import { IMAGE_TYPES, MAX_IMAGE_BYTES, saveImage } from "@/lib/image-store";
+import { withRoute } from "@/lib/route";
+import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 /** Upload an image (as a data URL) so Google Docs can fetch it during a sync. */
-export async function POST(req: NextRequest) {
+export const POST = withRoute(async (req: NextRequest) => {
   const user = await resolveUser(req);
   if (!user) return unauthorized();
 
+  const limited = await rateLimited(req, "images.upload", { max: 30, windowMs: 60_000, userId: user.userId });
+  if (limited) return limited;
   const big = tooLarge(req, MAX_IMAGE_BYTES * 2);
   if (big) return big;
   const body = (await req.json().catch(() => null)) as { dataUrl?: unknown } | null;
@@ -24,4 +28,4 @@ export async function POST(req: NextRequest) {
   }
   const id = await saveImage(m[1], m[2]);
   return applyAuthCookies(NextResponse.json({ url: `${getBaseUrl(req)}/api/images/${id}` }), user);
-}
+});

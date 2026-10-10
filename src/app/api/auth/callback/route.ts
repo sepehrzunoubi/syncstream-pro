@@ -3,16 +3,21 @@ import { getTokensFromCode, getUserInfo } from "@/lib/google";
 import { getBaseUrl } from "@/lib/base-url";
 import { OAUTH_STATE_COOKIE, setAccessCookie, setRefreshCookie, setUidCookie } from "@/lib/auth";
 import { secretEquals } from "@/lib/secret";
+import { withRoute } from "@/lib/route";
+import { rateLimited } from "@/lib/rate-limit";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest) {
+export const GET = withRoute(async (req: NextRequest) => {
+  const limited = await rateLimited(req, "auth.callback", { max: 20, windowMs: 60_000 });
+  if (limited) return limited;
   const baseUrl = getBaseUrl(req);
   const code = req.nextUrl.searchParams.get("code");
   const error = req.nextUrl.searchParams.get("error");
 
   if (error) {
-    console.error("OAuth error from Google:", error);
+    log.warn("auth.oauth_error", { error: String(error).slice(0, 100) });
     return NextResponse.redirect(new URL(`/?error=${error}`, baseUrl));
   }
   if (!code) {
@@ -44,7 +49,7 @@ export async function GET(req: NextRequest) {
     }
     return response;
   } catch (err) {
-    console.error("OAuth callback error:", err);
+    log.error("auth.callback_failed", { err });
     return NextResponse.redirect(new URL("/?error=auth_failed", baseUrl));
   }
-}
+});

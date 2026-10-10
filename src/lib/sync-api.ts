@@ -3,6 +3,7 @@ import { enqueueProcess } from "./qstash";
 import { applyAuthCookies, resolveUser, unauthorized, type SessionUser } from "./auth";
 import { getStore, toPublicJob, type ControlCommand, type SyncJob } from "./sync-store";
 import { applyControl } from "./sync-runner";
+import { log, uidTag } from "./log";
 
 /** Resolve the signed-in user and the job they asked for, enforcing ownership. */
 export async function loadOwnedJob(
@@ -14,6 +15,8 @@ export async function loadOwnedJob(
   if (!jobId) return NextResponse.json({ error: "Missing jobId" }, { status: 400 });
   const job = await getStore().getJob(jobId);
   if (!job || job.userId !== user.userId) {
+    // Someone asking for another account's job is worth a line; a vanished job is routine
+    if (job) log.warn("sync.job_forbidden", { uid: uidTag(user.userId), job: jobId, method: req.method });
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
   return { user, job };
@@ -78,8 +81,9 @@ export async function mutateJob(
   const current = await store.getJob(jobId);
   if (!current) return NextResponse.json({ error: "Job not found" }, { status: 404 });
   await store.setControl(jobId, intent);
+  log.info("sync.control_intent", { job: jobId, uid: uidTag(current.userId), intent, waitedMs: LOCK_SPIN_MS });
   // A worker applies the intent within seconds instead of at the next scheduled delivery
-  try { await enqueueProcess(jobId, current.generation, 2); } catch { /* the running worker still sees it at its next check */ }
+  try { await enqueueProcess(jobId, current.generation, 2); } catch (err) { log.warn("sync.control_kick_failed", { job: jobId, intent, err: err instanceof Error ? err.message : String(err) }); }
   const t = Date.now();
   return intent === "pause"
     ? { ...current, status: "paused", activity: "Pausing", pausedAt: t, lastUpdate: t }

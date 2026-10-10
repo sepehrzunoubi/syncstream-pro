@@ -53,6 +53,9 @@ cp .env.example .env.local
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | production | Persistent job state across serverless instances |
 | `QSTASH_URL` / `QSTASH_TOKEN` / `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY` | production | Guaranteed background delivery of sync steps. Copy all four from the QStash console; `QSTASH_URL` selects your account's region |
 | `CRON_SECRET` | production | Protects `/api/cron/sync-watchdog` |
+| `ERROR_WEBHOOK_URL` | optional | Incoming webhook (Slack, Discord or any HTTPS endpoint) that receives unhandled errors and failed syncs; see Operations |
+| `RATE_LIMIT_DISABLED` | optional | `1` turns per-route rate limiting off (local dev, tests) |
+| `LOG_LEVEL` / `LOG_PRETTY` | optional | Log threshold (`debug`, `info`, `warn`, `error`) and `0`/`1` to force JSON or readable lines |
 | `LLM_PROVIDER` | Style engine | `ollama` (default), `openai` (any OpenAI-compatible server) or `anthropic` (cloud, for testing prompts) |
 | `LLM_BASE_URL` | Style engine | The model server, default `http://127.0.0.1:11434` for Ollama |
 | `LLM_MODEL` | Style engine | Model name, default `llama3.1` |
@@ -238,11 +241,59 @@ The problem it solves: we have **x**, what users typed, and **z**, the output we
 
 **Plumbing without a model.** `npm run style:mock` starts a fake Ollama on port 11434 that answers with a crude rewrite; use it to check the lab and the tab end to end. Its scores mean nothing.
 
+## Operations
+
+### Logs
+
+Every server-side log line is one JSON object on stdout (info) or stderr (warn, error): `{"ts","level","event",...fields}`. Events are dotted names (`sync.write`, `docs.edit`, `route.failed`, `rate_limit.hit`), and every line about a sync carries `job` and `uid`. User ids only ever appear as `uid`, a short SHA-256 prefix; tokens, cookies, email addresses and document text are never logged (field names that look like secrets are redacted, emails inside strings are masked, long strings are cut). In development the same records print as one readable line; set `LOG_PRETTY=0` (or `LOG_JSON=1`) to force JSON locally, and `LOG_LEVEL=debug|info|warn|error` to change the threshold (default `info`).
+
+To ship them: on Vercel, add a Log Drain (Project → Settings → Log Drains) to Datadog, Axiom, Better Stack or any HTTPS endpoint; the drain receives the lines as written, so they can be parsed as JSON. With Docker, point the container's log driver at your collector (`--log-driver`), or tail stdout/stderr with Vector, Fluent Bit or Promtail and parse as JSON. Useful queries: `event:sync.failed` (every runner failure, with `kind` = `auth`, `not_found`, `quota`, `rejected` or `transient`), `event:sync.write` (one line per Docs batch: `chars`, `requests`, `docsMs`, `snapshotMs`), `event:sync.stale_revision` and `event:google.retry` (contention and Google hiccups), `event:rate_limit.hit`, `event:route.failed` (unhandled errors, as JSON 500s).
+
+### Error reporting
+
+Set `ERROR_WEBHOOK_URL` to be told when something goes wrong: unhandled errors in any API route, a sync that gave up (`sync.error`), a sync the watchdog had to re-kick (`sync.stuck`), a failed sync start or resume. The app POSTs a compact JSON payload with a 3s timeout:
+
+```json
+{ "text": "[syncstream production] sync.error at /api/sync/process: …",
+  "service": "syncstream", "env": "production", "event": "sync.error",
+  "message": "…", "stack": "…(truncated)", "context": { "route": "…", "uid": "…", "jobId": "…" }, "ts": "…" }
+```
+
+`text` is a one-line summary, so a Slack or Discord incoming webhook renders it as is; generic receivers get the structured fields. The same message on the same route is sent at most once a minute per process, so an error storm is one notification. A webhook that is down or slow is logged as a warning and never affects the request.
+
+### Rate limits
+
+Budgets are per minute, keyed by the signed-in user (a hashed id) or, before sign-in, by client IP (first hop of `x-forwarded-for`, else `x-real-ip`). Over budget, a route answers `429 {"error":…,"code":"rate_limited"}` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers. Counters live in Upstash Redis when it is configured (one Lua round trip per request), otherwise in a bounded in-memory map; if Redis fails the limiter lets the request through and logs `rate_limit.store_error`. `RATE_LIMIT_DISABLED=1` turns limiting off for local development and tests.
+
+| Route | Key | Budget | Why |
+| --- | --- | --- | --- |
+| `GET /api/auth/login`, `GET /api/auth/callback` | IP | 20 | OAuth round trips |
+| `GET /api/auth/me` | IP | 120 | Session check, polled by the dashboard |
+| `POST /api/docs/edit` | user | 120 | Autosave is debounced ~700ms, so continuous typing stays near 60 |
+| `GET /api/docs/content` | user | 60 | Full document read |
+| `GET /api/docs/pages` | user | 90 | PDF export, refreshed 1.5s after edits |
+| `GET /api/docs/revision` | user | 120 | Polled every few seconds |
+| `GET /api/docs` | user | 60 | Drive listing |
+| `POST /api/docs/create` | user | 20 | |
+| `POST /api/docs/rename` | user | 30 | |
+| `POST /api/images` | user | 30 | Uploads into Redis |
+| `POST /api/sync/start` | user | 10 | Plans a job and publishes to QStash |
+| `GET /api/sync/list`, `GET /api/sync/status`, `GET /api/sync/source` | user | 240 | Polled while a sync runs |
+| `POST /api/sync/pause`, `resume`, `cancel`, `dismiss` | user | 60 | |
+| `POST /api/style/transform` | user | 6 | Minutes of model time each |
+| `GET /api/style/status` | user | 60 | |
+| `GET /api/health` | IP | 30 | |
+| `POST /api/sync/process`, `GET /api/cron/sync-watchdog`, `GET /api/images/[id]` | — | none | Internal (signature or secret protected) or fetched by Google |
+
+### Health endpoint
+
+`GET /api/health` answers for anyone with liveness and configuration presence, never a secret value: `{ ok, service, version, deployment, env, uptime, redis: {configured}, qstash: {configured, signing}, errorWebhook: {configured}, rateLimit: {enabled, store} }`. Point an uptime monitor at it. A signed-in user additionally gets live checks (`checks.redis` pings Redis, `checks.qstash` lists schedules with the token, Google and Style engine configuration) and, per variable, whether it is present, its length and whether it has stray whitespace.
+
 ## Development
 
 ```bash
 npm run dev        # local server (in-memory store, direct self-calls instead of QStash)
-npm test           # planner, runner, document model, import, formatting requests, pagination, page setup, secrets, style unit tests
+npm test           # planner, runner, document model, import, formatting requests, pagination, page setup, secrets, style, rate limiter, logger, monitor and route wrapper unit tests
 npm run style:fingerprint   # print the dataset's fingerprint and rules
 npm run style:eval -- --loo # run every prompt candidate against the model and rank them
 npm run style:compile -- --candidate rules-fewshot   # ship a candidate
