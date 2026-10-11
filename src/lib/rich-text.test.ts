@@ -266,6 +266,8 @@ test("list levels and styles: bullets are created with leading tabs that Docs re
   const { bulletRequests, SegmentFormat, paragraphFromAttrs, paragraphRequest, paragraphDelta, richToEditorJSON } = await import("./rich-text");
   const reqs = bulletRequests([{ start: 1, end: 5, level: 0 }, { start: 5, end: 9, level: 2 }], "NUMBERED_DECIMAL_NESTED");
   assert.deepEqual(reqs, [
+    // Indents left by earlier bullets would add levels: every item starts from zero
+    { updateParagraphStyle: { range: { startIndex: 1, endIndex: 9 }, paragraphStyle: { indentStart: { magnitude: 0, unit: "PT" }, indentFirstLine: { magnitude: 0, unit: "PT" } }, fields: "indentStart,indentFirstLine" } },
     { insertText: { location: { index: 5 }, text: "\t\t" } },
     { createParagraphBullets: { range: { startIndex: 1, endIndex: 11 }, bulletPreset: "NUMBERED_DECIMAL_NESTED" } },
   ]);

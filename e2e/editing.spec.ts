@@ -70,8 +70,11 @@ test.describe("direct edits save to Google Docs", () => {
     await app.waitForSave(1);
     // The paragraph, newline included; any old bullets are cleared before the new ones are made
     const range = { startIndex: api.fixture.at.closing, endIndex: api.fixture.at.closing + CLOSING_TEXT.length + 1 };
+    const zeroIndent = { updateParagraphStyle: { range, paragraphStyle: { indentStart: { magnitude: 0, unit: "PT" }, indentFirstLine: { magnitude: 0, unit: "PT" } }, fields: "indentStart,indentFirstLine" } };
     expect(api.edits[0].requests).toEqual([
       { deleteParagraphBullets: { range } },
+      // Indents left by earlier bullets would count as levels, so the item starts from zero
+      zeroIndent,
       { createParagraphBullets: { range, bulletPreset: "BULLET_DISC_CIRCLE_SQUARE" } },
     ]);
     // Pressing it again leaves the list: bullets removed, the paragraph's own indents restored
@@ -97,14 +100,15 @@ test.describe("direct edits save to Google Docs", () => {
     // (one for the item that was already nested, one for the item that was just nested)
     const { at } = api.fixture;
     const listEnd = at.h2; // the list runs up to the heading that follows it
-    expect(api.kinds()).toEqual(["deleteParagraphBullets", "insertText", "insertText", "createParagraphBullets"]);
+    expect(api.kinds()).toEqual(["deleteParagraphBullets", "updateParagraphStyle", "insertText", "insertText", "createParagraphBullets"]);
     expect(api.requests("deleteParagraphBullets")).toEqual([{ range: { startIndex: at.bullet1, endIndex: listEnd } }]);
+    expect(api.requests("updateParagraphStyle")).toEqual([{ range: { startIndex: at.bullet1, endIndex: listEnd }, paragraphStyle: { indentStart: { magnitude: 0, unit: "PT" }, indentFirstLine: { magnitude: 0, unit: "PT" } }, fields: "indentStart,indentFirstLine" }]);
     expect(api.requests("insertText")).toEqual([{ location: { index: at.bullet3 }, text: "\t" }, { location: { index: at.bullet2 }, text: "\t" }]);
     expect(api.requests("createParagraphBullets")).toEqual([{ range: { startIndex: at.bullet1, endIndex: listEnd + 2 }, bulletPreset: "BULLET_DISC_CIRCLE_SQUARE" }]);
     await page.keyboard.press("Shift+Tab");
     await expect.poll(level).toBe(0);
     await app.waitForSave(2);
-    expect(api.edits[1].requests.map((r) => Object.keys(r)[0])).toEqual(["deleteParagraphBullets", "insertText", "createParagraphBullets"]);
+    expect(api.edits[1].requests.map((r) => Object.keys(r)[0])).toEqual(["deleteParagraphBullets", "updateParagraphStyle", "insertText", "createParagraphBullets"]);
   });
 
   test("find and replace: Ctrl+F counts matches, Ctrl+H replaces all and saves the replacements", async ({ app, api, page }) => {

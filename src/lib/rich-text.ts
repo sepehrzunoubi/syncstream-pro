@@ -595,6 +595,9 @@ export type DocListState = { type: ListType; start: number; level?: number; pres
 export function bulletRequests(paragraphs: { start: number; end: number; level: number }[], preset: string): DocsRequest[] {
   if (!paragraphs.length) return [];
   const requests: DocsRequest[] = [];
+  // A paragraph whose bullets were removed keeps the indent they gave it, and Docs adds that
+  // indent back on top of the tabs when bullets are created again: start every item from zero
+  requests.push({ updateParagraphStyle: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end }, paragraphStyle: { indentStart: { magnitude: 0, unit: "PT" }, indentFirstLine: { magnitude: 0, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
   let tabs = 0;
   for (const p of [...paragraphs].reverse()) {
     if (p.level > 0) { requests.push({ insertText: { location: { index: p.start }, text: "\t".repeat(p.level) } }); tabs += p.level; }

@@ -367,7 +367,9 @@ export class StubDocument {
       const tabs = tabsOf(p);
       this.items.splice(p.start, tabs);
       const nl = this.items[p.nl - tabs] as Extract<Item, { k: "nl" }>;
-      nl.bullet = { listId, nestingLevel: nl.bullet ? nl.bullet.nestingLevel ?? 0 : Math.min(8, tabs - baseline) };
+      // The indent left behind by removed bullets counts as levels too
+      const leftover = nl.bullet ? 0 : Math.max(0, Math.round((nl.ps.indentStart?.magnitude ?? 0) / 36) - 1);
+      nl.bullet = { listId, nestingLevel: nl.bullet ? nl.bullet.nestingLevel ?? 0 : Math.min(8, tabs - baseline + leftover) };
       nl.ps.indentFirstLine = { magnitude: 18 + 36 * nl.bullet.nestingLevel, unit: "PT" };
       nl.ps.indentStart = { magnitude: 36 * (nl.bullet.nestingLevel + 1), unit: "PT" };
     }
