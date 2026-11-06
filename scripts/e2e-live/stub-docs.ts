@@ -28,7 +28,7 @@ type Item =
   | { k: "nl"; ts: TextStyle; ps: ParagraphStyle; bullet?: Bullet }
   | { k: "tbl"; columns: number }
   | { k: "row" }
-  | { k: "cell"; style?: docs_v1.Schema$TableCellStyle }
+  | { k: "cell"; style?: docs_v1.Schema$TableCellStyle; covered?: boolean }
   | { k: "tend" };
 
 const STRUCTURAL = new Set(["sb", "tbl", "row", "cell", "tend"]);
@@ -80,6 +80,7 @@ interface Request {
   createParagraphBullets?: { range: { startIndex: number; endIndex: number }; bulletPreset: string };
   deleteParagraphBullets?: { range: { startIndex: number; endIndex: number } };
   updateTableCellStyle?: docs_v1.Schema$UpdateTableCellStyleRequest;
+  mergeTableCells?: docs_v1.Schema$MergeTableCellsRequest;
 }
 
 export class StubDocument {
@@ -263,6 +264,7 @@ export class StubDocument {
     if (r.createParagraphBullets) return this.createParagraphBullets(r.createParagraphBullets.range.startIndex, r.createParagraphBullets.range.endIndex, r.createParagraphBullets.bulletPreset);
     if (r.deleteParagraphBullets) return this.deleteParagraphBullets(r.deleteParagraphBullets.range.startIndex, r.deleteParagraphBullets.range.endIndex);
     if (r.updateTableCellStyle) return this.updateTableCellStyle(r.updateTableCellStyle);
+    if (r.mergeTableCells) return this.mergeTableCells(r.mergeTableCells);
     throw bad(`The stub does not model ${key} requests`);
   }
 
@@ -325,6 +327,37 @@ export class StubDocument {
       return;
     }
     throw bad(`Invalid table cell location: row ${loc?.rowIndex}, column ${loc?.columnIndex}`);
+  }
+
+  /**
+   * Cells merged into their head (the range's top left). The stub's tables list every cell of their
+   * grid, the covered ones too (each keeps its own newline); it merges cells that hold no text.
+   */
+  mergeTableCells(m: docs_v1.Schema$MergeTableCellsRequest): void {
+    const range = m.tableRange;
+    const loc = range?.tableCellLocation;
+    const at = loc?.tableStartLocation?.index;
+    if (at == null || this.items[at]?.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    const rows: number[][] = [];
+    for (let i = at + 1; i < this.items.length && this.items[i].k !== "tend"; i++) {
+      if (this.items[i].k === "row") rows.push([]);
+      else if (this.items[i].k === "cell") rows[rows.length - 1].push(i);
+    }
+    const r0 = loc?.rowIndex ?? 0;
+    const c0 = loc?.columnIndex ?? 0;
+    const rs = range?.rowSpan ?? 1;
+    const cs = range?.columnSpan ?? 1;
+    if (rs < 1 || cs < 1 || r0 < 0 || c0 < 0 || r0 + rs > rows.length || rows.slice(r0, r0 + rs).some((row) => c0 + cs > row.length)) throw bad("The table range is out of the table's bounds");
+    for (let r = r0; r < r0 + rs; r++) for (let c = c0; c < c0 + cs; c++) {
+      const cell = this.items[rows[r][c]] as Extract<Item, { k: "cell" }>;
+      if ((cell.style?.rowSpan ?? 1) > 1 || (cell.style?.columnSpan ?? 1) > 1 || cell.covered) throw bad("The range overlaps merged cells");
+      const next = this.items[rows[r][c] + 1];
+      const after = this.items[rows[r][c] + 2];
+      if ((r !== r0 || c !== c0) && !(next?.k === "nl" && (!after || ["cell", "row", "tend"].includes(after.k)))) throw bad("The stub merges cells that hold no text");
+    }
+    for (let r = r0; r < r0 + rs; r++) for (let c = c0; c < c0 + cs; c++) if (r !== r0 || c !== c0) (this.items[rows[r][c]] as Extract<Item, { k: "cell" }>).covered = true;
+    const head = this.items[rows[r0][c0]] as Extract<Item, { k: "cell" }>;
+    head.style = { ...(head.style ?? {}), rowSpan: rs, columnSpan: cs };
   }
 
   deleteContentRange(start: number, end: number): void {

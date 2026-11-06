@@ -89,3 +89,62 @@ test("a pasted table's cell backgrounds reach the document once the table is in 
   // The cells' text is the sync's to type
   assert.deepEqual(additions(base, editor).segments.map((x) => x.text), ["Name", "Score", "Ada", "90"]);
 });
+
+test("a pasted table with merged cells is made once, merged as the editor has it, and its text goes into the right cells", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("merged");
+  await docs.batchUpdate(id, [
+    { insertText: { location: { index: 1 }, text: "Intro\nAfter" } },
+    { updateParagraphStyle: { range: { startIndex: 1, endIndex: 2 }, paragraphStyle: { namedStyleType: "HEADING_2" }, fields: "namedStyleType" } },
+  ] as never);
+  let base: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  const cell = (text: string, colspan = 1, rowspan = 1, background: string | null = null): EditorNode => ({ type: "tableCell", attrs: { colspan, rowspan, background }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text, marks: [{ type: "syncAdd" }] }] }] });
+  // Three columns wide, no row with three cells: a heading cell across all three; a cell two rows
+  // tall, and beside it a cell two columns wide in each row (the last one shaded)
+  const table: EditorNode = { type: "table", attrs: {}, content: [
+    { type: "tableRow", attrs: {}, content: [cell("Wide", 3)] },
+    { type: "tableRow", attrs: {}, content: [cell("Tall", 1, 2), cell("B", 2)] },
+    { type: "tableRow", attrs: {}, content: [cell("C", 2, 1, "#d9ead3")] },
+  ] };
+  let editor: EditorNode = { type: "doc", content: [base.content![0], table, base.content![1]] };
+  const structural: boolean[] = [];
+  for (let round = 0; round < 4; round++) {
+    const out = directEdits(base, editor);
+    if (!out.requests.length) break;
+    structural.push(!!out.structural);
+    for (const r of out.requests) assert.ok(EDIT_REQUESTS.has(Object.keys(r)[0]), `${Object.keys(r)[0]} is an edit the route takes`);
+    await docs.batchUpdate(id, out.requests as never);
+    if (out.structural) {
+      base = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+      editor = adoptStructure(base, editor);
+    } else base = out.saved;
+  }
+  // The table is made once (then the newline Docs puts before a new table is taken out), and nothing is left to save
+  assert.deepEqual(structural.filter(Boolean), [true]);
+  assert.equal(directEdits(base, editor).requests.length, 0);
+  const doc = await docs.get(id);
+  const tables = (doc.body?.content ?? []).filter((e) => e.table);
+  assert.equal(tables.length, 1);
+  const spans = tables[0].table!.tableRows!.map((r) => r.tableCells!.map((c) => [c.tableCellStyle?.rowSpan ?? 1, c.tableCellStyle?.columnSpan ?? 1]));
+  assert.deepEqual(spans, [[[1, 3], [1, 1], [1, 1]], [[2, 1], [1, 2], [1, 1]], [[1, 1], [1, 2], [1, 1]]]);
+  // Read back, the editor's shape: the covered cells are left out
+  const read = importDoc(doc).nodes.find((n) => n.type === "table")!;
+  assert.deepEqual(read.content!.map((r) => r.content!.map((c) => [c.attrs?.colspan, c.attrs?.rowspan, c.attrs?.background])), [[[3, 1, null]], [[1, 2, null], [2, 1, null]], [[2, 1, "#d9ead3"]]]);
+  // The sync types each cell's text where additions put it
+  const { segments } = additions(base, editor);
+  const typed = segments.slice().sort((a, b) => b.at - a.at).map((x) => ({ insertText: { location: { index: x.at }, text: x.text } }));
+  await docs.batchUpdate(id, typed as never);
+  const after = importDoc(await docs.get(id)).nodes;
+  const cellText = (t: EditorNode) => t.content!.map((r) => r.content!.map((c) => (c.content ?? []).map((p) => (p.content ?? []).map((x) => x.text ?? "").join("")).join("|")));
+  assert.deepEqual(cellText(after.find((n) => n.type === "table")!), [["Wide"], ["Tall", "B"], ["C"]]);
+  assert.deepEqual(after.filter((n) => n.type === "paragraph").map((p) => [(p.content ?? []).map((x) => x.text ?? "").join(""), p.attrs?.styleName]), [["Intro", "h2"], ["After", "normal"]]);
+});
+
+test("deleting the document's last paragraph leaves the one before it with its own style (Docs keeps the last newline, and its style)", async () => {
+  const { target, after } = await save([
+    { insertText: { location: { index: 1 }, text: "Title\nBody text" } },
+    { updateParagraphStyle: { range: { startIndex: 1, endIndex: 2 }, paragraphStyle: { namedStyleType: "HEADING_1" }, fields: "namedStyleType" } },
+  ], (base) => [base[0]]);
+  assert.deepEqual(text(target), ["Title"]);
+  assert.deepEqual(after.map((p) => [(p.content ?? []).map((c) => c.text ?? "").join(""), p.attrs?.styleName]), [["Title", "h1"]]);
+});

@@ -394,7 +394,32 @@ function paragraphHasPending(target: Tok[], j: number): boolean {
 
 // ── Table structure ─────────────────────────────────────────────────────────
 
-interface TableShape { id: string; at: number; rows: { rid: string | null; cells: { cid: string | null }[] }[]; endAt: number }
+interface TableShape { id: string; at: number; rows: { rid: string | null; cells: { cid: string | null; colspan: number; rowspan: number }[] }[]; endAt: number }
+
+const spanCount = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v > 1 ? v : 1);
+
+/**
+ * Where each cell of a table sits in its grid (Docs addresses cells by grid row and column, merged
+ * ones by their head): rows of cells with their column and row spans, as the editor has them. Also
+ * the grid's width.
+ */
+export function cellGrid(rows: { colspan: number; rowspan: number }[][]): { columns: number[][]; width: number } {
+  const taken: Set<number>[] = rows.map(() => new Set());
+  let width = 0;
+  const columns = rows.map((cells, r) => {
+    let col = 0;
+    return cells.map((cell) => {
+      while (taken[r].has(col)) col++;
+      const at = col;
+      for (let dr = 0; dr < cell.rowspan && r + dr < rows.length; dr++) for (let dc = 0; dc < cell.colspan; dc++) taken[r + dr].add(at + dc);
+      col += cell.colspan;
+      width = Math.max(width, col);
+      return at;
+    });
+  });
+  for (const t of taken) for (const c of t) width = Math.max(width, c + 1);
+  return { columns, width };
+}
 
 /** The tables of a token list: where each starts, and its rows and columns by identity */
 function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
@@ -404,7 +429,7 @@ function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
     if (t.k !== "st") return;
     if (t.kind === "table") { cur = { id: t.id, at: index ? index[i] : i, rows: [], endAt: 0 }; out.push(cur); }
     else if (t.kind === "row" && cur) cur.rows.push({ rid: typeof t.attrs.rid === "string" ? t.attrs.rid : null, cells: [] });
-    else if (t.kind === "cell" && cur) cur.rows[cur.rows.length - 1]?.cells.push({ cid: typeof t.attrs.cid === "string" ? t.attrs.cid : null });
+    else if (t.kind === "cell" && cur) cur.rows[cur.rows.length - 1]?.cells.push({ cid: typeof t.attrs.cid === "string" ? t.attrs.cid : null, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan) });
     else if (t.kind === "tableEnd" && cur) { cur.endAt = (index ? index[i] : i) + t.span; cur = null; }
   });
   return out;
@@ -438,9 +463,17 @@ function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): Do
   for (const t of targetTables) {
     const b = byId.get(t.id);
     if (!b) {
+      // As wide as its grid, its merged cells merged: the document's table then has the editor's shape
       const rows = t.rows.length;
-      const columns = Math.max(1, ...t.rows.map((r) => r.cells.length));
-      changes.push({ at: docIndexAt(t.at), requests: [{ insertTable: { rows, columns, location: { index: docIndexAt(t.at) } } }] });
+      const grid = cellGrid(t.rows.map((r) => r.cells));
+      const at = docIndexAt(t.at);
+      const merges: DocsRequest[] = [];
+      t.rows.forEach((r, ri) => r.cells.forEach((c, ci) => {
+        if (c.colspan === 1 && c.rowspan === 1) return;
+        // The table starts after the newline Docs inserts before it
+        merges.push({ mergeTableCells: { tableRange: { tableCellLocation: { tableStartLocation: { index: at + 1 }, rowIndex: ri, columnIndex: grid.columns[ri][ci] }, rowSpan: Math.min(c.rowspan, rows - ri), columnSpan: c.colspan } } });
+      }));
+      changes.push({ at, requests: [{ insertTable: { rows, columns: Math.max(1, grid.width), location: { index: at } } }, ...merges] });
       continue;
     }
     const reqs: DocsRequest[] = [];
@@ -606,11 +639,15 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const extraNlAfter = new Set<Region>();
   // A paragraph's final newline cannot be deleted when it ends the body or a table cell, nor the one right before a table
   const finalNl = (i: number) => { const next = base[i + 1]; return base[i]?.k === "nl" && (i + 1 === base.length || (next.k === "st" && (next.kind === "cellEnd" || next.kind === "table"))); };
+  // Newlines a shifted deletion leaves in place of others (see below): base position → the newline Docs keeps there
+  const keptNl = new Map<number, number>();
   for (const r of [...regions].reverse()) {
     let bs = r.bs;
     let be = r.be;
-    // Deleting the last paragraphs: delete the ones before instead, which leaves the same text
+    // Deleting the last paragraphs: delete the ones before instead, which leaves the same text. The
+    // paragraphs before then end with the newlines that were to go, and have those newlines' style
     while (be > bs && finalNl(be - 1) && bs > 0 && base[bs - 1].k === "nl") { bs--; be--; }
+    for (let k = 0; bs + k < r.bs; k++) keptNl.set(bs + k, be + k);
     let at = index[bs];
     if (be > bs) contentRequests.push({ deleteContentRange: { range: { startIndex: at, endIndex: index[be] } } });
     if (r.pending || r.te === r.ts) continue;
@@ -725,8 +762,9 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     if (i < 0) continue;
     const t = target[j];
     if (t.k === "nl") {
-      saved.push(paragraphHasPending(target, j) ? base[i] : stripPending(t));
-      docsAttrs.set(saved.length - 1, (base[i] as Extract<Tok, { k: "nl" }>).attrs);
+      const docsNl = base[keptNl.get(i) ?? i] as Extract<Tok, { k: "nl" }>;
+      saved.push(paragraphHasPending(target, j) ? docsNl : stripPending(t));
+      docsAttrs.set(saved.length - 1, docsNl.attrs);
     } else saved.push(stripPending(t));
   }
 
@@ -1043,15 +1081,21 @@ const cellBackground = (attrs: Record<string, unknown>): string | null => {
  * column in the document.
  */
 function cellStyleRequests(base: Tok[], target: Tok[], match: number[], index: number[]): DocsRequest[] {
+  // Each document cell's table start, and its grid row and column
   const where = new Map<number, { start: number; row: number; column: number }>();
-  let start = 0;
-  let row = -1;
-  let column = -1;
+  let table: { start: number; rows: { at: number; colspan: number; rowspan: number }[][] } | null = null;
+  const place = () => {
+    if (!table) return;
+    const { start, rows } = table;
+    const grid = cellGrid(rows);
+    rows.forEach((cells, r) => cells.forEach((c, k) => where.set(c.at, { start, row: r, column: grid.columns[r][k] })));
+  };
   base.forEach((t, i) => {
     if (t.k !== "st") return;
-    if (t.kind === "table") { start = index[i]; row = -1; }
-    else if (t.kind === "row") { row++; column = -1; }
-    else if (t.kind === "cell") where.set(i, { start, row, column: ++column });
+    if (t.kind === "table") table = { start: index[i], rows: [] };
+    else if (t.kind === "row") table?.rows.push([]);
+    else if (t.kind === "cell") table?.rows[table.rows.length - 1]?.push({ at: i, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan) });
+    else if (t.kind === "tableEnd") { place(); table = null; }
   });
   const requests: DocsRequest[] = [];
   target.forEach((t, j) => {

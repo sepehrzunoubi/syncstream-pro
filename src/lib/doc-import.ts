@@ -410,10 +410,34 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
   const tableNode = (el: Element, tid: string): EditorNode => {
     const table = el.table!;
     const widths = (table.tableStyle?.tableColumnProperties ?? []).map((c) => pt(c.width));
+    // A cell's width per column it spans, in pixels, when the document gives them all
+    const colwidthOf = (c: number, spans: number) => {
+      const w = widths.slice(c, c + spans);
+      return w.length === spans && w.every((x) => x) ? w.map((x) => Math.round(x! / 0.75)) : null;
+    };
+    // Cells a merge covers. Docs lists them in a row that lists its whole grid; the editor's table (as
+    // any ProseMirror table) has only the merged cell, with its spans, and the covered cells' indices
+    // go with the next cell's span
+    const tableRows = table.tableRows ?? [];
+    const covered = tableRows.map(() => new Set<number>());
+    const taken = tableRows.map(() => new Set<number>());
+    tableRows.forEach((row, r) => {
+      const cells = row.tableCells ?? [];
+      if (!table.columns || cells.length !== table.columns) return;
+      cells.forEach((cell, c) => {
+        if (taken[r].has(c)) { covered[r].add(c); return; }
+        const cs = Math.max(1, cell.tableCellStyle?.columnSpan ?? 1);
+        const rs = Math.max(1, cell.tableCellStyle?.rowSpan ?? 1);
+        for (let dr = 0; dr < rs && r + dr < tableRows.length; dr++) for (let dc = 0; dc < cs; dc++) if (dr || dc) taken[r + dr].add(c + dc);
+      });
+      // A row has a cell of its own
+      if (covered[r].size === cells.length) covered[r].clear();
+    });
     // The index just after the last content read so far
     let cursor = el.startIndex ?? 0;
-    const rowNodes: EditorNode[] = (table.tableRows ?? []).map((row, r) => {
-      const cellNodes: EditorNode[] = (row.tableCells ?? []).map((cell, c) => {
+    const rowNodes: EditorNode[] = tableRows.map((row, r) => {
+      const cellNodes: EditorNode[] = (row.tableCells ?? []).flatMap((cell, c) => {
+        if (covered[r].has(c)) return [];
         const content: EditorNode[] = [];
         const firstContent = cell.content?.[0]?.startIndex ?? (cell.startIndex ?? cursor) + 1;
         const span = Math.max(0, firstContent - cursor);
@@ -436,9 +460,9 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
           attrs: {
             cid: `${tid}c${c}`,
             span,
-            colspan: style.columnSpan ?? 1,
-            rowspan: style.rowSpan ?? 1,
-            colwidth: widths[c] ? [Math.round(widths[c]! / 0.75)] : null,
+            colspan: Math.max(1, style.columnSpan ?? 1),
+            rowspan: Math.max(1, style.rowSpan ?? 1),
+            colwidth: colwidthOf(c, Math.max(1, style.columnSpan ?? 1)),
             background: bg && bg !== "#ffffff" ? bg : null,
           },
           content,
