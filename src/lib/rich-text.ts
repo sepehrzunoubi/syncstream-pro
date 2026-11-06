@@ -337,6 +337,13 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
       delete glyph.link;
       extras.glyph = glyph;
     }
+    // Indents of its own (pasted from a list indented its own way): the list style gives
+    // 36pt a level for the text and the glyph 18pt before it, which a sync doesn't need to send
+    const lb = box as { start?: unknown; marker?: unknown } | null | undefined;
+    const own = lb && typeof lb === "object" && typeof lb.start === "number"
+      ? { start: num(lb.start), first: num(lb.start) + (typeof lb.marker === "number" ? num(lb.marker) : -18) }
+      : exact && typeof exact === "object" && typeof exact.start === "number" ? { start: num(exact.start), first: num(exact.first) } : null;
+    if (own && (own.start !== INDENT_PT * (level + 1) || own.first !== INDENT_PT * (level + 1) - 18)) extras.exact = own;
     return { style, align, indent: 0, firstLine: false, spacing, list, ...(level ? { level } : {}), ...(preset ? { preset } : {}), ...extras };
   }
   const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing, ...extras };
@@ -629,7 +636,7 @@ export type DocListState = { type: ListType; start: number; level?: number; pres
  * them, so the tabs are inserted right before createParagraphBullets and
  * are gone right after it: nothing else in the batch sees them.
  */
-export function bulletRequests(paragraphs: { start: number; end: number; level: number }[], preset: string): DocsRequest[] {
+export function bulletRequests(paragraphs: { start: number; end: number; level: number; indent?: { start: number; first: number } }[], preset: string): DocsRequest[] {
   if (!paragraphs.length) return [];
   const requests: DocsRequest[] = [];
   // A paragraph whose bullets were removed keeps the indent they gave it, and Docs adds that
@@ -644,6 +651,10 @@ export function bulletRequests(paragraphs: { start: number; end: number; level: 
     }
   }
   requests.push({ createParagraphBullets: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end + tabs }, bulletPreset: preset } });
+  // Items indented their own way get their indents once the bullets exist (the tabs are gone by then)
+  for (const p of paragraphs) {
+    if (p.indent) requests.push({ updateParagraphStyle: { range: { startIndex: p.start, endIndex: p.end }, paragraphStyle: { indentStart: { magnitude: p.indent.start, unit: "PT" }, indentFirstLine: { magnitude: p.indent.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
+  }
   return requests;
 }
 // A list the document already had (start < 0) is known by type and level only: its preset is kept
@@ -736,11 +747,11 @@ export class FormatIndex {
         if (!(sameList(docList, para) && docList!.start === listStart)) {
           // Join the list by re-creating it from its first item, every item at its level, so numbering stays continuous
           const first = this.paragraphIndexAt(listStart);
-          const items: { start: number; end: number; level: number }[] = [];
+          const items: Parameters<typeof bulletRequests>[0] = [];
           for (let q = first; q <= p; q++) {
             const qs = this.paraStarts[q];
             const qe = q === p ? segEnd : (this.paraStarts[q + 1] ?? this.text.length);
-            items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0 });
+            items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0, indent: this.format.paragraphs[q]?.exact });
           }
           // Paragraphs already bulleted keep their level whatever their tabs: remove the bullets first
           if (items.length > 1) requests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
@@ -967,11 +978,11 @@ export class SegmentFormat {
         // re-created from its first item, every item at its level, after its bullets are removed.
         if (ours) {
           const firstLine = lastLE(this.lineStarts, cur!.start);
-          const items: { start: number; end: number; level: number }[] = [];
+          const items: Parameters<typeof bulletRequests>[0] = [];
           for (let q = firstLine; q <= l; q++) {
             const qs = this.lineStarts[q] ?? this.text.length;
             const qe = q === l ? to : (this.lineStarts[q + 1] ?? this.text.length);
-            items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0 });
+            items.push({ start: at(qs), end: at(qe), level: this.format.paragraphs[q]?.level ?? 0, indent: this.format.paragraphs[q]?.exact });
           }
           requests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: range.endIndex } } });
           requests.push(...bulletRequests(items, presetOf(para)));
@@ -980,7 +991,7 @@ export class SegmentFormat {
           continue;
         }
         if (docState) requests.push({ deleteParagraphBullets: { range } });
-        if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0 }], presetOf(para)));
+        if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0, indent: para.exact }], presetOf(para)));
         if (want) glyphs.add(l);
         cur = want ? { type: want, start: lineStart, level: para.level ?? 0, preset: presetOf(para) } : null;
         if (!want) {
@@ -1092,7 +1103,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
   text.split("\n").forEach((line, li) => {
     const p = fmt.paragraphs[li] ?? DEFAULT_PARAGRAPH;
     const box = p.exact || p.space
-      ? { ...(p.exact && !p.list ? { start: p.exact.start, first: p.exact.first - p.exact.start } : {}), above: p.space?.above ?? null, below: p.space?.below ?? null }
+      ? { ...(p.exact ? (p.list ? { start: p.exact.start, marker: p.exact.first - p.exact.start } : { start: p.exact.start, first: p.exact.first - p.exact.start }) : {}), above: p.space?.above ?? null, below: p.space?.below ?? null }
       : null;
     const node: EditorNode = {
       type: "paragraph",

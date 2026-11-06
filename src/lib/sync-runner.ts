@@ -664,9 +664,27 @@ class Context {
     return requests;
   }
 
+  /**
+   * Delete a typo's wrong characters. The range comes from one read of the document and the delete is
+   * only applied to that revision: when a collaborator's edit lands in between, Google refuses it and
+   * the typo is found again (a delete at stale indices would take their characters instead).
+   */
   private async erase(wrong: string): Promise<void> {
     if (wrong.length === 0) return;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.eraseOnce(wrong);
+        return;
+      } catch (err) {
+        if (!isStaleRevision(err) || attempt >= STALE_RETRIES) throw err;
+        log.warn("sync.stale_revision", { ...this.tag, action: this.job.currentAction, erase: true, attempt: attempt + 1, maxAttempts: STALE_RETRIES });
+      }
+    }
+  }
+
+  private async eraseOnce(wrong: string): Promise<void> {
     const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    const revision = snap.revisionId || undefined;
     const place = this.place();
     if (place) {
       const before = (place.state.ctx + place.typed).slice(-CONTEXT_CHARS);
@@ -679,7 +697,7 @@ class Context {
         return;
       }
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end, revision));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: true });
       place.state.cursor = end - wrong.length;
       return;
@@ -689,7 +707,7 @@ class Context {
     const start = Math.max(1, end - wrong.length);
     if (start < end) {
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end, revision));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: false });
     }
   }

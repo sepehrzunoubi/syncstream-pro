@@ -81,7 +81,7 @@ class FakeDoc implements DocsApi {
     this.onBatch?.(this.text);
     if (this.failNextInsertAfterWrite) { this.failNextInsertAfterWrite = false; throw new Error("socket hang up"); }
   }
-  async deleteRange(_t: string, _d: string, start: number, end: number) {
+  async deleteRange(_t: string, _d: string, start: number, end: number, _requiredRevisionId?: string) {
     this.calls.delete++;
     this.text = this.text.slice(0, start - 1) + this.text.slice(end - 1);
   }
@@ -556,6 +556,36 @@ test("typos inside an existing document are erased at the right place", async ()
   await drain(h);
   assert.equal(h.doc.text, "Why do you want to join?\nBecause.\nGood answer\nWhat else?\nNothing.");
   assert.equal(h.doc.calls.delete, 1);
+});
+
+test("a typo's delete is refused when a collaborator typed after it was read, and found again", async () => {
+  const actions: DripAction[] = [
+    { kind: "insert", text: "Good ", delayMs: 0, activity: "Typing" },
+    { kind: "typo", text: "answer", typoChars: "anwser", holdMs: 800, delayMs: 300, activity: "Typing" },
+  ];
+  const h = await makeHarness("Good answer", { actions, existing: EXISTING, anchor: { mode: "before", at: 35 } });
+  // The document's revision moves with every change; a delete bound to an older one is refused
+  let revision = 1;
+  const snapshot = h.doc.snapshot.bind(h.doc);
+  h.doc.snapshot = async (t) => ({ ...(await snapshot(t)), revisionId: `r${revision}` });
+  const del = h.doc.deleteRange.bind(h.doc);
+  let collaborated = false;
+  const required: (string | undefined)[] = [];
+  h.doc.deleteRange = async (t: string, d: string, start: number, end: number, requiredRevisionId?: string) => {
+    required.push(requiredRevisionId);
+    if (!collaborated) {
+      // Someone types at the top of the document between the read and the delete
+      collaborated = true;
+      h.doc.text = "Hi! " + h.doc.text;
+      revision++;
+    }
+    if (requiredRevisionId !== `r${revision}`) throw Object.assign(new Error("The required revision ID does not match the latest revision."), { code: 400 });
+    await del(t, d, start, end);
+  };
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, "Hi! Why do you want to join?\nBecause.\nGood answer\nWhat else?\nNothing.");
+  assert.deepEqual(required, ["r1", "r2"]);
 });
 
 test("fails clearly when the text around the sync was deleted", async () => {

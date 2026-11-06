@@ -382,3 +382,24 @@ test("a style from a paste keeps only checked values, so nothing else gets into 
   assert.deepEqual(cleanStyle({ font: "Arial; background: url(https://x.test/p)", color: "red;x:y", bg: "#FFF2CC", size: "12", b: 1 }), { bg: "#fff2cc", b: 1 });
   assert.deepEqual(cleanStyle(null), {});
 });
+
+test("a list item indented its own way keeps its indents through the format, and the sync gives them back after making its bullet", async () => {
+  const { SegmentFormat, DEFAULT_PARAGRAPH, paragraphFromAttrs, richToEditorJSON } = await import("./rich-text");
+  // Pasted: text at 54pt, glyph 18pt before it (the list style gives 36pt at level 0)
+  const item = paragraphFromAttrs({ list: "bullet", box: { start: 54, marker: -18 } });
+  assert.deepEqual(item.exact, { start: 54, first: 36 });
+  // What the list style gives anyway is not kept
+  assert.equal(paragraphFromAttrs({ list: "bullet", level: 1, box: { start: 72, marker: -18 } }).exact, undefined);
+  const parsed = parseFormat("Item\n", { v: 1, paragraphs: [item, { ...DEFAULT_PARAGRAPH }], runs: [{ len: 5 }] });
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.format.paragraphs[0].exact, { start: 54, first: 36 });
+  // The bullet is made, then the item gets its indents
+  const sf = new SegmentFormat("Item\n", { ...parsed.format, base: { ...DEFAULT_PARAGRAPH } });
+  const { requests } = sf.writeRequests(0, 5, 1, null);
+  const create = requests.findIndex((r) => r.createParagraphBullets);
+  const indent = requests.findIndex((r, i) => i > create && (r.updateParagraphStyle as { fields?: string } | undefined)?.fields === "indentStart,indentFirstLine");
+  assert.ok(create >= 0 && indent > create);
+  assert.deepEqual((requests[indent].updateParagraphStyle as { paragraphStyle: unknown }).paragraphStyle, { indentStart: { magnitude: 54, unit: "PT" }, indentFirstLine: { magnitude: 36, unit: "PT" } });
+  // And the editor shows them
+  assert.deepEqual(richToEditorJSON("Item", { v: 1, paragraphs: [item], runs: [{ len: 4 }] }).content?.[0].attrs?.box, { start: 54, marker: -18, above: null, below: null });
+});

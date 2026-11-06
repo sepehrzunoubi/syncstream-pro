@@ -73,14 +73,29 @@ export function glyphNumber(n: number, type: string | null | undefined): string 
   }
 }
 
+/**
+ * Whether Docs adds new items in `preset` to the list of the item right before them: it does when
+ * that list draws the preset's glyph (createParagraphBullets joins a preceding list with a matching preset)
+ */
+function joins(preset: string, before: ListParagraph): boolean {
+  if (!before.listId || !before.glyph || presetKind(preset) !== before.list) return false;
+  const g = presetGlyph(preset, Math.max(0, Math.min(8, before.level ?? 0)));
+  return typeof g === "string" ? before.glyph.symbol === g : before.glyph.type === g.type && before.glyph.format === g.format;
+}
+
 /** The label of each paragraph ("3.", "a.", "●"), or null (not a list, or a checklist box) */
 export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
   const byList = new Map<string, number[]>();
   let runType: string | null = null;
+  // The paragraph before, when it is an item of a Docs list, and the Docs list a run of new items joined
+  let before: ListParagraph | null = null;
+  let joined: string | null = null;
   return paragraphs.map((p) => {
-    if (!p.list) { runType = null; return null; }
+    if (!p.list) { runType = null; before = null; joined = null; return null; }
     if (p.listId) {
       runType = null;
+      joined = null;
+      before = p;
       const level = Math.max(0, Math.min(8, p.level ?? 0));
       const counts = byList.get(p.listId) ?? [];
       counts[level] = (counts[level] ?? (p.glyph?.start ?? 1) - 1) + 1;
@@ -94,15 +109,22 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
       const format = g.format || `%${level}.`;
       return format.replace(/%(\d)/g, (_, d: string) => glyphNumber(counts[Number(d)] ?? 1, Number(d) === level ? g.type : "DECIMAL"));
     }
-    // A list made in the editor: consecutive items of one kind, counted per level
+    // A list made in the editor: consecutive items of one kind, counted per level. Right after an item
+    // of a Docs list in the same style, the sync adds them to that list, so they count on from it.
     const preset = p.preset ?? DEFAULT_PRESET[p.list] ?? DEFAULT_PRESET.bullet;
     const level = Math.max(0, Math.min(8, p.level ?? 0));
     const key = `local:${preset}`;
-    if (runType !== key) { runType = key; byList.delete(key); }
-    const counts = byList.get(key) ?? [];
+    if (runType !== key) {
+      runType = key;
+      byList.delete(key);
+      joined = before && joins(preset, before) ? before.listId! : null;
+    }
+    before = null;
+    const countKey = joined ?? key;
+    const counts = byList.get(countKey) ?? [];
     counts[level] = (counts[level] ?? 0) + 1;
     counts.length = level + 1;
-    byList.set(key, counts);
+    byList.set(countKey, counts);
     if (p.list === "check") return null;
     const g = presetGlyph(preset, level);
     if (typeof g === "string") return g;

@@ -12,3 +12,15 @@ test("lists made in the editor are numbered per level in their Docs style", () =
   // A new list of another style starts counting again
   assert.deepEqual(listLabels([n(0), n(0, "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS")]), ["1.", "1)"]);
 });
+
+test("new items right after a Docs list in the same style count on from it, as the sync adds them to it", () => {
+  const doc = (n: number) => ({ list: "ordered", listId: "kix.a", level: 0, glyph: { type: "DECIMAL", format: "%0.", start: 1 }, n });
+  const mine = (level = 0, preset = "NUMBERED_DECIMAL_ALPHA_ROMAN") => ({ list: "ordered", level, preset });
+  // Docs: createParagraphBullets adds paragraphs to the list right before them when its style matches
+  assert.deepEqual(listLabels([doc(1), doc(2), mine(), mine(1), mine()]), ["1.", "2.", "3.", "a.", "4."]);
+  // Another style, or a paragraph in between: a list of their own
+  assert.deepEqual(listLabels([doc(1), doc(2), mine(0, "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS")]), ["1.", "2.", "1)"]);
+  assert.deepEqual(listLabels([doc(1), {}, mine()]), ["1.", null, "1."]);
+  // The Docs list goes on counting after them
+  assert.deepEqual(listLabels([doc(1), mine(), doc(3)]), ["1.", "2.", "3."]);
+});
