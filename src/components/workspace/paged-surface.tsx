@@ -98,6 +98,8 @@ export function PagedSurface({
     "--ss-m-left": `${g.left}px`,
     "--ss-m-right": `${g.right}px`,
     "--ss-page-color": pageColor ?? "#fff",
+    // The browser rounds text metrics in zoomed pixels; what is drawn to match text rounds the same (docs.css)
+    "--ss-zoom": String(scale),
   } as React.CSSProperties;
 
   return (

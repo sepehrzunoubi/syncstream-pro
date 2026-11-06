@@ -1,4 +1,6 @@
 import { test, expect, CLOSING_TEXT, LONG_BODY, plainParagraphs, DOC } from "./fixtures";
+import { importDoc } from "../src/lib/doc-import";
+import { EMPTY_DOC } from "./fixtures/empty-doc";
 
 /** Rectangles of every paragraph and every page sheet, to check how the text sits on the pages */
 async function layout(page: import("@playwright/test").Page) {
@@ -174,6 +176,50 @@ test.describe("pages", () => {
     await app.open();
     await expect(page.locator(".ss-pages")).toHaveClass(/ss-pageless/);
     await expect(page.locator(".ss-sheet")).toHaveCount(1);
+  });
+});
+
+test.describe("lines as Docs draws them", () => {
+  test("a document in another font spaces its lines by that font's line height", async ({ app, api, page }) => {
+    // A Word document's Calibri (drawn in Carlito, which has its metrics): taller lines than Arial's
+    const doc = structuredClone(EMPTY_DOC);
+    doc.namedStyles.styles[0].textStyle.weightedFontFamily = { fontFamily: "Calibri", weight: 400 };
+    api.content = importDoc(doc as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    await page.evaluate(() => window.ssEditor!.chain().focus().insertContent("Text in the document's own font").run());
+    const got = await page.evaluate((sel) => {
+      const p = document.querySelector<HTMLElement>(`${sel} > p`)!;
+      const probe = document.createElement("div");
+      probe.style.cssText = `position:absolute;font-size:100px;line-height:normal;white-space:nowrap;font-family:${getComputedStyle(p).fontFamily}`;
+      probe.textContent = "Hg";
+      document.body.appendChild(probe);
+      const natural = Math.round((probe.getBoundingClientRect().height / 100) * 1000) / 1000;
+      probe.remove();
+      return { lineHeight: parseFloat(getComputedStyle(p).lineHeight), fontSize: parseFloat(getComputedStyle(p).fontSize), natural };
+    }, DOC);
+    expect(got.natural).toBeGreaterThan(1.2);
+    expect(Math.abs(got.lineHeight - 1.15 * got.natural * got.fontSize)).toBeLessThan(0.05);
+  });
+
+  test("a list glyph's highlight is the height of its text's and level with it", async ({ app, page }) => {
+    const text = { type: "text", text: "Highlighted item", marks: [{ type: "highlight", attrs: { color: "#fff2cc" } }] };
+    await app.open({ plain: [{ type: "paragraph", attrs: { list: "bullet", level: 0 }, content: [text] }, { type: "paragraph", attrs: { list: "bullet", level: 0, lineSpacing: 200 }, content: [{ ...text, text: "Double spaced" }] }] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        const mark = p.querySelector("mark")!.getClientRects()[0];
+        const g = getComputedStyle(p, "::before");
+        const height = parseFloat(g.backgroundSize.split(" ")[1]);
+        const top = parseFloat(g.backgroundPositionY);
+        // The glyph box sits at the paragraph's top
+        return { glyph: [Math.round(top * 100) / 100, Math.round(height * 100) / 100], text: [Math.round(((mark.top - p.getBoundingClientRect().top) / zoom) * 100) / 100, Math.round((mark.height / zoom) * 100) / 100] };
+      });
+    }, DOC);
+    for (const p of got) {
+      expect(Math.abs(p.glyph[0] - p.text[0]), JSON.stringify(p)).toBeLessThanOrEqual(0.05);
+      expect(Math.abs(p.glyph[1] - p.text[1]), JSON.stringify(p)).toBeLessThanOrEqual(0.05);
+    }
   });
 });
 

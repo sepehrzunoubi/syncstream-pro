@@ -404,6 +404,17 @@
   line-height: inherit;
   background: linear-gradient(var(--ss-g-bg, transparent), var(--ss-g-bg, transparent)) 0 50% / 100% calc(var(--ss-nlh, 1.15) * 1em) no-repeat;
 }
+/* A highlight on the glyph covers what one on the text does: the font's ascent and descent (line-metrics.ts),
+   each rounded to a pixel as the browser draws text (a pixel of the zoomed page), in the middle of the line,
+   rounded down */
+@supports (width: round(1.5px, 1px)) {
+  .ss-doc p[data-list]::before {
+    --ss-px: calc(1px / var(--ss-zoom, 1));
+    --ss-g-c: calc(round(calc(var(--ss-asc, 0.9053) * 1em), var(--ss-px)) + round(calc(var(--ss-desc, 0.2119) * 1em), var(--ss-px)));
+    background-size: 100% var(--ss-g-c);
+    background-position: 0 round(down, calc((var(--ss-spacing, 1.15) * var(--ss-nlh, 1.15) * 1em - var(--ss-g-c)) / 2), var(--ss-px));
+  }
+}
 .ss-doc p[data-list="bullet"]::before { content: "\25CF"; }
 .ss-doc p[data-list="ordered"] { counter-increment: ss-ol; }
 .ss-doc p[data-list="ordered"]::before { content: counter(ss-ol) "."; }

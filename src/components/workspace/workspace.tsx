@@ -13,7 +13,7 @@ import { SyncRail } from "./sync-rail";
 import { SyncPanel } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
-import { installLineMetrics } from "./line-metrics";
+import { fontMetrics, installLineMetrics } from "./line-metrics";
 import { FindBar } from "./find-bar";
 import { Outline } from "./outline";
 import { ContextMenu } from "./context-menu";
@@ -120,7 +120,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const defaultFonts = docContent?.status === "ready" ? docContent.defaults : undefined;
   useEffect(() => {
     const extra = defaultFonts ? [defaultFonts.fontFamily, ...Object.values(defaultFonts.styles).map((s) => s?.fontFamily ?? "")] : [];
-    loadFonts(fontsIn(docJSON as EditorNode | null, extra));
+    const fonts = fontsIn(docJSON as EditorNode | null, extra);
+    loadFonts(fonts);
+    // Each font's line height, so the page spaces lines as Docs does in it
+    fontMetrics(fonts.keys());
   }, [docJSON, defaultFonts]);
 
   // Syncs
