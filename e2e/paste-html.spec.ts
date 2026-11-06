@@ -193,6 +193,29 @@ test.describe("pasting Google Docs' HTML", () => {
     const labels = () => app.doc.locator("p").evaluateAll((ps) => ps.map((p) => (p.textContent ? (p.hasAttribute("data-list") ? p.getAttribute("data-label") : "-") : null)).filter((l) => l !== null));
     await expect.poll(labels).toEqual(["1.", "-", "2.", "3.", "-", "-", "4."]);
   });
+
+  test("a list with paragraphs between its items counts on as Docs' <ol start> says, copies the same way, and keeps counting when an item loses its bullet", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const li = (t: string) => `<li dir="ltr" style="list-style-type:decimal;${RUN}" aria-level="1"><p dir="ltr" style="line-height:1.38;margin-top:0pt;margin-bottom:0pt;" role="presentation">${span(t)}</p></li>`;
+    const ol = (inner: string, start?: number) => `<ol style="margin-top:0;margin-bottom:0;padding-inline-start:48px;"${start ? ` start="${start}"` : ""}>${inner}</ol>`;
+    // As Docs copies one list with notes between its steps; the last list restarts (Docs says where, the API can't)
+    const html = docs(ol(li("Step one")) + para(span("Its note")) + "<br />" + ol(li("Step two") + li("Step three"), 2) + para(span("Another note")) + ol(li("Step four"), 4) + para(span("Not a step")) + ol(li("A new list"), 7));
+    await app.paste({ html, text: "Step one\nIts note\n\nStep two\nStep three\nAnother note\nStep four\nNot a step\nA new list\n" });
+    await expect.poll(async () => (await paragraphsOf(app)).length).toBeGreaterThanOrEqual(9);
+    const shownLabels = () => app.doc.locator("p").evaluateAll((ps) => ps.map((p) => p.getAttribute("data-label")).filter(Boolean));
+    await expect.poll(shownLabels).toEqual(["1.", "2.", "3.", "4.", "1."]);
+    expect((await paragraphsOf(app)).map((p) => (p.attrs?.listCont ? "cont" : p.attrs?.list ?? "-"))).toEqual(["ordered", "cont", "cont", "ordered", "ordered", "cont", "ordered", "-", "ordered", "-"].slice(0, (await paragraphsOf(app)).length));
+    // Copied for other apps: the lists after the notes start where the list left off
+    const copied = await page.evaluate(() => { const v = window.ssEditor!.view; return v.serializeForClipboard(v.state.doc.slice(0, v.state.doc.content.size)).dom.innerHTML; });
+    expect(Array.from(copied.matchAll(/<ol\b([^>]*)>/g), (m) => /start="(\d+)"/.exec(m[1])?.[1] ?? null)).toEqual([null, "2", "4", null]);
+    // Taking the bullet off "Step two" (Ctrl+Shift+7): it stays between items of the list, which count on as in Docs
+    await app.doc.getByText("Step two").click();
+    await page.keyboard.press("Control+Shift+7");
+    await expect.poll(shownLabels).toEqual(["1.", "2.", "3.", "1."]);
+    // And back: it is an item again, numbered in its place
+    await page.keyboard.press("Control+Shift+7");
+    await expect.poll(shownLabels).toEqual(["1.", "2.", "3.", "4.", "1."]);
+  });
 });
 
 test.describe("pasting other HTML", () => {

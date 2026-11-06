@@ -93,8 +93,9 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
   let before: ListParagraph | null = null;
   let joined: string | null = null;
   return paragraphs.map((p) => {
-    // Any other paragraph ends a list made here; a list item's next line doesn't
-    if (!p.list) { if (!p.listCont) { runType = null; before = null; joined = null; } return null; }
+    // Any other paragraph ends a list made here; a list item's next line doesn't. Either way new items
+    // after it make a list of their own in Docs (createParagraphBullets joins the paragraph right before)
+    if (!p.list) { if (!p.listCont) { runType = null; joined = null; } before = null; return null; }
     if (p.listId) {
       runType = null;
       joined = null;

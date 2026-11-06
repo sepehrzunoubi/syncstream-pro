@@ -493,6 +493,7 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
   }
 
   if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
+  markListLines(nodes);
 
   // Headers, footers and footnotes: paragraphs of their own, read the same way
   const segment = (id: string | null | undefined, content: Element[] | undefined): ImportedSegment | undefined => {
@@ -524,6 +525,27 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
     empty: !hasContent,
     nodes,
   };
+}
+
+/**
+ * Docs numbers the items of one list across the paragraphs between them (questions with their answers
+ * in between): each such paragraph is marked as the list's next line (listCont, ParagraphFormat.cont),
+ * so the labels, the list-style menu and a sync that re-makes the list keep the items around it one
+ * list, and a pasted copy (whose lists lose their Docs ids) counts on as Docs' own paste does. A table,
+ * a section break or content the editor can't change ends the run: no list is bulleted across those.
+ */
+export function markListLines(nodes: EditorNode[]): EditorNode[] {
+  const key = (n: EditorNode) => (n.type === "paragraph" && n.attrs?.list && n.attrs.listId ? `${n.attrs.listId as string}\u0000${n.attrs.list as string}` : null);
+  // The last list item, with only plain paragraphs after it so far
+  let last: { key: string; at: number } | null = null;
+  nodes.forEach((n, i) => {
+    const k = key(n);
+    if (k) {
+      if (last?.key === k) for (let j = last.at + 1; j < i; j++) nodes[j] = { ...nodes[j], attrs: { ...nodes[j].attrs, listCont: true } };
+      last = { key: k, at: i };
+    } else if (n.type !== "paragraph" || n.attrs?.list || n.attrs?.locked || n.attrs?.kind) last = null;
+  });
+  return nodes;
 }
 
 function stripNull<T extends object>(o: T): Partial<T> {

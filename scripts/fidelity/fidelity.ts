@@ -16,7 +16,7 @@ import type { docs_v1 } from "googleapis";
 import { editorExtensions } from "../../src/components/workspace/extensions";
 import { breaksAsParagraphs, insertParagraphs } from "../../src/components/workspace/paste";
 import { importDoc } from "../../src/lib/doc-import";
-import { readDocsSlice, sliceParagraphs } from "../../src/lib/docs-slice";
+import { readDocsSlice, sliceParagraphs, type DocsSlice } from "../../src/lib/docs-slice";
 import { additions, PENDING_MARK } from "../../src/lib/doc-model";
 import { buildDripPlan } from "../../src/lib/drip-engine";
 import { snapshotOf } from "../../src/lib/google";
@@ -70,13 +70,37 @@ const EMPTY_DOC_DEFAULTS = { fontFamily: "Arial", fontSize: 11, lineSpacing: 115
  */
 export function pasteCapture(path: string, base: EditorNode[]): EditorNode[] | null {
   const slice = readDocsSlice(fs.readFileSync(path, "utf8"), fs.readFileSync(path.replace(/-slice\.json$|\.slice\.json$/, ".txt"), "utf8"));
-  if (!slice) return null;
+  return slice ? pasteSlice(slice, base, path) : null;
+}
+
+/** A Docs copy pasted at the start of the document, by the editor's paste code */
+export function pasteSlice(slice: DocsSlice, base: EditorNode[], name = "the copy"): EditorNode[] {
   const nodes = sliceParagraphs(slice, EMPTY_DOC_DEFAULTS).map((n) => schema.nodeFromJSON(n));
   let state = EditorState.create({ schema, doc: schema.nodeFromJSON({ type: "doc", content: base }) });
   state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 1)));
   const view = { get state() { return state; }, dispatch(tr: Transaction) { state = state.apply(tr); } } as unknown as EditorView;
-  if (!insertParagraphs(view, nodes, slice.endsWithParagraph, EMPTY_DOC_DEFAULTS)) throw new Error(`${path}: the editor refused the paste`);
+  if (!insertParagraphs(view, nodes, slice.endsWithParagraph, EMPTY_DOC_DEFAULTS)) throw new Error(`${name}: the editor refused the paste`);
   return (state.doc.toJSON() as EditorNode).content ?? [];
+}
+
+/** A copy from Docs of these paragraphs, the ones with a list item's `level` in one numbered list */
+export function docsCopy(paras: { text: string; level?: number }[]): DocsSlice {
+  let at = 1;
+  const content: docs_v1.Schema$StructuralElement[] = paras.map(({ text, level }) => {
+    const startIndex = at;
+    at += text.length + 1;
+    return {
+      startIndex,
+      endIndex: at,
+      paragraph: {
+        elements: [{ startIndex, endIndex: at, textRun: { content: `${text}\n`, textStyle: {} } }],
+        paragraphStyle: { namedStyleType: "NORMAL_TEXT", ...(level == null ? {} : { indentStart: { magnitude: 36 * (level + 1), unit: "PT" }, indentFirstLine: { magnitude: 36 * level + 18, unit: "PT" } }) },
+        ...(level == null ? {} : { bullet: { listId: "kix.copied", nestingLevel: level } }),
+      },
+    };
+  });
+  const levels = [0, 1, 2].map((l) => ({ glyphType: ["DECIMAL", "ALPHA", "ROMAN"][l], glyphFormat: `%${l}.`, indentStart: { magnitude: 36 * (l + 1), unit: "PT" }, indentFirstLine: { magnitude: 36 * l + 18, unit: "PT" }, startNumber: 1 }));
+  return { doc: { body: { content }, lists: { "kix.copied": { listProperties: { nestingLevels: levels } } } }, endsWithParagraph: true, text: paras.map((p) => p.text).join("\n") + "\n" };
 }
 
 // ── Running a sync ─────────────────────────────────────────────────────────
@@ -250,7 +274,13 @@ export interface Scenario extends SyncCase {
   what: string;
   /** Not yet what the editor shows, and why (each is a limit of the Docs API or needs a live answer) */
   known?: string;
+  /** The list labels Docs shows for this content, in order: the editor's must be these (the doc's then match them) */
+  labels?: string[];
 }
+
+/** The labels the editor draws for its list items, in order */
+export const labelsOf = (nodes: EditorNode[]): string[] =>
+  listLabels(nodes.filter((n) => n.type === "paragraph").map((n) => n.attrs ?? {})).filter((l): l is string => l != null);
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -355,6 +385,12 @@ export const SCENARIOS: Scenario[] = [
       P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced one", BR, "its second line"),
       P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced two"),
     ]),
+  },
+  {
+    name: "list-across-paragraphs",
+    what: "questions numbered by one Docs list with answers between them, copied from Docs and pasted: 1., 2., 3. as Docs pastes it",
+    target: (base) => asAdded(pasteSlice(docsCopy([{ text: "Question one", level: 0 }, { text: "Its answer" }, { text: "Question two", level: 0 }, { text: "A sub-point", level: 1 }, { text: "An answer" }, { text: "" }, { text: "More of it" }, { text: "Question three", level: 0 }, { text: "After the list" }]), base)),
+    labels: ["1.", "2.", "a.", "3."],
   },
   {
     name: "list-custom-indent-space",

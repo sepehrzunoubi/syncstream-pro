@@ -33,3 +33,13 @@ test("a list item's next line (a pasted line break) keeps its list counting, as 
   assert.deepEqual(listLabels([n(), {}, n()]), ["1.", null, "1."]);
   assert.deepEqual(listLabels([n(), cont, {}, n()]), ["1.", null, null, "1."]);
 });
+
+test("items of a Docs list count across the paragraphs between them; new items after such a paragraph start their own list", () => {
+  const doc = (level = 0) => ({ list: "ordered", listId: "kix.a", level, glyph: { type: "DECIMAL", format: "%0.", start: 1 } });
+  const mine = () => ({ list: "ordered", level: 0, preset: "NUMBERED_DECIMAL_ALPHA_ROMAN" });
+  const between = { listCont: true };
+  assert.deepEqual(listLabels([doc(), between, between, doc(), between, doc()]), ["1.", null, null, "2.", null, "3."]);
+  // Right after an item, new ones join its list; after a paragraph between items they don't
+  assert.deepEqual(listLabels([doc(), mine(), between, doc()]), ["1.", "2.", null, "3."]);
+  assert.deepEqual(listLabels([doc(), between, mine(), doc()]), ["1.", null, "1.", "2."]);
+});

@@ -32,6 +32,7 @@ import {
   MAX_LIST_LEVEL,
   NAMED_STYLES,
   namedKeep,
+  presetOf,
   presetType,
   roundSize,
   sameKeep,
@@ -488,6 +489,12 @@ function paragraphsInSelection(editor: { state: Editor["state"] }, from: number,
 /** Leaving a list, or starting a new one: Docs makes a new list, with default indents */
 const NO_LIST = { list: null, listId: null, level: null, glyph: null, preset: null, box: null, listCont: null };
 
+/** Whether two list items are of one list: one Docs list, or a list made here in one Docs list style */
+function sameList(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  if (!a.list || a.list !== b.list || (a.listId ?? null) !== (b.listId ?? null)) return false;
+  return !!a.listId || presetOf(a as { list?: ListType; preset?: string }) === presetOf(b as { list?: ListType; preset?: string });
+}
+
 /** A list item at a new level. An item read from a Docs list becomes one of our lists in the same style. */
 function localList(a: Record<string, unknown>, level: number): Record<string, unknown> {
   const glyph = a.glyph as { type?: string | null; symbol?: string | null } | null;
@@ -562,15 +569,25 @@ const DocFormat = Extension.create({
         state.doc.forEach((node, pos) => paras.push({ pos, node }));
         const inSel = (p: { pos: number; node: typeof state.doc }) => p.pos < to && p.pos + p.node.nodeSize > from;
         const isList = (p: { pos: number; node: typeof state.doc }) => !!p.node.attrs.list;
-        // A list item's next line is part of the list: the items after it are restyled too
-        const inList = (p: { pos: number; node: typeof state.doc }) => isList(p) || !!p.node.attrs.listCont;
+        const isLine = (p: { pos: number; node: typeof state.doc }) => !isList(p) && !!p.node.attrs.listCont;
+        // The item past a list item's next lines (step -1 or 1), when it is in the same list: the items after
+        // such lines are restyled too, as the list they are in
+        const across = (k: number, step: number) => {
+          let j = k + step;
+          while (j >= 0 && j < paras.length && isLine(paras[j])) j += step;
+          return j !== k + step && j >= 0 && j < paras.length && isList(paras[j]) && sameList(paras[j].node.attrs, paras[k].node.attrs) ? j : -1;
+        };
         const hit = new Set<number>();
         paras.forEach((p, i) => {
-          if (!inSel(p) || !inList(p)) return;
-          let s = i;
-          let e = i;
-          while (s > 0 && inList(paras[s - 1])) s--;
-          while (e < paras.length - 1 && inList(paras[e + 1])) e++;
+          if (!inSel(p)) return;
+          let at = i;
+          // The caret on a list item's next line is in that item's list
+          if (isLine(p)) { while (at > 0 && isLine(paras[at - 1])) at--; at -= 1; if (at < 0 || !isList(paras[at])) return; }
+          else if (!isList(p)) return;
+          let s = at;
+          let e = at;
+          for (;;) { if (s > 0 && isList(paras[s - 1])) s--; else { const j = across(s, -1); if (j < 0) break; s = j; } }
+          for (;;) { if (e < paras.length - 1 && isList(paras[e + 1])) e++; else { const j = across(e, 1); if (j < 0) break; e = j; } }
           for (let k = s; k <= e; k++) if (isList(paras[k])) hit.add(k);
         });
         for (const k of Array.from(hit)) {
@@ -605,6 +622,26 @@ const DocFormat = Extension.create({
         const allOn = paras.length > 0 && paras.every((p) => p.attrs.list === type && (!preset || p.attrs.preset === preset));
         for (const p of paras) {
           tr.setNodeMarkup(p.pos, undefined, allOn ? { ...p.attrs, ...NO_LIST } : { ...p.attrs, ...NO_LIST, list: type, preset: preset ?? null, level: 0, indent: 0, firstLine: false });
+        }
+        if (allOn) {
+          // Items that lose their bullets between two items of one list stay in it, as in Docs (its
+          // deleteParagraphBullets keeps the list): the items after them count on
+          const off = new Set(paras.map((p) => p.pos));
+          const starts = new Map<PMNode, number[]>();
+          for (const p of paras) {
+            const $p = tr.doc.resolve(p.pos);
+            const parent = $p.parent;
+            const at = $p.index();
+            let pos = starts.get(parent);
+            if (!pos) { pos = []; let x = $p.start(); parent.forEach((c) => { pos!.push(x); x += c.nodeSize; }); starts.set(parent, pos); }
+            // Paragraphs between items: other lines of theirs, and the ones losing their bullets now
+            const plain = (i: number) => { const n = parent.child(i); return n.type.name === "paragraph" && !n.attrs.list && (!!n.attrs.listCont || off.has(pos![i])); };
+            let b = at - 1;
+            while (b >= 0 && plain(b)) b--;
+            let a = at + 1;
+            while (a < parent.childCount && plain(a)) a++;
+            if (b >= 0 && a < parent.childCount && sameList(parent.child(b).attrs, parent.child(a).attrs)) tr.setNodeMarkup(p.pos, undefined, { ...tr.doc.nodeAt(p.pos)!.attrs, listCont: true });
+          }
         }
         if (dispatch) dispatch(tr);
         return true;
@@ -908,6 +945,8 @@ export function flattenPastedLists(html: string): string {
     }
   };
   const top = Array.from(doc.querySelectorAll("ol, ul")).filter((l) => !l.parentElement?.closest("ol, ul"));
+  // The last numbered list: its last element and the number its last top-level item shows
+  let numbered: { end: Element; count: number; preset: string | null } | null = null;
   for (const list of top) {
     const out: (Element | Item)[] = [];
     flatten(list, 0, out, 0);
@@ -927,6 +966,27 @@ export function flattenPastedLists(html: string): string {
     }
     for (const el of out) list.parentNode?.insertBefore(el instanceof Element ? el : el.p, list);
     list.remove();
+    if (list.tagName !== "OL") continue;
+    // Docs copies one list with paragraphs between its items as lists that start where the one before
+    // left off (<ol start="3">): those paragraphs are the list's next lines, so it counts on, here and
+    // in the doc the sync makes (see markListLines)
+    const top0 = items.filter((i) => i.level === 0 && i.p.getAttribute("data-list") === "ordered");
+    if (!top0.length) continue;
+    const preset = top0[0].p.getAttribute("data-preset");
+    const start = parseInt(list.getAttribute("start") ?? "", 10);
+    let count = top0.length;
+    if (numbered && start > 1 && start === numbered.count + 1 && numbered.preset === preset) {
+      const first = out[0] instanceof Element ? out[0] : out[0].p;
+      const between: Element[] = [];
+      let el = numbered.end.nextElementSibling;
+      while (el && el !== first && /^(P|H[1-6])$/.test(el.tagName) && !el.hasAttribute("data-list")) { between.push(el); el = el.nextElementSibling; }
+      if (el === first) {
+        for (const b of between) b.setAttribute("data-cont", "");
+        count += numbered.count;
+      }
+    }
+    const last = out[out.length - 1];
+    numbered = { end: last instanceof Element ? last : last.p, count, preset };
   }
   return doc.body.innerHTML;
 }
@@ -1181,6 +1241,10 @@ const ClipboardHTML = Extension.create({
         const out = doc.createDocumentFragment();
         // stack[i] is the open list element at level i
         let stack: HTMLElement[] = [];
+        // Top-level items of the open numbered list, and of the one a list item's next line goes on from
+        let shown = 0;
+        let carried = 0;
+        let lastItem: Record<string, unknown> | null = null;
         fragment.forEach((node) => {
           if (node.type.name === "paragraph" && node.attrs.list) {
             const level = Math.max(0, Number(node.attrs.level ?? 0));
@@ -1188,6 +1252,11 @@ const ClipboardHTML = Extension.create({
             stack = stack.slice(0, level + 1);
             for (let i = stack.length; i <= level; i++) {
               const list = doc.createElement(i === level ? tag : "ul");
+              // A list that goes on after its next lines starts where it left off, as Docs copies it
+              if (i === 0) {
+                shown = carried && lastItem && sameList(lastItem, node.attrs) ? carried : 0;
+                if (shown && tag === "ol") list.setAttribute("start", String(shown + 1));
+              }
               if (i === 0) out.appendChild(list);
               else {
                 let li = stack[i - 1].lastElementChild as HTMLElement | null;
@@ -1201,13 +1270,19 @@ const ClipboardHTML = Extension.create({
               stack[level].parentNode?.insertBefore(list, stack[level].nextSibling);
               stack[level] = list;
               stack = stack.slice(0, level + 1);
+              if (level === 0) shown = 0;
             }
             const li = doc.createElement("li");
             li.setAttribute("aria-level", String(level + 1));
             if (node.attrs.list === "check") li.setAttribute("role", "checkbox");
             li.appendChild(serializer.serializeNode(node, options));
             stack[level].appendChild(li);
+            if (level === 0 && tag === "ol") { shown++; lastItem = node.attrs; }
+            carried = 0;
           } else {
+            // A list item's next line: the numbered list goes on after it
+            if (node.type.name === "paragraph" && node.attrs.listCont) { if (stack[0]?.tagName.toLowerCase() === "ol") carried = shown; }
+            else carried = 0;
             stack = [];
             out.appendChild(serializer.serializeNode(node, options));
           }

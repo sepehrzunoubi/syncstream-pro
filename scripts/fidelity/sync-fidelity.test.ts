@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { asAdded, differences, pasteCapture, SCENARIOS, syncInto, type Scenario } from "./fidelity";
+import { asAdded, differences, labelsOf, pasteCapture, SCENARIOS, syncInto, type Scenario } from "./fidelity";
 
 const FIXTURES = path.join(__dirname, "..", "..", "fixtures", "clipboard");
 const CORPUS = path.join(FIXTURES, "corpus");
@@ -25,6 +25,7 @@ for (const s of SCENARIOS) {
     const diffs = differences(r.target, r.doc);
     if (s.known) assert.deepEqual(onlyGlyphs(diffs), [], `${s.known}\n${diffs.join("\n")}`);
     else assert.deepEqual(diffs, []);
+    if (s.labels) assert.deepEqual(labelsOf(r.target.content ?? []), s.labels, "the labels Docs shows");
   });
 }
 
