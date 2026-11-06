@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
-import { Icon } from "./icon";
+import { Icon, type IconName } from "./icon";
 import { ColorMenu } from "./color-menu";
 import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
@@ -29,7 +29,7 @@ function PresetPreview({ preset }: { preset: string }) {
 
 /** A toolbar list button like Docs': the button toggles the list, the arrow opens its styles */
 function ListButton({ kind, on, preset, disabled, title, icon, presets, onToggle, onPreset }: {
-  kind: "bullet" | "ordered"; on: boolean; preset: string | null; disabled?: boolean; title: string; icon: string; presets: string[];
+  kind: "bullet" | "ordered"; on: boolean; preset: string | null; disabled?: boolean; title: string; icon: IconName; presets: string[];
   onToggle: () => void; onPreset: (preset: string) => void;
 }) {
   const keep = (e: React.MouseEvent) => e.preventDefault();

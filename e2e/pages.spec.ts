@@ -448,6 +448,17 @@ test.describe("lines as Docs draws them", () => {
     expect(await page.evaluate(() => window.ssEditor!.getHTML())).not.toContain("SS Space");
   });
 
+  test("a checklist item is drawn with a square box, its list's own indents or not", async ({ app, page }) => {
+    const item = (text: string, box?: object) => ({ type: "paragraph", attrs: { list: "check", ...(box ? { box } : {}) }, content: [{ type: "text", text }] });
+    await app.open({ plain: [item("A checklist item made here"), item("One read from Docs, with its list's indents", { start: 36, marker: -18 })] });
+    const boxes = await page.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} > p[data-list="check"]`)).map((p) => {
+      const s = getComputedStyle(p, "::before");
+      return { w: parseFloat(s.width), h: parseFloat(s.height), boxed: p.hasAttribute("data-box") };
+    }), DOC);
+    expect(boxes.map((b) => b.boxed)).toEqual([false, true]);
+    for (const b of boxes) expect(Math.abs(b.w - b.h), JSON.stringify(b)).toBeLessThan(0.5);
+  });
+
   test("a right-to-left paragraph starts at the right margin, is indented from it, and has its glyph on its right", async ({ app, page }) => {
     const rtl = (text: string, attrs: Record<string, unknown> = {}) => ({ type: "paragraph", attrs: { dir: "rtl", ...attrs }, content: [{ type: "text", text }] });
     await app.open({ plain: [
