@@ -229,16 +229,23 @@ const TABLE_START = "\u0010";
 const TABLE_END = "\u0011";
 /** A section break, at the start of the paragraph after it (its columns are the column_sector slice's) */
 const SECTION_BREAK = "\ue905";
-/** Entities whose position says nothing about how the text looks */
-const INVISIBLE_ENTITIES = new Set(["bookmark", "named-range", "list"]);
+/**
+ * Entities whose position says nothing about how the text looks. A positioned (floating) image is
+ * anchored on the newline of the paragraph before the one it's drawn by, which the HTML draws it in:
+ * the image is the HTML's (see mergeSliceWithHtml), and the paragraph it's anchored on is read whole.
+ */
+const INVISIBLE_ENTITIES = new Set(["bookmark", "named-range", "list", "positioned"]);
+/** Where the slice has an inline image (on its "*") */
+const INLINE_IMAGES = "inline";
 
 /**
  * A block of the copy, in order: a paragraph, or a table. A paragraph is `exact` when this reads all
  * of it (text, line and page breaks); one with an image, chip, footnote, rule, field or equation in it
  * is read for its paragraph style only. `text` is its text as the page shows it (line breaks as "\n",
- * without the newline), for finding its counterpart in the copy's HTML.
+ * without the newline), for finding its counterpart in the copy's HTML; `images`, how many inline
+ * images the paragraph has (its counterpart has them too).
  */
-export interface SliceBlock { kind: "paragraph" | "table"; text: string; exact: boolean }
+export interface SliceBlock { kind: "paragraph" | "table"; text: string; exact: boolean; images?: number }
 
 /** Docs' copy read block by block: every block of it, each paragraph as documents.get describes it (see readDocsSliceParts) */
 export interface DocsSliceParts extends DocsSlice { blocks: SliceBlock[] }
@@ -254,10 +261,11 @@ function readParts(r: Resolved): DocsSliceParts | null {
   const len = text.length;
   // Positions of what lives outside the text, or that this doesn't read, by kind
   const marked = new Array<boolean>(len).fill(false);
+  const image = new Array<boolean>(len).fill(false);
   for (const kind of UNREAD) slices.get(kind)?.stsl_styles?.forEach((x, i) => { if (x != null && i < len) marked[i] = true; });
   for (const [kind, v] of Object.entries(r.dsl_entitypositionmap ?? {})) {
     if (INVISIBLE_ENTITIES.has(kind)) continue;
-    if (Array.isArray(v)) v.forEach((x, i) => { if (x != null && i < len) marked[i] = true; });
+    if (Array.isArray(v)) v.forEach((x, i) => { if (x != null && i < len) { marked[i] = true; if (kind === INLINE_IMAGES) image[i] = true; } });
     else if (v != null) return null;
   }
 
@@ -327,7 +335,9 @@ function readParts(r: Resolved): DocsSliceParts | null {
       }
     }
     content.push({ startIndex: index, endIndex: at, paragraph });
-    blocks.push({ kind: "paragraph", text: comparable(text.slice(start, end).replace(/[\u0000-\u0008\u000c-\u001f\u007f\ue000-\uf8ff]/g, "")), exact });
+    let images = 0;
+    for (let i = start; i < end; i++) if (image[i]) images++;
+    blocks.push({ kind: "paragraph", text: comparable(text.slice(start, end).replace(/[\u0000-\u0008\u000c-\u001f\u007f\ue000-\uf8ff]/g, "")), exact, ...(images ? { images } : {}) });
     index = at;
     start = end;
   }
@@ -411,6 +421,43 @@ function within(a: string, b: string): boolean {
   return k === a.length;
 }
 
+const imagesIn = (n: EditorNode) => (n.content ?? []).filter((c) => c.type === "image").length;
+
+/**
+ * An exact paragraph from Docs' copy with the images its HTML counterpart draws in it (a positioned
+ * image, which the copy anchors elsewhere): each where the HTML has it, after as much of the text.
+ */
+function withHtmlImages(node: EditorNode, h: EditorNode): EditorNode {
+  const images: { at: number; node: EditorNode }[] = [];
+  let seen = 0;
+  for (const c of h.content ?? []) {
+    if (c.type === "image") images.push({ at: seen, node: c });
+    else seen += squash(nodeText(c)).length;
+  }
+  if (!images.length) return node;
+  const content: EditorNode[] = [];
+  let count = 0;
+  let next = 0;
+  // Each image goes just before the text past its place (after any spaces that end its place)
+  const place = (ahead: boolean) => { while (next < images.length && (ahead ? images[next].at <= count : true)) content.push(images[next++].node); };
+  for (const c of node.content ?? []) {
+    if (c.type !== "text" || !c.text) { content.push(c); continue; }
+    let from = 0;
+    for (let i = 0; i < c.text.length; i++) {
+      if (!squash(c.text[i])) continue;
+      if (next < images.length && images[next].at <= count) {
+        if (i > from) content.push({ ...c, text: c.text.slice(from, i) });
+        from = i;
+        place(true);
+      }
+      count++;
+    }
+    content.push(from ? { ...c, text: c.text.slice(from) } : c);
+  }
+  place(false);
+  return { ...node, content };
+}
+
 /**
  * Docs' copy (read with readDocsSliceParts) with its HTML: the copy's blocks in order, each exact
  * paragraph as Docs' copy has it, and where only the HTML can say, the HTML's block: a table, or what is
@@ -429,19 +476,28 @@ export function mergeSliceWithHtml(parts: DocsSliceParts, sliceNodes: EditorNode
     const b = parts.blocks[i];
     const node = sliceNodes[i];
     if (b.kind === "paragraph" && b.exact) {
-      // Its counterpart, if the HTML has it (it leaves out an empty paragraph before a table)
+      // Its counterpart, if the HTML has it (it leaves out an empty paragraph before a table). An empty
+      // one's may be a line break (Docs writes some empty paragraphs as <p><br><span><br></span></p>)
+      let own: EditorNode | null = null;
       for (let k = j; k < html.length; k++) {
         const h = html[k];
-        if (h.type === "paragraph" && (nodeText(h).replace(/\u00a0/g, " ") === b.text || (b.text && squash(nodeText(h)) === squash(b.text)))) { j = k + 1; break; }
+        const text = h.type === "paragraph" ? nodeText(h) : null;
+        if (text != null && (text.replace(/\u00a0/g, " ") === b.text || (b.text ? squash(text) === squash(b.text) : emptyAt(k) && /^\n*$/.test(text)))) { own = h; j = k + 1; break; }
         if (!emptyAt(k) || !b.text) break;
       }
-      out.push(node);
+      out.push(own ? withHtmlImages(node, own) : node);
       continue;
     }
+    // A paragraph's counterpart has its text, and its images: one with only an image has no text to go by
+    const fits = (h: EditorNode) => b.kind === "table" ? h.type === "table" : h.type === "paragraph" && within(squash(b.text), squash(nodeText(h))) && imagesIn(h) >= (b.images ?? 0);
     let found = -1;
     for (let k = j; k < html.length; k++) {
-      const h = html[k];
-      if (b.kind === "table" ? h.type === "table" : h.type === "paragraph" && within(squash(b.text), squash(nodeText(h)))) { found = k; break; }
+      if (fits(html[k])) { found = k; break; }
+      if (!emptyAt(k)) break;
+    }
+    // An image the HTML left out: the paragraph by its text, or with none, the empty one in its place
+    if (found < 0 && b.images) for (let k = j; k < html.length; k++) {
+      if (html[k].type === "paragraph" && (squash(b.text) ? within(squash(b.text), squash(nodeText(html[k]))) : emptyAt(k))) { found = k; break; }
       if (!emptyAt(k)) break;
     }
     if (found < 0) return null;

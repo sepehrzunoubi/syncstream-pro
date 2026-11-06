@@ -946,6 +946,38 @@ export function pastedEmptyLines(html: string): string {
 }
 
 /**
+ * A pasted table's column widths (its <colgroup>, as Docs' copies give them) on its cells, each by the
+ * columns it's in. The editor reads a cell's width from the <col> at the cell's place in its row, which
+ * after a merged cell isn't its column, and takes one width for a cell across columns.
+ */
+export function pastedColumnWidths(html: string): string {
+  if (typeof DOMParser === "undefined" || !/<colgroup\b/i.test(html)) return html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const table of Array.from(doc.querySelectorAll("table"))) {
+    const widths: (number | null)[] = [];
+    for (const col of Array.from(table.querySelectorAll(":scope > colgroup > col"))) {
+      const w = parseFloat(col.getAttribute("width") ?? "");
+      for (let k = 0; k < Math.max(1, parseInt(col.getAttribute("span") ?? "", 10) || 1); k++) widths.push(w > 0 ? Math.round(w) : null);
+    }
+    if (!widths.length) continue;
+    const rows = Array.from(table.rows);
+    const taken = rows.map(() => new Set<number>());
+    rows.forEach((row, r) => {
+      let col = 0;
+      for (const cell of Array.from(row.cells)) {
+        while (taken[r].has(col)) col++;
+        const cs = Math.max(1, cell.colSpan || 1);
+        for (let dr = 0; dr < Math.max(1, cell.rowSpan || 1) && r + dr < rows.length; dr++) for (let dc = 0; dc < cs; dc++) taken[r + dr].add(col + dc);
+        const w = widths.slice(col, col + cs);
+        if (!cell.hasAttribute("colwidth") && w.length === cs && w.every((x) => x != null)) cell.setAttribute("colwidth", w.join(","));
+        col += cs;
+      }
+    });
+  }
+  return doc.body.innerHTML;
+}
+
+/**
  * Pasted HTML lists become list paragraphs (Docs stores lists as a property
  * of each paragraph), in document order, each at its nesting level. Docs
  * wraps an item's text in a <p> that carries the paragraph's alignment and

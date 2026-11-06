@@ -287,6 +287,55 @@ test("a copy whose HTML lacks a block, or has it out of order, isn't merged (the
   assert.ok(mergeSliceWithHtml(credit, sliceParagraphs(credit, ARIAL), [{ type: "paragraph", content: [{ type: "image", attrs: { src: "x" } }] }, ...only]));
 });
 
+test("images on paragraphs of their own each go with their own image, past an empty line Docs writes as a line break", () => {
+  const text = "Intro\n\n*\nCaption\n*\nEnd\n";
+  const image: (object | null)[] = Array.from({ length: text.length }, () => null);
+  image[text.indexOf("*")] = { id: "kix.a" };
+  image[text.lastIndexOf("*")] = { id: "kix.b" };
+  const parts = readDocsSliceParts(clip(text, {}, { dsl_entitypositionmap: { inline: image }, dsl_entitytypemap: { "kix.a": "inline", "kix.b": "inline" }, dsl_entitymap: { "kix.a": {}, "kix.b": {} } }))!;
+  assert.deepEqual(parts.blocks.map((b) => [b.exact, b.images ?? 0]), [[true, 0], [true, 0], [false, 1], [true, 0], [false, 1], [true, 0]]);
+  const p = (...content: EditorNode[]): EditorNode => ({ type: "paragraph", attrs: {}, content });
+  const img = (src: string): EditorNode => ({ type: "image", attrs: { src } });
+  // <p><br><span><br></span></p> pastes as a paragraph with a line break
+  const html = [p({ type: "text", text: "Intro" }), p({ type: "hardBreak" }), p(img("A")), p({ type: "text", text: "Caption" }), p(img("B")), p({ type: "text", text: "End" })];
+  const merged = mergeSliceWithHtml(parts, sliceParagraphs(parts, ARIAL), html)!;
+  const shape = (n: EditorNode) => (n.content ?? []).map((c) => (c.type === "image" ? `<${c.attrs?.src}>` : c.type === "hardBreak" ? "<br>" : c.text)).join("");
+  assert.deepEqual(merged.map(shape), ["Intro", "", "<A>", "Caption", "<B>", "End"]);
+  // An image the HTML left out: the empty paragraph in its place, and the rest still lines up
+  const without = [p({ type: "text", text: "Intro" }), p({ type: "hardBreak" }), p(), p({ type: "text", text: "Caption" }), p(img("B")), p({ type: "text", text: "End" })];
+  assert.deepEqual(mergeSliceWithHtml(parts, sliceParagraphs(parts, ARIAL), without)!.map(shape), ["Intro", "", "", "Caption", "<B>", "End"]);
+  // An empty paragraph the HTML has and the copy doesn't, before an image: the image's paragraph is the one with the image
+  const one = readDocsSliceParts(clip("Intro\n*\nEnd\n", {}, { dsl_entitypositionmap: { inline: [null, null, null, null, null, null, { id: "kix.a" }] }, dsl_entitytypemap: { "kix.a": "inline" }, dsl_entitymap: { "kix.a": {} } }))!;
+  const extra = [p({ type: "text", text: "Intro" }), p(), p(img("A")), p({ type: "text", text: "End" })];
+  assert.deepEqual(mergeSliceWithHtml(one, sliceParagraphs(one, ARIAL), extra)!.map(shape), ["Intro", "<A>", "End"]);
+});
+
+test("a positioned image, which the copy anchors on the paragraph before, is pasted where the HTML draws it, the paragraphs as the copy has them", () => {
+  const text = "Steps\nRight click it\nEnd\n";
+  const positioned: (object | null)[] = Array.from({ length: text.length }, () => null);
+  positioned[text.indexOf("\n")] = ["kix.pos"];
+  const slice = clip(text, { text: { [text.indexOf("Right")]: ts({ ts_fs: 14 }), [text.indexOf("\nEnd")]: ts() } }, {
+    dsl_entitypositionmap: { positioned }, dsl_entitytypemap: { "kix.pos": "positioned" }, dsl_entitymap: { "kix.pos": {} },
+  });
+  assert.equal(readDocsSlice(slice, "Steps\nRight click it\nEnd\n"), null, "the image isn't in the copy's text");
+  const parts = readDocsSliceParts(slice)!;
+  assert.deepEqual(parts.blocks.map((b) => b.exact), [true, true, true]);
+  const p = (...content: EditorNode[]): EditorNode => ({ type: "paragraph", attrs: {}, content });
+  const img: EditorNode = { type: "image", attrs: { src: "https://lh7-rt.googleusercontent.com/docsz/pos" } };
+  const t = (s: string): EditorNode => ({ type: "text", text: s });
+  for (const [drawn, want] of [
+    [[img, t("Right click it")], ["image", "Right click it"]],
+    [[t("Right "), img, t("click it")], ["Right ", "image", "click it"]],
+    [[t("Right click it"), img], ["Right click it", "image"]],
+  ] as [EditorNode[], string[]][]) {
+    const merged = mergeSliceWithHtml(parts, sliceParagraphs(parts, ARIAL), [p(t("Steps")), p(...drawn), p(t("End"))])!;
+    assert.deepEqual(merged[1].content?.map((c) => (c.type === "image" ? "image" : c.text)), want);
+    // The copy's own text style, on every piece of the text
+    for (const c of merged[1].content!.filter((x) => x.type === "text")) assert.equal(c.marks?.find((m) => m.type === "textStyle")?.attrs?.fontSize, 14);
+    assert.deepEqual(texts([merged[0], merged[2]]), ["Steps", "End"]);
+  }
+});
+
 test("a page break is read in its paragraph (Docs' text/plain leaves it out), and a section break is no paragraph", () => {
   const slice = readDocsSlice(clip("One\u000ctwo\n\ue905Next\n"), "Onetwo\nNext\n")!;
   assert.ok(slice);

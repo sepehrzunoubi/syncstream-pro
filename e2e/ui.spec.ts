@@ -87,6 +87,46 @@ test.describe("starting a sync", () => {
     expect(JSON.stringify(api.starts[0].segments)).toContain("https://images.e2e.test/img/1.png");
   });
 
+  test("a pasted image whose upload failed doesn't come back with redo, and one gone with a reload is taken out: the page never shows an image the sync would leave out", async ({ app, page, api }) => {
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    const images = () => page.evaluate(() => {
+      const out: string[] = [];
+      window.ssEditor!.state.doc.descendants((n) => { if (n.type.name === "image") out.push(String(n.attrs.src)); });
+      return out;
+    });
+    api.contentMode = "always";
+    await app.open();
+    const before = (await images()).length;
+    // Undone before its upload fails, redone after
+    api.imagesFail = true;
+    api.imageDelay = 1200;
+    await app.caretAtEnd(CLOSING_TEXT);
+    await app.paste({ html: `<meta charset="utf-8"><span>Logo </span><img src="${png}" width="24" height="24">`, text: "Logo " });
+    await expect.poll(images).toHaveLength(before + 1);
+    await page.keyboard.press("Control+z");
+    await expect.poll(images).toHaveLength(before);
+    await expect.poll(() => api.imageFailures, { timeout: 8000 }).toBe(1);
+    await page.waitForTimeout(300);
+    await page.keyboard.press("Control+Shift+z");
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.getText().includes("Logo"))).toBe(true);
+    await expect.poll(images).toHaveLength(before);
+    await expect(page.getByText(/Couldn't add a pasted image: Image storage is unavailable/)).toBeVisible();
+    // Reloaded while one uploads: the draft has its blob: address, which is gone with the page
+    api.imagesFail = false;
+    api.imageDelay = 20_000;
+    await app.paste({ html: `<meta charset="utf-8"><img src="${png}" width="24" height="24">`, text: "" });
+    await expect.poll(async () => (await images()).filter((s) => s.startsWith("blob:"))).toHaveLength(1);
+    await page.waitForTimeout(1000);
+    await page.reload();
+    await page.waitForFunction(() => !!window.ssEditor);
+    await expect(page.getByText(/Couldn't add a pasted image: it was gone before it was uploaded/)).toBeVisible();
+    expect((await images()).filter((s) => s.startsWith("blob:"))).toEqual([]);
+    // And the sync goes ahead without it, saying nothing is missing
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect.poll(() => api.starts.length).toBe(1);
+    expect(JSON.stringify(api.starts[0].segments)).not.toContain("blob:");
+  });
+
   test("Start sync posts the pending additions with their Docs position and shows the running view", async ({ app, page, api }) => {
     await app.open();
     const start = page.getByRole("button", { name: "Start sync" });

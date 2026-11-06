@@ -872,7 +872,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     paraRequests.push(sectionStyleRequest((saved[p] as Extract<Tok, { k: "block" }>).node.attrs ?? {}, start, Math.max(start + 1, end)));
   }
   // Cell backgrounds change no index: at the document's indices as they are, before the rest
-  const requests = [...cellStyleRequests(base, target, match, index), ...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
+  const requests = [...cellStyleRequests(base, target, match, index), ...columnWidthRequests(base, target, match, index), ...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
   return { requests, saved: untokenize(saved) };
 }
 
@@ -1073,11 +1073,13 @@ function adoptTables(base: Tok[], target: Tok[]): Tok[] {
     while (k < theirs.length && theirs[k].kinds.join() !== m.kinds.join()) k++;
     if (k >= theirs.length) break;
     const b = theirs[k++];
-    // The document's ids and index spans; the editor's look stays (a pasted cell's background), for the next save to write
+    // The document's ids and index spans; the editor's look stays (a pasted cell's background and column
+    // widths), for the next save to write. A column the editor gives no width has the document's
     m.at.forEach((pos, n) => {
       const doc = base[b.at[n]] as St;
       const own = (target[pos] as St).attrs;
-      out[pos] = { ...doc, attrs: { ...own, ...Object.fromEntries(STRUCTURE_IDS.filter((key) => key in doc.attrs).map((key) => [key, doc.attrs[key]])) } };
+      const width = own.colwidth == null && doc.attrs.colwidth != null ? { colwidth: doc.attrs.colwidth } : {};
+      out[pos] = { ...doc, attrs: { ...own, ...width, ...Object.fromEntries(STRUCTURE_IDS.filter((key) => key in doc.attrs).map((key) => [key, doc.attrs[key]])) } };
     });
   }
   return out;
@@ -1094,6 +1096,70 @@ const cellBackground = (attrs: Record<string, unknown>): string | null => {
  * in the document), or the other way round: one updateTableCellStyle each, at the cell's table, row and
  * column in the document.
  */
+/** A table's column widths in pixels, by grid column, from its cells' widths (null where none gives one) */
+function columnWidths(rows: { colspan: number; rowspan: number; colwidth: unknown }[][]): (number | null)[] {
+  const grid = cellGrid(rows);
+  const out: (number | null)[] = Array.from({ length: grid.width }, () => null);
+  rows.forEach((cells, r) => cells.forEach((c, k) => {
+    if (!Array.isArray(c.colwidth)) return;
+    for (let d = 0; d < c.colspan; d++) {
+      const w = c.colwidth[d];
+      const at = grid.columns[r][k] + d;
+      if (typeof w === "number" && w > 0 && out[at] == null) out[at] = w;
+    }
+  }));
+  return out;
+}
+
+/** Each table of a token list: its start token, and its rows of cells */
+function tableCells(tokens: Tok[]): { at: number; rows: { at: number; colspan: number; rowspan: number; colwidth: unknown }[][] }[] {
+  const out: { at: number; rows: { at: number; colspan: number; rowspan: number; colwidth: unknown }[][] }[] = [];
+  let depth = 0;
+  tokens.forEach((t, i) => {
+    if (t.k !== "st") return;
+    if (t.kind === "table") { if (depth++ === 0) out.push({ at: i, rows: [] }); return; }
+    if (t.kind === "tableEnd") { depth--; return; }
+    if (depth !== 1) return;
+    const table = out[out.length - 1];
+    if (t.kind === "row") table.rows.push([]);
+    else if (t.kind === "cell") table.rows[table.rows.length - 1]?.push({ at: i, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan), colwidth: t.attrs.colwidth });
+  });
+  return out;
+}
+
+/** Docs' smallest column width, in points */
+const MIN_COLUMN_PT = 5;
+
+/**
+ * Columns whose width the editor has and the document doesn't (a pasted table's, from the copy's
+ * HTML, once the table is in the document): one updateTableColumnProperties each, fixed at the
+ * editor's width. A column the editor gives no width keeps the document's.
+ */
+function columnWidthRequests(base: Tok[], target: Tok[], match: number[], index: number[]): DocsRequest[] {
+  const baseTables = new Map(tableCells(base).map((t) => [t.at, t]));
+  const requests: DocsRequest[] = [];
+  for (const t of tableCells(target)) {
+    const b = baseTables.get(match[t.at]);
+    if (!b) continue;
+    const want = columnWidths(t.rows);
+    const have = columnWidths(b.rows);
+    if (want.length !== have.length) continue;
+    want.forEach((w, c) => {
+      if (w == null) return;
+      // (in points, at least Docs' least: a width under it is what the document reads back as its least)
+      const pt = Math.max(MIN_COLUMN_PT, Math.round(w * 0.75 * 100) / 100);
+      if (have[c] != null && Math.abs(have[c]! - Math.round(pt / 0.75)) < 1) return;
+      requests.push({ updateTableColumnProperties: {
+        tableStartLocation: { index: index[b.at] },
+        columnIndices: [c],
+        tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: pt, unit: "PT" } },
+        fields: "widthType,width",
+      } });
+    });
+  }
+  return requests;
+}
+
 function cellStyleRequests(base: Tok[], target: Tok[], match: number[], index: number[]): DocsRequest[] {
   // Each document cell's table start, and its grid row and column
   const where = new Map<number, { start: number; row: number; column: number }>();

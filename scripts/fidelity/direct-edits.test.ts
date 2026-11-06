@@ -140,6 +140,74 @@ test("a pasted table with merged cells is made once, merged as the editor has it
   assert.deepEqual(after.filter((n) => n.type === "paragraph").map((p) => [(p.content ?? []).map((x) => x.text ?? "").join(""), p.attrs?.styleName]), [["Intro", "h2"], ["After", "normal"]]);
 });
 
+/** Saves as the autosave does until nothing is left: a table's shape first, read back and adopted, then the rest */
+async function autosave(docs: ReturnType<typeof createStrictStubDocs>, id: string, base: EditorNode, editor: EditorNode) {
+  const rounds: string[][] = [];
+  for (let round = 0; round < 5; round++) {
+    const out = directEdits(base, editor);
+    if (!out.requests.length) break;
+    rounds.push(out.requests.map((r) => Object.keys(r)[0]));
+    for (const r of out.requests) assert.ok(EDIT_REQUESTS.has(Object.keys(r)[0]), `${Object.keys(r)[0]} is an edit the route takes`);
+    await docs.batchUpdate(id, out.requests as never);
+    if (out.structural) {
+      base = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+      editor = adoptStructure(base, editor);
+    } else base = out.saved;
+  }
+  return { base, editor, rounds };
+}
+
+test("a pasted table with a row a merge covers whole (Docs' HTML writes it as an empty <tr>) is made once, and stays made", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("covered");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "Intro\nAfter" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  const cell = (text: string, colspan = 1, rowspan = 1): EditorNode => ({ type: "tableCell", attrs: { colspan, rowspan }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text, marks: [{ type: "syncAdd" }] }] }] });
+  // Two columns; below the first row, one cell two rows tall and two wide, so the last row has no cell of its own
+  const table: EditorNode = { type: "table", attrs: {}, content: [
+    { type: "tableRow", attrs: {}, content: [cell("A"), cell("B")] },
+    { type: "tableRow", attrs: {}, content: [cell("Big", 2, 2)] },
+    { type: "tableRow", attrs: {}, content: [] },
+    { type: "tableRow", attrs: {}, content: [cell("C"), cell("D")] },
+  ] };
+  const { base, editor, rounds } = await autosave(docs, id, start, { type: "doc", content: [start.content![0], table, start.content![1]] });
+  // Made once, merged; then the newline Docs puts before a new table is taken out, and nothing is left
+  assert.deepEqual(rounds, [["insertTable", "mergeTableCells"], ["deleteContentRange"]]);
+  const doc = await docs.get(id);
+  const read = importDoc(doc).nodes.find((n) => n.type === "table")!;
+  assert.deepEqual(read.content!.map((r) => r.content!.length), [2, 1, 0, 2], "read back as the editor has it");
+  // The sync types each cell's text where additions put it, and an edit after the table goes where Docs has it
+  const typed = additions(base, editor).segments.slice().sort((a, b) => b.at - a.at).map((x) => ({ insertText: { location: { index: x.at }, text: x.text } }));
+  await docs.batchUpdate(id, typed as never);
+  const now = importDoc(await docs.get(id)).nodes;
+  const cellText = (t: EditorNode) => t.content!.map((r) => r.content!.map((c) => (c.content ?? []).map((p) => (p.content ?? []).map((x) => x.text ?? "").join("")).join("|")));
+  assert.deepEqual(cellText(now.find((n) => n.type === "table")!), [["A", "B"], ["Big"], [], ["C", "D"]]);
+  const edited = JSON.parse(JSON.stringify(now)) as EditorNode[];
+  const after = edited.find((n) => n.type === "paragraph" && n.content?.[0]?.text === "After")!;
+  after.content![0].text = "After!";
+  await docs.batchUpdate(id, directEdits({ type: "doc", content: now }, { type: "doc", content: edited }).requests as never);
+  assert.deepEqual(text(importDoc(await docs.get(id)).nodes.filter((n) => n.type === "paragraph")), ["Intro", "After!"]);
+});
+
+test("a pasted table's column widths (from the copy's HTML) reach the document once the table is in it, and stay on the page", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("widths");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "Intro\nAfter" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  const cell = (text: string, colwidth: number[], colspan = 1): EditorNode => ({ type: "tableCell", attrs: { colspan, colwidth }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text, marks: [{ type: "syncAdd" }] }] }] });
+  const table: EditorNode = { type: "table", attrs: {}, content: [
+    { type: "tableRow", attrs: {}, content: [cell("Wide", [120, 504], 2)] },
+    { type: "tableRow", attrs: {}, content: [cell("Name", [120]), cell("Notes", [504])] },
+  ] };
+  const { base, editor, rounds } = await autosave(docs, id, start, { type: "doc", content: [start.content![0], table, start.content![1]] });
+  assert.deepEqual(rounds, [["insertTable", "mergeTableCells"], ["updateTableColumnProperties", "updateTableColumnProperties", "deleteContentRange"]]);
+  const widths = (doc: EditorNode) => (doc.content ?? []).filter((n) => n.type === "table").flatMap((t) => (t.content ?? []).map((r) => (r.content ?? []).map((c) => c.attrs?.colwidth ?? null)));
+  const read: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  assert.deepEqual(widths(read), [[[120, 504]], [[120], [504]]], "the document");
+  assert.deepEqual(widths(editor), [[[120, 504]], [[120], [504]]], "the page");
+  assert.equal(directEdits(base, editor).requests.length, 0, "nothing left to save");
+});
+
 test("deleting the document's last paragraph leaves the one before it with its own style (Docs keeps the last newline, and its style)", async () => {
   const { target, after } = await save([
     { insertText: { location: { index: 1 }, text: "Title\nBody text" } },

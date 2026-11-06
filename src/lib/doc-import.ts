@@ -417,7 +417,8 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
     };
     // Cells a merge covers. Docs lists them in a row that lists its whole grid; the editor's table (as
     // any ProseMirror table) has only the merged cell, with its spans, and the covered cells' indices
-    // go with the next cell's span
+    // go with the next cell's span. A row a merge covers whole has no cell of its own (as the page's
+    // table has it, pasted from Docs' HTML: an empty <tr>)
     const tableRows = table.tableRows ?? [];
     const covered = tableRows.map(() => new Set<number>());
     const taken = tableRows.map(() => new Set<number>());
@@ -430,8 +431,6 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
         const rs = Math.max(1, cell.tableCellStyle?.rowSpan ?? 1);
         for (let dr = 0; dr < rs && r + dr < tableRows.length; dr++) for (let dc = 0; dc < cs; dc++) if (dr || dc) taken[r + dr].add(c + dc);
       });
-      // A row has a cell of its own
-      if (covered[r].size === cells.length) covered[r].clear();
     });
     // The index just after the last content read so far
     let cursor = el.startIndex ?? 0;

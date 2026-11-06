@@ -223,4 +223,27 @@ test("a merged cell: the cells it covers are left out when Docs lists them, thei
   const odd = JSON.parse(JSON.stringify(listed));
   odd.body.content[2].table.tableRows[0].tableCells[0].tableCellStyle = {};
   assert.deepEqual(importDoc(odd as never).nodes.find((n) => n.type === "table")!.content!.map((r) => r.content!.length), [2, 2], "no merge, nothing left out");
+
+  // A cell two rows tall and two wide: the row it covers whole has no cell of its own, as the editor's table has it
+  // Table at 7: row 8, cells 9 ("Big\n" 10..14) and 14 (covered); row 16, cells 17 and 19 (covered); row 21,
+  // cells 22 ("A\n") and 25 ("B\n"); the table ends at 28; "After\n" 28..34
+  const tall = {
+    revisionId: "r",
+    body: { content: [
+      { startIndex: 0, endIndex: 1, sectionBreak: {} },
+      para("Intro\n", 1),
+      { startIndex: 7, endIndex: 28, table: { rows: 3, columns: 2, tableRows: [
+        { startIndex: 8, endIndex: 16, tableCells: [cell("Big\n", 9, { columnSpan: 2, rowSpan: 2 }), cell("\n", 14)] },
+        { startIndex: 16, endIndex: 21, tableCells: [cell("\n", 17), cell("\n", 19)] },
+        { startIndex: 21, endIndex: 28, tableCells: [cell("A\n", 22), cell("B\n", 25)] },
+      ] } },
+      para("After\n", 28),
+    ] },
+  };
+  const tallNodes = importDoc(tall as never).nodes;
+  assert.deepEqual(tallNodes.find((n) => n.type === "table")!.content!.map((r) => r.content!.length), [1, 0, 2]);
+  const tallEdited = JSON.parse(JSON.stringify(tallNodes));
+  tallEdited[1].content[2].content[1].content[0].content[0].text = "Bx";
+  tallEdited[2].content[0].text = "After!";
+  assert.deepEqual(directEdits({ type: "doc", content: tallNodes }, { type: "doc", content: tallEdited }).requests.filter((r) => r.insertText).map((r) => r.insertText), [{ location: { index: 33 }, text: "!" }, { location: { index: 27 }, text: "x" }]);
 });

@@ -85,6 +85,8 @@ export class FakeGoogle {
   /** Images uploaded (their data URLs); with `imagesFail`, the upload route answers with an error */
   uploads: string[] = [];
   imagesFail = false;
+  /** Uploads answered with an error */
+  imageFailures = 0;
   /** How long the upload route takes to answer, in ms */
   imageDelay = 0;
   /** Calls to API routes this fake doesn't know: always a bug in the test or the app */
@@ -138,7 +140,7 @@ export class FakeGoogle {
         }
         case "/api/images": {
           if (this.imageDelay) await new Promise((r) => setTimeout(r, this.imageDelay));
-          if (this.imagesFail) return json(route, { error: "Image storage is unavailable" }, 503);
+          if (this.imagesFail) { this.imageFailures++; return json(route, { error: "Image storage is unavailable" }, 503); }
           this.uploads.push(String(body().dataUrl ?? ""));
           return json(route, { url: `https://images.e2e.test/img/${this.uploads.length}.png` });
         }

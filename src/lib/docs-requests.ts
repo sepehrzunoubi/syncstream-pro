@@ -29,4 +29,5 @@ export const EDIT_REQUESTS: ReadonlySet<string> = new Set([
   // A cell's background, and merged cells (a pasted table's)
   "updateTableCellStyle",
   "mergeTableCells",
+  "updateTableColumnProperties",
 ]);

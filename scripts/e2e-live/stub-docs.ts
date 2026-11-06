@@ -26,7 +26,7 @@ type Item =
   | { k: "c"; ch: string; ts: TextStyle }
   | { k: "pb"; ts: TextStyle }
   | { k: "nl"; ts: TextStyle; ps: ParagraphStyle; bullet?: Bullet }
-  | { k: "tbl"; columns: number }
+  | { k: "tbl"; columns: number; widths?: docs_v1.Schema$TableColumnProperties[] }
   | { k: "row" }
   | { k: "cell"; style?: docs_v1.Schema$TableCellStyle; covered?: boolean }
   | { k: "tend" };
@@ -81,6 +81,7 @@ interface Request {
   deleteParagraphBullets?: { range: { startIndex: number; endIndex: number } };
   updateTableCellStyle?: docs_v1.Schema$UpdateTableCellStyleRequest;
   mergeTableCells?: docs_v1.Schema$MergeTableCellsRequest;
+  updateTableColumnProperties?: docs_v1.Schema$UpdateTableColumnPropertiesRequest;
 }
 
 export class StubDocument {
@@ -185,7 +186,7 @@ export class StubDocument {
     }
     if (this.items[i]?.k !== "tend") throw new Error(`stub: table at ${start} has no end`);
     i++;
-    return { element: { startIndex: start, endIndex: i, table: { rows: tableRows.length, columns: tbl.columns, tableRows, tableStyle: { tableColumnProperties: Array.from({ length: tbl.columns }, () => ({ width: { magnitude: 468 / tbl.columns, unit: "PT" } })) } } }, end: i };
+    return { element: { startIndex: start, endIndex: i, table: { rows: tableRows.length, columns: tbl.columns, tableRows, tableStyle: { tableColumnProperties: Array.from({ length: tbl.columns }, (_, c) => clone(tbl.widths?.[c] ?? { width: { magnitude: 468 / tbl.columns, unit: "PT" } })) } } }, end: i };
   }
 
   // ── Paragraph geometry ────────────────────────────────────────────────────
@@ -265,6 +266,7 @@ export class StubDocument {
     if (r.deleteParagraphBullets) return this.deleteParagraphBullets(r.deleteParagraphBullets.range.startIndex, r.deleteParagraphBullets.range.endIndex);
     if (r.updateTableCellStyle) return this.updateTableCellStyle(r.updateTableCellStyle);
     if (r.mergeTableCells) return this.mergeTableCells(r.mergeTableCells);
+    if (r.updateTableColumnProperties) return this.updateTableColumnProperties(r.updateTableColumnProperties);
     throw bad(`The stub does not model ${key} requests`);
   }
 
@@ -327,6 +329,31 @@ export class StubDocument {
       return;
     }
     throw bad(`Invalid table cell location: row ${loc?.rowIndex}, column ${loc?.columnIndex}`);
+  }
+
+  /** Columns' width: "If the value of tableColumnProperties#width is less than 5 points (5/72 inch), a 400 bad request error is returned" */
+  updateTableColumnProperties(u: docs_v1.Schema$UpdateTableColumnPropertiesRequest): void {
+    const at = u.tableStartLocation?.index;
+    const tbl = at == null ? undefined : this.items[at];
+    if (!tbl || tbl.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    const fields = (u.fields ?? "").split(",").filter(Boolean);
+    if (!fields.length) throw bad("fields is required");
+    if (fields.some((f) => f !== "width" && f !== "widthType")) throw bad(`The stub does not model table column fields ${fields.join(",")}`);
+    const props = u.tableColumnProperties ?? {};
+    const w = props.width;
+    if (fields.includes("width") && w && (w.unit !== "PT" || !((w.magnitude ?? 0) >= 5))) throw bad("The column width must be at least 5 points");
+    const columns = u.columnIndices?.length ? u.columnIndices : Array.from({ length: tbl.columns }, (_, c) => c);
+    for (const c of columns) if (!Number.isInteger(c) || c < 0 || c >= tbl.columns) throw bad(`Invalid column index ${c}`);
+    const widths = tbl.widths ?? Array.from({ length: tbl.columns }, () => ({ width: { magnitude: 468 / tbl.columns, unit: "PT" } }));
+    for (const c of columns) {
+      const now: docs_v1.Schema$TableColumnProperties = { ...widths[c] };
+      for (const f of fields as ("width" | "widthType")[]) {
+        if (props[f] == null) delete now[f];
+        else (now as Record<string, unknown>)[f] = clone(props[f]);
+      }
+      widths[c] = now;
+    }
+    tbl.widths = widths;
   }
 
   /**

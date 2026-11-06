@@ -337,7 +337,33 @@ test("a cell's background is one updateTableCellStyle at its table, row and colu
   const theirs = { type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t9", span: 1, endSpan: 1 }, content: [{ type: "tableRow", attrs: { rid: "t9r0", span: 1 }, content: [{ type: "tableCell", attrs: { cid: "t9c0", span: 2, background: null, colwidth: [624] }, content: [p("")] }] }] }, p("After")] };
   const adopted = adoptStructure(theirs, mine) as { content: { content?: { content?: { attrs: Record<string, unknown> }[] }[]; attrs?: Record<string, unknown> }[] };
   assert.equal(adopted.content[1].attrs?.tid, "t9");
-  assert.deepEqual(adopted.content[1].content?.[0].content?.[0].attrs, { background: "#d9ead3", cid: "t9c0", span: 2 });
+  // (no width of its own: the document's)
+  assert.deepEqual(adopted.content[1].content?.[0].content?.[0].attrs, { background: "#d9ead3", colwidth: [624], cid: "t9c0", span: 2 });
+});
+
+test("a column's width the editor has and the document doesn't is one updateTableColumnProperties, fixed at it", async () => {
+  const { directEdits, adoptStructure } = await import("./doc-model");
+  const p = (text: string) => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] });
+  const cell = (cid: string, colwidth: number[] | null, colspan = 1) => ({ type: "tableCell", attrs: { cid, span: 1, colspan, colwidth }, content: [p(cid)] });
+  const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  // Two rows: a cell across both columns, then one per column
+  const doc = (top: number[] | null, left: number[] | null, right: number[] | null) => ({ type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t1", span: 1 }, content: [row("r0", cell("c0", top, 2)), row("r1", cell("c0", left), cell("c1", right))] }, p("After")] });
+  const base = doc([312, 312], [312], [312]);
+  const width = (column: number, magnitude: number) => ({ updateTableColumnProperties: { tableStartLocation: { index: 7 }, columnIndices: [column], tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude, unit: "PT" } }, fields: "widthType,width" } });
+  assert.deepEqual(directEdits(base, doc([120, 504], [120], [504])).requests, [width(0, 90), width(1, 378)]);
+  // From whichever cell gives it: the one across both columns
+  assert.deepEqual(directEdits(base, doc([120, 504], null, null)).requests, [width(0, 90), width(1, 378)]);
+  // The same width, or none in the editor: nothing; under Docs' least, its least
+  assert.deepEqual(directEdits(base, doc([312, 312], [312], [312])).requests, []);
+  assert.deepEqual(directEdits(base, doc(null, null, null)).requests, []);
+  assert.deepEqual(directEdits(base, doc([3, 621], null, null)).requests, [width(0, 5), width(1, 465.75)]);
+  // which, read back, is the document's width from then on
+  assert.deepEqual(directEdits(doc([7, 621], [7], [621]), doc([3, 621], null, null)).requests, []);
+  // Kept through adoption, for the next save to write
+  const mine = { type: "doc", content: [p("Intro"), { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: { colwidth: [120] }, content: [p("")] }] }] }, p("After")] };
+  const theirs = { type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t9", span: 1, endSpan: 1 }, content: [{ type: "tableRow", attrs: { rid: "t9r0", span: 1 }, content: [{ type: "tableCell", attrs: { cid: "t9c0", span: 2, colwidth: [624] }, content: [p("")] }] }] }, p("After")] };
+  const adopted = adoptStructure(theirs, mine) as { content: { content?: { content?: { attrs: Record<string, unknown> }[] }[] }[] };
+  assert.deepEqual(adopted.content[1].content?.[0].content?.[0].attrs.colwidth, [120]);
 });
 
 test("deleting across a table removes the text on both sides and keeps the table as it is", () => {

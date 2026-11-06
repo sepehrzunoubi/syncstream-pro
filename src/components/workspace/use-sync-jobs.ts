@@ -10,7 +10,7 @@ import type { Editor, JSONContent } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { richFromEditorJSON, richToEditorJSON } from "@/lib/rich-text";
-import { additions, rebase } from "@/lib/doc-model";
+import { additions, PENDING_MARK, rebase } from "@/lib/doc-model";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { formatClock } from "@/lib/format";
@@ -157,10 +157,15 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     setStartError(null);
     try {
       if (docContent?.docId === selectedDocId && docContent.status === "loading") throw new Error("The document is still opening. Try again in a moment.");
-      // A pasted image the sync can't insert yet: it would be left out
-      let uploading = false;
-      editor.state.doc.descendants((n) => { if (n.type.name === "image" && isUploadingImage(n.attrs.src)) uploading = true; return !uploading; });
-      if (uploading) throw new Error("A pasted image is still uploading. Try again in a moment.");
+      // An image the sync can't insert (yet): it would be left out
+      let blocked: string | null = null;
+      editor.state.doc.descendants((n) => {
+        if (blocked || n.type.name !== "image") return !blocked;
+        if (isUploadingImage(n.attrs.src)) blocked = "A pasted image is still uploading. Try again in a moment.";
+        else if (n.marks.some((m) => m.type.name === PENDING_MARK) && !/^https?:\/\//i.test(typeof n.attrs.src === "string" ? n.attrs.src : "")) blocked = "An image in the text isn't on the web, so the sync can't add it to the document. Take it out, or paste the image itself.";
+        return !blocked;
+      });
+      if (blocked) throw new Error(blocked);
       let payload: Record<string, unknown>;
       let source: Source;
       const inDoc = docContent?.docId === selectedDocId && docContent.status === "ready" && !!baseRef.current;

@@ -495,6 +495,21 @@ test.describe("Docs' HTML against Docs' own copy", () => {
     expect((await paragraphsOf(app))[0].content?.every((c) => (c.marks ?? []).some((m) => m.type === PENDING_MARK))).toBe(true);
   });
 
+  test("a pasted table's column widths go with each cell's own columns, past a merged cell (as the sync writes them)", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const td = (t: string, spans = "") => `<td${spans} style="border-left:solid #000000 1pt;border-right:solid #000000 1pt;border-bottom:solid #000000 1pt;border-top:solid #000000 1pt;vertical-align:top;padding:5pt 5pt 5pt 5pt;">${para(span(t))}</td>`;
+    const table = `<div dir="ltr" style="margin-left:0pt;" align="left"><table style="border:none;border-collapse:collapse;"><colgroup><col width="120"><col width="200"><col width="300"></colgroup><tbody>`
+      + `<tr style="height:0pt">${td("A", ' rowspan="2"')}${td("B", ' colspan="2"')}</tr>`
+      + `<tr style="height:0pt">${td("C")}${td("D")}</tr>`
+      + `<tr style="height:0pt">${td("E", ' colspan="3"')}</tr></tbody></table></div>`;
+    await app.paste({ html: docs(para(span("Before")) + table + para(span("After"))), text: "Before\nA\nB\nC\nD\nE\nAfter\n" });
+    const widths = async () => {
+      const t = ((await app.json()).content as EditorNode[]).find((n) => n.type === "table");
+      return t?.content?.map((r) => (r.content ?? []).map((c) => [(c.content ?? []).map((p) => (p.content ?? []).map((x) => x.text).join("")).join(""), c.attrs?.colwidth ?? null])) ?? null;
+    };
+    await expect.poll(widths).toEqual([[["A", [120]], ["B", [200, 300]]], [["C", [200]], ["D", [300]]], [["E", [120, 200, 300]]]]);
+  });
+
   test("a pasted image that can't be uploaded is left out, with a message: the page doesn't show what the document won't have", async ({ app, api, page }) => {
     await openEmpty(app, api, page);
     api.imagesFail = true;
