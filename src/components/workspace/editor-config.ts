@@ -7,9 +7,9 @@ import { useEffect, type MutableRefObject } from "react";
 import type { Editor, EditorOptions } from "@tiptap/react";
 import { editorExtensions } from "./extensions";
 import { ProgressMarks } from "./pagination";
-import { clipboardTextParser, DroppedBreaks, handlePaste, imageFilesOf, transformPastedHTML } from "./paste";
+import { clipboardTextParser, DroppedBreaks, handlePaste, imageFilesOf, LineBreaks, transformPastedHTML } from "./paste";
 
-export const bodyExtensions = [...editorExtensions, DroppedBreaks];
+export const bodyExtensions = [...editorExtensions, DroppedBreaks, LineBreaks];
 
 /**
  * Typing and pasting behave as in Google Docs: lists start from "* " and

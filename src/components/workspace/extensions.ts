@@ -365,6 +365,16 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => (el.hasAttribute("data-cont") && !el.hasAttribute("data-list") ? true : null),
         renderHTML: (a: { listCont?: boolean | null; list?: string | null }) => (a.listCont && !a.list ? { "data-cont": "" } : {}),
       },
+      /**
+       * The line after a line break in the paragraph before (see breaksAsParagraphs): the editor's own
+       * record, so typing treats it as the break it is drawn as and a copy gives other apps the break
+       */
+      softBreak: {
+        default: null,
+        keepOnSplit: false,
+        parseHTML: (el: HTMLElement) => (el.hasAttribute("data-br") ? true : null),
+        renderHTML: (a: { softBreak?: boolean | null }) => (a.softBreak ? { "data-br": "" } : {}),
+      },
       /** Exact indents and spacing of a paragraph read from Docs, in points */
       box: {
         default: null,
@@ -1245,7 +1255,19 @@ const ClipboardHTML = Extension.create({
         let shown = 0;
         let carried = 0;
         let lastItem: Record<string, unknown> | null = null;
+        // The last paragraph written, which a line after a line break goes back into
+        let lastBlock: HTMLElement | null = null;
         fragment.forEach((node) => {
+          // The line after a line break (see breaksAsParagraphs) is the break in the paragraph before, for
+          // other apps (Docs pastes it as one), with the space below it had
+          if (node.type.name === "paragraph" && node.attrs.softBreak && lastBlock) {
+            const el = serializer.serializeNode(node, options) as HTMLElement;
+            lastBlock.appendChild(doc.createElement("br"));
+            while (el.firstChild) lastBlock.appendChild(el.firstChild);
+            const below = (node.attrs.box as { below?: number | null } | null)?.below;
+            if (typeof below === "number") lastBlock.style.marginBottom = `${below}pt`;
+            return;
+          }
           if (node.type.name === "paragraph" && node.attrs.list) {
             const level = Math.max(0, Number(node.attrs.level ?? 0));
             const tag = node.attrs.list === "ordered" ? "ol" : "ul";
@@ -1275,7 +1297,9 @@ const ClipboardHTML = Extension.create({
             const li = doc.createElement("li");
             li.setAttribute("aria-level", String(level + 1));
             if (node.attrs.list === "check") li.setAttribute("role", "checkbox");
-            li.appendChild(serializer.serializeNode(node, options));
+            const el = serializer.serializeNode(node, options);
+            li.appendChild(el);
+            lastBlock = el instanceof HTMLElement ? el : null;
             stack[level].appendChild(li);
             if (level === 0 && tag === "ol") { shown++; lastItem = node.attrs; }
             carried = 0;
@@ -1284,7 +1308,9 @@ const ClipboardHTML = Extension.create({
             if (node.type.name === "paragraph" && node.attrs.listCont) { if (stack[0]?.tagName.toLowerCase() === "ol") carried = shown; }
             else carried = 0;
             stack = [];
-            out.appendChild(serializer.serializeNode(node, options));
+            const el = serializer.serializeNode(node, options);
+            out.appendChild(el);
+            lastBlock = node.type.name === "paragraph" && el instanceof HTMLElement ? el : null;
           }
         });
         return out;

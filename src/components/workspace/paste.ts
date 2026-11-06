@@ -178,7 +178,7 @@ export function breaksAsParagraphs(tr: Transaction, from: number, to: number, de
     const listed = !!a.list && !!next?.attrs.list && tr.doc.resolve(pos).depth === 0;
     const last = listed && collapses(a, defaults) ? 0 : below;
     // A list item's next line goes on with its list (ParagraphFormat.cont)
-    const line = (b: number): Attrs => ({ ...a, ...NOT_SPLIT, ...NOT_LISTED, ...(a.list ? { listCont: true } : {}), indent: 0, firstLine: false, box: { start: textStart(a), first: 0, above: 0, below: b } });
+    const line = (b: number): Attrs => ({ ...a, ...NOT_SPLIT, ...NOT_LISTED, ...(a.list ? { listCont: true } : {}), softBreak: true, indent: 0, firstLine: false, box: { start: textStart(a), first: 0, above: 0, below: b } });
     breaks.slice().reverse().forEach((at, k) => {
       tr.delete(at, at + 1);
       tr.split(at, 1, [{ type: paragraph, attrs: line(k === 0 ? last : 0) }]);
@@ -210,6 +210,116 @@ export const DroppedBreaks = Extension.create({
         return tr.docChanged ? tr : null;
       },
     })];
+  },
+});
+
+const isBreakLine = (n: PMNode | null | undefined): n is PMNode => !!n && n.type.name === "paragraph" && n.attrs.softBreak === true && !n.attrs.locked;
+
+/** A Shift+Enter line break, made the paragraph the sync will make of it and drawn as the break (breaksAsParagraphs) */
+function typeLineBreak(view: EditorView): boolean {
+  const { state } = view;
+  const { $from } = state.selection;
+  const br = state.schema.nodes.hardBreak;
+  if (!br || $from.parent.type.name !== "paragraph" || $from.parent.attrs.locked) return false;
+  const marks = state.storedMarks ?? $from.marks();
+  const tr = state.tr.replaceSelectionWith(br.create(), true);
+  const $at = tr.selection.$from;
+  const pos = $at.before($at.depth);
+  const end = pos + $at.parent.nodeSize;
+  // The paragraph after it too: a list item there keeps the no space above it had
+  const after = tr.doc.resolve(end).nodeAfter;
+  breaksAsParagraphs(tr, pos, end + (after?.nodeSize ?? 0), destinationDefaults(view));
+  if (marks.length) tr.setStoredMarks(marks);
+  view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
+/**
+ * Enter in a paragraph that has line breaks (one of its lines, see breaksAsParagraphs): in Docs those
+ * lines are one paragraph (list item), so Enter starts its next one, with its look: a list item's next
+ * item, numbered on. The part before the caret ends the paragraph, with its space below; the lines
+ * after the caret are the new paragraph's own
+ */
+function enterInBrokenParagraph(view: EditorView): boolean {
+  const { state } = view;
+  const { $from, $to } = state.selection;
+  const node = $from.parent;
+  if ($from.parent !== $to.parent || node.type.name !== "paragraph" || node.attrs.locked) return false;
+  const container = $from.node($from.depth - 1);
+  const index = $from.index($from.depth - 1);
+  // The paragraph the lines belong to, and its last line
+  let h = index;
+  while (h >= 0 && isBreakLine(container.child(h))) h--;
+  let l = index;
+  while (l + 1 < container.childCount && isBreakLine(container.child(l + 1))) l++;
+  const onLine = h < index;
+  if (h < 0 || (!onLine && l === index)) return false; // no line breaks: Enter as ever
+  const head = container.child(h);
+  if (head.type.name !== "paragraph" || head.attrs.locked) return false;
+  const a = head.attrs as Attrs;
+  const [above] = spaceOf(a);
+  const below = spaceOf(container.child(l).attrs as Attrs)[1];
+  const more = l > index;
+  // Two list items next to each other: no space between them, as their mode says
+  const listed = !!a.list && collapses(a, destinationDefaults(view));
+  const marks = state.storedMarks ?? $from.marks();
+  const tr = state.tr.deleteSelection();
+  const at = tr.selection.from;
+  tr.split(at, 1, [{ type: head.type, attrs: withSpace({ ...a, ...NOT_SPLIT }, listed ? 0 : above, more ? 0 : below) }]);
+  const leftPos = tr.doc.resolve(at).before();
+  const left = tr.doc.nodeAt(leftPos)!;
+  tr.setNodeMarkup(leftPos, undefined, withSpace(left.attrs as Attrs, onLine ? 0 : above, listed ? 0 : below));
+  if (marks.length) tr.setStoredMarks(marks);
+  view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
+/**
+ * Backspace at the start of a line after a line break, or Delete at the end of the paragraph before it,
+ * takes the break out, as in Docs: the lines are one again, and the joined paragraph has the space
+ * below the line had (its paragraph's, when it was the last)
+ */
+function joinLine(view: EditorView, dir: -1 | 1): boolean {
+  const { state } = view;
+  if (!state.selection.empty) return false;
+  const $c = state.selection.$from;
+  if ($c.parent.type.name !== "paragraph") return false;
+  let at: number;
+  if (dir < 0) {
+    if ($c.parentOffset !== 0 || !isBreakLine($c.parent)) return false;
+    at = $c.before();
+  } else {
+    if ($c.parentOffset !== $c.parent.content.size) return false;
+    at = $c.after();
+    if (!isBreakLine(state.doc.resolve(at).nodeAfter)) return false;
+  }
+  const $at = state.doc.resolve(at);
+  const before = $at.nodeBefore;
+  const line = $at.nodeAfter;
+  if (!before || !line || before.type.name !== "paragraph" || before.attrs.locked) return false;
+  const tr = state.tr.join(at);
+  const pos = at - before.nodeSize;
+  tr.setNodeMarkup(pos, undefined, withSpace(before.attrs as Attrs, spaceOf(before.attrs as Attrs)[0], spaceOf(line.attrs as Attrs)[1]));
+  view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
+/**
+ * Line breaks typed as Docs makes them (it drops one sent through its API, so each is the paragraph the
+ * sync makes of it, drawn as the break): Shift+Enter adds one, Enter on a line after one starts the
+ * next paragraph or list item, Backspace and Delete take one out. Ahead of DocSync, whose Shift+Enter
+ * (a new paragraph) headers and footers keep.
+ */
+export const LineBreaks = Extension.create({
+  name: "lineBreaks",
+  priority: 1001,
+  addKeyboardShortcuts() {
+    return {
+      "Shift-Enter": () => typeLineBreak(this.editor.view),
+      Enter: () => enterInBrokenParagraph(this.editor.view),
+      Backspace: () => joinLine(this.editor.view, -1),
+      Delete: () => joinLine(this.editor.view, 1),
+    };
   },
 });
 

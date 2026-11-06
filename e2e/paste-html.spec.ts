@@ -218,6 +218,86 @@ test.describe("pasting Google Docs' HTML", () => {
   });
 });
 
+test.describe("typing line breaks", () => {
+  type Line = { text: string; list: string | null; label: string | null; above: number | null; below: number | null; left: number; top: number };
+  /** Each paragraph: its text, list, label and spacing, and where its first character is drawn */
+  const lines = (app: App) => app.doc.locator("p").evaluateAll((ps): Line[] => {
+    const origin = ps[0]?.closest(".ss-doc")!.getBoundingClientRect();
+    return ps.filter((p) => p.textContent).map((p) => {
+      const walk = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const t = walk.nextNode()!;
+      const r = document.createRange();
+      r.setStart(t, 0);
+      r.setEnd(t, 1);
+      const b = r.getBoundingClientRect();
+      const cs = getComputedStyle(p);
+      return { text: p.textContent!, list: p.getAttribute("data-list"), label: p.getAttribute("data-label"), above: parseFloat(cs.marginTop), below: parseFloat(cs.marginBottom), left: Math.round((b.left - origin.left) * 100) / 100, top: Math.round((b.top - origin.top) * 100) / 100 };
+    });
+  });
+
+  /** Waits until the editor has the caret where the keys put it (it reads the page's selection a moment later) */
+  const caretAt = (page: Page, text: string, where: "start" | "end") => expect.poll(() => page.evaluate(({ text, where }) => {
+    const { $from, empty } = window.ssEditor!.state.selection;
+    return empty && $from.parent.textContent === text && $from.parentOffset === (where === "start" ? 0 : $from.parent.content.size);
+  }, { text, where })).toBe(true);
+
+  test("Shift+Enter is a line break as Docs makes it: the same line of the item, its list numbered on after it; Enter starts the next item; Backspace takes it out", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused)).toBe(true);
+    await page.keyboard.press("Control+Shift+7");
+    await page.keyboard.type("Item one");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("its second line");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Item two");
+    await expect.poll(async () => (await lines(app)).map((l) => [l.text, l.label])).toEqual([["Item one", "1."], ["its second line", null], ["Item two", "2."]]);
+    const [one, second, two] = await lines(app);
+    // The line starts where the item's text does, a line's height under it, with no space between
+    expect(Math.abs(second.left - one.left)).toBeLessThan(0.05);
+    expect(Math.abs(second.top - one.top - (two.top - second.top))).toBeLessThan(0.05);
+    // As the same content pasted (a line break in the item) is drawn
+    const typed = await paragraphsOf(app);
+    expect(typed[1].attrs?.softBreak).toBe(true);
+    expect(typed[1].attrs?.listCont).toBe(true);
+
+    // Copied for other apps: the line break is in the item again
+    const copied = await page.evaluate(() => { const v = window.ssEditor!.view; return v.serializeForClipboard(v.state.doc.slice(0, v.state.doc.content.size)).dom.innerHTML; });
+    expect(copied).toMatch(/Item one(<\/span>)?<br>(<span[^>]*>)?its second line/);
+    expect(copied.match(/<li\b/g)).toHaveLength(2);
+
+    // Backspace at the start of the line: one line again
+    await app.doc.getByText("its second line").click();
+    await page.keyboard.press("Home");
+    await caretAt(page, "its second line", "start");
+    await page.keyboard.press("Backspace");
+    await expect.poll(async () => (await lines(app)).map((l) => [l.text, l.label])).toEqual([["Item oneits second line", "1."], ["Item two", "2."]]);
+  });
+
+  test("a line break in a spaced paragraph keeps the paragraph's space around it, not between its lines, and Backspace gives it back", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    await page.evaluate(() => window.ssEditor!.chain().focus().setParagraphSpace({ above: 12, below: 18 }).run());
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused)).toBe(true);
+    await page.keyboard.type("First line");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("Second line");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Next paragraph");
+    await expect.poll(async () => (await lines(app)).map((l) => l.text)).toEqual(["First line", "Second line", "Next paragraph"]);
+    const pt = 96 / 72;
+    const [first, second, next] = await lines(app);
+    expect([first.above, first.below, second.above, second.below, next.above, next.below].map((v) => Math.round((v ?? 0) / pt * 10) / 10)).toEqual([12, 0, 0, 18, 12, 18]);
+    expect(Math.abs(second.left - first.left)).toBeLessThan(0.05);
+    // Delete at the end of the first line takes the break out: one paragraph, spaced as before the break
+    await app.doc.getByText("First line").click();
+    await page.keyboard.press("End");
+    await caretAt(page, "First line", "end");
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => (await lines(app)).map((l) => l.text)).toEqual(["First lineSecond line", "Next paragraph"]);
+    const [joined] = await lines(app);
+    expect([joined.above, joined.below].map((v) => Math.round((v ?? 0) / pt * 10) / 10)).toEqual([12, 18]);
+  });
+});
+
 test.describe("pasting other HTML", () => {
   test("named colours and <mark> keep their colour", async ({ app, api, page }) => {
     await openEmpty(app, api, page);
