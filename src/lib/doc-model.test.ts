@@ -176,7 +176,21 @@ test("page breaks and section breaks are saved as Docs inserts them", async () =
   // A section break after the first paragraph
   const withSection = { type: "doc", content: [p([t("one two")]), p([], { locked: true, kind: "section", sectionType: "continuous" }), p([t("three")])] };
   const r2 = directEdits(base, withSection);
-  assert.deepEqual(r2.requests, [{ insertSectionBreak: { location: { index: 9 }, sectionType: "CONTINUOUS" } }]);
+  // Then its columns over it (the section from just after the break to the end), whatever Docs gave it
+  const single = { columnProperties: [], columnSeparatorStyle: "NONE" };
+  assert.deepEqual(r2.requests, [
+    { insertSectionBreak: { location: { index: 9 }, sectionType: "CONTINUOUS" } },
+    { updateSectionStyle: { range: { startIndex: 11, endIndex: 17 }, sectionStyle: single, fields: "columnProperties,columnSeparatorStyle" } },
+  ]);
+  // In two columns, before a section that follows: up to that one
+  const twoThenOne = { type: "doc", content: [p([t("one two")]), p([], { locked: true, kind: "section", sectionType: "continuous", columns: 2, spacing: 18, line: true }), p([t("three")]), p([], { locked: true, kind: "section", sectionType: "continuous" }), p([t("four")])] };
+  const r3 = directEdits({ type: "doc", content: [p([t("one two")]), p([t("three")]), p([t("four")])] }, twoThenOne);
+  // "one two\n" 1..9, newline and break 9..11, "three\n" 11..17, newline and break 17..19, "four\n" 19..24
+  type SectionStyle = { range: { startIndex: number; endIndex: number }; sectionStyle: { columnProperties: unknown[]; columnSeparatorStyle: string } };
+  assert.deepEqual(r3.requests.filter((r) => r.updateSectionStyle).map((r) => r.updateSectionStyle as SectionStyle).map((u) => [u.range, u.sectionStyle.columnProperties.length, u.sectionStyle.columnSeparatorStyle]), [
+    [{ startIndex: 11, endIndex: 18 }, 2, "BETWEEN_EACH_COLUMN"],
+    [{ startIndex: 19, endIndex: 24 }, 0, "NONE"],
+  ]);
   // Docs puts a newline before the break: an empty paragraph, then the break covering one index
   assert.equal(r2.saved.content?.[1].type, "paragraph");
   assert.equal((r2.saved.content?.[1].content ?? []).length, 0);

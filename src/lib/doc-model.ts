@@ -723,6 +723,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   // from when it is new (a newline copies the style of the paragraph it is inserted into).
   const saved: Tok[] = [];
   const docsAttrs = new Map<number, Record<string, unknown> | undefined>();
+  // Section breaks made now, by their place in `saved`
+  const newSections: number[] = [];
   const prevNl = (tokens: Tok[], from: number) => { for (let q = from; q >= 0; q--) { const t = tokens[q]; if (t.k === "nl") return t; } return undefined; };
   const regionAt = new Map<number, Region>();
   for (const r of regions) regionAt.set(r.ts, r);
@@ -739,6 +741,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
             saved.push({ k: "nl", attrs: enclosing ?? {} });
             docsAttrs.set(saved.length - 1, enclosing);
             saved.push({ k: "block", node: { ...t.node, attrs: { ...t.node.attrs, span: 1 } } });
+            newSections.push(saved.length - 1);
             continue;
           }
           saved.push(stripPending(t));
@@ -857,6 +860,17 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     listRequests.push(...bulletRequests(run, preset));
   }
 
+  // A new section's columns: Docs' section break doesn't take them (its section is laid out as Docs
+  // decides), so the section is given the editor's, over it once the break is in
+  for (const p of newSections) {
+    const start = sIndex[p] + sizeOf(saved[p]);
+    let end = sIndex[saved.length];
+    for (let q = p + 1; q < saved.length; q++) {
+      const b = saved[q];
+      if (b.k === "block" && b.node.attrs?.kind === "section" && !b.node.attrs?.first) { end = sIndex[q]; break; }
+    }
+    paraRequests.push(sectionStyleRequest((saved[p] as Extract<Tok, { k: "block" }>).node.attrs ?? {}, start, Math.max(start + 1, end)));
+  }
   // Cell backgrounds change no index: at the document's indices as they are, before the rest
   const requests = [...cellStyleRequests(base, target, match, index), ...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
   return { requests, saved: untokenize(saved) };
