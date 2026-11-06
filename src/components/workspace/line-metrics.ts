@@ -12,7 +12,7 @@
  */
 
 import { FONT_FAMILIES } from "@/lib/rich-text";
-import { screenStack, spaceRules } from "./space-faces";
+import { checkSpaceFaces, screenStack, spaceRules } from "./space-faces";
 
 const STYLE_ID = "ss-line-metrics";
 const FACES_ID = "ss-space-faces";
@@ -66,7 +66,9 @@ function setStyle(id: string, text: string) {
 
 function write() {
   if (!families.size) return;
-  // The space faces first, so the metrics are measured in the stacks the page draws
+  // The space faces first, so the metrics are measured in the stacks the page draws; a face that
+  // draws its space at another width than its family's is left out once it has loaded
+  checkSpaceFaces(families);
   setStyle(FACES_ID, spaceRules(families).join("\n"));
   const name = (f: string) => `"${CSS.escape(f)}"`;
   // Text in a font of its own, and a document whose default font it is (data-doc-font, see use-page-setup)

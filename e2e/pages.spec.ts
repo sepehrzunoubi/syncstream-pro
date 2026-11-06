@@ -383,11 +383,33 @@ test.describe("lines as Docs draws them", () => {
     expect(got[2].pitch / got[0].pitch).toBeCloseTo(8 / 11, 2);
   });
 
-  test("text kerns the pairs inside a word but not a pair with a space, as Docs does", async ({ app, page }) => {
+  test("text kerns the pairs inside a word but not a pair with a space, as Docs does, and a space is always its font's own", async ({ app, page }) => {
     const text = "Tavily A round";
     const tnr = [{ type: "textStyle", attrs: { fontFamily: "Times New Roman" } }];
     await app.open({ plain: [{ type: "paragraph", content: [{ type: "text", text }] }, { type: "paragraph", content: [{ type: "text", text, marks: tnr }] }] });
-    await page.evaluate(async () => { await document.fonts.load('11pt "SS Space Arial"', " "); await document.fonts.load('11pt "SS Space Times New Roman"', " "); await document.fonts.ready; });
+    // Whether this browser draws a font it loads at the advances an installed font has (Chrome on Linux
+    // with fontconfig's hinting on draws it at whole pixels): a face of its own, from a font installed here
+    const exact = await page.evaluate(async () => {
+      const face = new FontFace("SS Probe", 'local("Liberation Sans"), local("LiberationSans")', { unicodeRange: "U+0020" });
+      document.fonts.add(await face.load());
+      const c = document.createElement("canvas").getContext("2d")!;
+      c.font = '100px "SS Probe", monospace';
+      const loaded = c.measureText(" ").width;
+      c.font = '100px "Liberation Sans"';
+      const installed = c.measureText(" ").width;
+      document.fonts.delete(face);
+      return Math.abs(loaded - installed) < 0.01;
+    });
+    const faceOf = (family: string) => page.evaluate((f) => Array.from(document.fonts).some((x) => x.family.replace(/"/g, "") === `SS Space ${f}` && x.style === "normal" && x.status === "loaded"), family);
+    if (exact) {
+      await page.evaluate(async () => { await document.fonts.load('11pt "SS Space Arial"', " "); await document.fonts.load('11pt "SS Space Times New Roman"', " "); await document.fonts.ready; });
+      expect(await faceOf("Arial")).toBe(true);
+      expect(await faceOf("Times New Roman")).toBe(true);
+    } else {
+      // Its space faces would draw every space off by up to half a pixel: they are checked once loaded, and left out
+      await expect.poll(() => faceOf("Arial")).toBe(false);
+      await expect.poll(() => faceOf("Times New Roman")).toBe(false);
+    }
     const got = await page.evaluate(({ sel, text }) => {
       const pages = document.querySelector<HTMLElement>(".ss-pages")!;
       const stacks = ['Arial, Arimo, "Liberation Sans", sans-serif', '"Times New Roman", Tinos, "Liberation Serif", serif'];
@@ -411,12 +433,15 @@ test.describe("lines as Docs draws them", () => {
       });
     }, { sel: DOC, text });
     for (const g of got) {
-      const seen = JSON.stringify(g);
+      const seen = JSON.stringify({ exact, ...g });
       // Each font kerns T-a and A-space, so both checks below tell kerned from not
       expect(g.wordPlain - g.wordKerned, seen).toBeGreaterThan(0.5);
       expect(g.aSpacePlain - g.aSpaceKerned, seen).toBeGreaterThan(0.3);
       expect(Math.abs(g.word - g.wordKerned), seen).toBeLessThan(0.1);
-      expect(Math.abs(g.aSpace - g.aSpacePlain), seen).toBeLessThan(0.1);
+      // A space is as wide as its font's own, whatever the browser (to the layout's 1/64 px)
+      expect(Math.abs(g.space - g.spacePlain), seen).toBeLessThan(0.02);
+      // Where the space faces draw it so, no pair with a space is kerned; where they can't, the font's own kerning stays
+      expect(Math.abs(g.aSpace - (exact ? g.aSpacePlain : g.aSpaceKerned)), seen).toBeLessThan(0.1);
       expect(g.family, seen).toMatch(/^"SS Space /);
     }
     // The page's space faces stay on the page: the editor's HTML, which its clipboard writes, names the fonts alone

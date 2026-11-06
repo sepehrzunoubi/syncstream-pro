@@ -94,6 +94,41 @@ function nearest(faces: Face[], italic: boolean, bold: boolean): Face | undefine
 const faceRule = (family: string, src: string, weight: string, style: string, stretch = "") =>
   `@font-face { font-family: ${css(spaceFamily(family))}; src: ${src}; font-weight: ${weight}; font-style: ${style};${stretch ? ` font-stretch: ${stretch};` : ""} font-display: swap; unicode-range: U+0020, U+00A0; }`;
 
+/**
+ * Families whose space face the browser draws at another width than the family's own space. Some
+ * browsers draw a font they load (a web font or a local() one) at whole-pixel advances while they
+ * draw installed fonts at exact ones: Chrome on Linux does with fontconfig's hinting on, as Ubuntu
+ * sets it. There a space face would make every space up to half a pixel off, which moves where far
+ * more lines wrap than a kerned pair beside a space does, so such a family is drawn without one.
+ */
+const offWidth = new Set<string>();
+
+let canvas: CanvasRenderingContext2D | null = null;
+
+/**
+ * Checks each family's loaded space face against the family's own space, and leaves out (from the
+ * next spaceRules) every face that draws it at another width. True when one was found.
+ */
+export function checkSpaceFaces(families: Iterable<string>): boolean {
+  if (typeof document === "undefined" || !document.fonts) return false;
+  canvas ??= document.createElement("canvas").getContext("2d");
+  if (!canvas) return false;
+  const loaded = new Set(Array.from(document.fonts).filter((f) => f.status === "loaded" && f.style === "normal" && f.family.startsWith(SPACE_FACE_PREFIX)).map((f) => unquote(f.family)));
+  let found = false;
+  for (const family of families) {
+    if (offWidth.has(family) || !SAFE.test(family) || !loaded.has(spaceFamily(family))) continue;
+    // At 100px, a space drawn at whole pixels is off by up to half a pixel
+    canvas.font = `100px ${css(spaceFamily(family))}, monospace`;
+    const face = canvas.measureText(" ").width;
+    canvas.font = `100px ${fontStack(family)}`;
+    if (Math.abs(face - canvas.measureText(" ").width) > 0.01) {
+      offWidth.add(family);
+      found = true;
+    }
+  }
+  return found;
+}
+
 /** The space faces for these families, and the rules that draw each in its screen stack */
 export function spaceRules(families: Iterable<string>): string[] {
   if (typeof document === "undefined") return [];
@@ -101,6 +136,11 @@ export function spaceRules(families: Iterable<string>): string[] {
   const rules: string[] = [];
   for (const family of families) {
     if (!SAFE.test(family)) continue;
+    // Without its face the screen stack's first name names nothing, and the family's own fonts draw every character
+    if (offWidth.has(family)) {
+      rules.push(`.ss-doc [data-font=${css(family)}] { font-family: ${screenStack(family)} !important; }`);
+      continue;
+    }
     const own = web.get(family);
     if (own) {
       // A web family shadows any installed font of its name: its space comes from its own files
