@@ -10,7 +10,7 @@
 
 import type { docs_v1 } from "googleapis";
 import { isPageless, pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
-import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, styleFromMarks, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
+import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, styleFromMarks, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle, type StyleKeeps } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
 type Element = docs_v1.Schema$StructuralElement;
@@ -37,6 +37,16 @@ export interface DocDefaults {
   lineSpacing: number;
   /** Per paragraph style: size, font and colour when the document's named style sets them */
   styles: Partial<Record<NamedStyle, { fontSize?: number; fontFamily?: string; color?: string }>>;
+  /** Per paragraph style: the keep options the document's named style gives (Google's when it has none) */
+  keep?: StyleKeeps;
+}
+
+/** The keep options of the document the page shows (see use-page-setup) */
+export function docKeeps(dom: { dataset?: Record<string, string | undefined> } | null | undefined): StyleKeeps | undefined {
+  try {
+    const raw = dom?.dataset?.docDefaults;
+    return raw ? (JSON.parse(raw) as DocDefaults).keep : undefined;
+  } catch { return undefined; }
 }
 
 export interface ImportedDoc {
@@ -115,6 +125,15 @@ function pt(d: docs_v1.Schema$Dimension | undefined | null): number | undefined 
   if (!d) return undefined;
   const m = d.magnitude ?? 0;
   return d.unit === "PT" || !d.unit ? m : undefined;
+}
+
+/** Keep options as a resolved Docs paragraph style has them (Docs' own default for single lines is on) */
+function keepOf(ps: docs_v1.Schema$ParagraphStyle): KeepOptions {
+  const keep: KeepOptions = {};
+  if (ps.keepWithNext) keep.withNext = true;
+  if (ps.keepLinesTogether) keep.linesTogether = true;
+  if (ps.avoidWidowAndOrphan === false) keep.singleLines = false;
+  return keep;
 }
 
 function hex(c: docs_v1.Schema$OptionalColor | undefined | null): string | undefined {
@@ -198,7 +217,10 @@ function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDe
   const normal = namedStyles.get("NORMAL_TEXT");
   const nt = normal?.textStyle ?? {};
   const styles: DocDefaults["styles"] = {};
+  const keep: StyleKeeps = {};
   for (const [docsName, name] of Object.entries(NAMED)) {
+    const named = namedStyles.get(docsName);
+    if (named) keep[name] = keepOf({ ...stripNull(normal?.paragraphStyle ?? {}), ...stripNull(named.paragraphStyle ?? {}) });
     if (docsName === "NORMAL_TEXT") continue;
     const ts = namedStyles.get(docsName)?.textStyle ?? {};
     const entry: { fontSize?: number; fontFamily?: string; color?: string } = {};
@@ -214,6 +236,7 @@ function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDe
     fontSize: pt(nt.fontSize) ?? NAMED_STYLES.normal.size,
     lineSpacing: normal?.paragraphStyle?.lineSpacing ? Math.round(normal.paragraphStyle.lineSpacing) : 115,
     styles,
+    ...(Object.keys(keep).length ? { keep } : {}),
   };
 }
 
@@ -321,11 +344,10 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
       : { start, first: first - start };
     const above = pt(ps.spaceAbove);
     const below = pt(ps.spaceBelow);
-    // Keep options as Docs has them (its own default for single lines is on)
-    const keep: KeepOptions = {};
-    if (ps.keepWithNext) keep.withNext = true;
-    if (ps.keepLinesTogether) keep.linesTogether = true;
-    if (ps.avoidWidowAndOrphan === false) keep.singleLines = false;
+    // Keep options of its own, as Docs resolves them; with none of its own the paragraph has its named
+    // style's, whatever that style is or becomes
+    const ownsKeep = own.keepWithNext != null || own.keepLinesTogether != null || own.avoidWidowAndOrphan != null;
+    const keep = ownsKeep ? keepOf(ps) : null;
     const borders: Borders = {};
     const sides = { top: ps.borderTop, bottom: ps.borderBottom, left: ps.borderLeft, right: ps.borderRight, between: ps.borderBetween };
     for (const side of BORDER_SIDES) {
@@ -349,7 +371,7 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
         ...listAttrs,
         indentEnd: pt(ps.indentEnd) || null,
         box: { ...box, above: above ?? null, below: below ?? null },
-        keep: Object.keys(keep).length ? keep : null,
+        keep,
         borders: Object.keys(borders).length ? borders : null,
         shading: shading && shading !== "#ffffff" ? shading : null,
         ...(unsupported ? { locked: true } : {}),

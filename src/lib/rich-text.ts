@@ -73,8 +73,32 @@ export type BorderSide = "top" | "bottom" | "left" | "right" | "between";
 export const BORDER_SIDES: BorderSide[] = ["top", "bottom", "left", "right", "between"];
 export type Borders = Partial<Record<BorderSide, Border>>;
 export const BORDER_WIDTHS = [0, 0.75, 1, 1.5, 2.25, 3, 4.5, 6];
-/** Docs' paragraph keep options; "Prevent single lines" is on by default in Docs */
+/**
+ * Docs' paragraph keep options; "Prevent single lines" is on by default in Docs. A paragraph with none of
+ * its own (null) has its named style's, as in Docs, and then follows the style when it changes.
+ */
 export interface KeepOptions { withNext?: boolean; linesTogether?: boolean; singleLines?: boolean }
+/** Keep options per named style, as a document defines them */
+export type StyleKeeps = Partial<Record<NamedStyle, KeepOptions>>;
+/** Keep options without the values Docs has by default, so the same options compare the same */
+export function canonicalKeep(k: KeepOptions): KeepOptions {
+  const out: KeepOptions = {};
+  if (k.withNext) out.withNext = true;
+  if (k.linesTogether) out.linesTogether = true;
+  if (k.singleLines === false) out.singleLines = false;
+  return out;
+}
+/** What a named style gives: the document's own definition, else Google's (headings, title and subtitle keep with the next paragraph and their lines together) */
+export function namedKeep(style: NamedStyle, keeps?: StyleKeeps): KeepOptions {
+  return keeps?.[style] ?? (style === "normal" ? {} : { withNext: true, linesTogether: true });
+}
+/** A paragraph's keep options: its own, else its named style's */
+export function effectiveKeep(own: KeepOptions | null | undefined, style: NamedStyle, keeps?: StyleKeeps): KeepOptions {
+  return canonicalKeep(own ?? namedKeep(style, keeps));
+}
+export const sameKeep = (a: KeepOptions, b: KeepOptions) => JSON.stringify(canonicalKeep(a)) === JSON.stringify(canonicalKeep(b));
+/** Keep options as the page's data-keep has them */
+export const keepFlags = (k: KeepOptions) => [k.withNext ? "next" : "", k.linesTogether ? "lines" : "", k.singleLines === false ? "single" : ""].filter(Boolean);
 
 export const DOCS_ALIGN: Record<Align, string> = { left: "START", center: "CENTER", right: "END", justify: "JUSTIFIED" };
 
@@ -381,7 +405,8 @@ function parseKeep(raw: unknown): KeepOptions | undefined {
   if (typeof k.withNext === "boolean") out.withNext = k.withNext;
   if (typeof k.linesTogether === "boolean") out.linesTogether = k.linesTogether;
   if (typeof k.singleLines === "boolean") out.singleLines = k.singleLines;
-  return Object.keys(out).length ? out : undefined;
+  // Options of its own, even none, are not its named style's
+  return canonicalKeep(out);
 }
 
 export function parseBorder(raw: unknown): Border | undefined {
@@ -868,7 +893,9 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat, fresh = f
     // unset, the fields go back to what the named style gives, as the editor shows it
     fields.push("spaceAbove", "spaceBelow");
   }
-  if (JSON.stringify(a.keep ?? null) !== JSON.stringify(b.keep ?? null)) addKeep(style, fields, b.keep);
+  // Keep options of its own stay with a paragraph whose style changes: written out, since Docs may have only
+  // some of them as the paragraph's own (the rest came from the old style)
+  if (JSON.stringify(a.keep ?? null) !== JSON.stringify(b.keep ?? null) || (a.style !== b.style && b.keep)) addKeep(style, fields, b.keep);
   if (JSON.stringify(a.borders ?? null) !== JSON.stringify(b.borders ?? null)) addBorders(style, fields, b.borders);
   if (a.shading !== b.shading) addShading(style, fields, b.shading);
   return fields.length ? { style, fields } : null;

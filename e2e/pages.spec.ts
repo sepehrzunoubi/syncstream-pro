@@ -75,6 +75,51 @@ test.describe("pages", () => {
     await expect(app.doc.locator("tr:not(.ss-page-gap)")).toHaveCount(45);
   });
 
+  // A filler paragraph whose space above puts what follows near the end of the first page (a 9in text area)
+  const filler = (above: number) => ({ type: "paragraph", attrs: { box: { start: 0, first: 0, above, below: 0 } }, content: [{ type: "text", text: "Filler" }] });
+  const para = (text: string, attrs: Record<string, unknown> = {}) => ({ type: "paragraph", attrs, content: [{ type: "text", text }] });
+  /** Each paragraph's sheet and where its border box starts below the sheet's text area, in pt */
+  const placed = (page: import("@playwright/test").Page) => page.evaluate((sel) => {
+    const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+    const sheets = Array.from(document.querySelectorAll(".ss-sheet")).map((s) => s.getBoundingClientRect());
+    return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+      const top = p.getBoundingClientRect().top;
+      const k = sheets.findIndex((s) => top >= s.top && top < s.bottom);
+      // Letter paper, 1in margins: the text area starts 96px down the sheet
+      return { text: p.textContent, sheet: k, below: k < 0 ? NaN : Math.round(((top - sheets[k].top) / zoom - 96) * 0.75 * 10) / 10 };
+    });
+  }, DOC);
+
+  test("a paragraph moved to a new page keeps its space above there, as Docs does", async ({ app, page }) => {
+    // The heading (20pt above, a 26pt line) doesn't fit after 600pt and a line of filler
+    await app.open({ plain: [filler(600), para("Heading pushed down", { styleName: "h1" }), para("Text after it")] });
+    await expect.poll(() => app.sheets()).toBe(2);
+    await expect.poll(async () => (await placed(page)).map((p) => p.sheet)).toEqual([0, 1, 1]);
+    const [first, heading] = await placed(page);
+    // Space above stays at the top of a page, the first page's too
+    expect(Math.abs(first.below - 600)).toBeLessThanOrEqual(1);
+    expect(Math.abs(heading.below - 20)).toBeLessThanOrEqual(1);
+  });
+
+  test("a heading keeps with the next paragraph as its style says, unless it says otherwise itself", async ({ app, page }) => {
+    // After 577pt and a line of filler the heading fits at the end of the page, the text after it doesn't
+    await app.open({ plain: [filler(577), para("Heading made here", { styleName: "h1" }), para("Text after it")] });
+    await expect.poll(() => app.sheets()).toBe(2);
+    // A heading with no keep options of its own has its style's: Docs' headings keep with the next paragraph
+    await expect.poll(async () => (await placed(page)).map((p) => p.sheet)).toEqual([0, 1, 1]);
+    expect(Math.abs((await placed(page))[1].below - 20)).toBeLessThanOrEqual(1);
+    // The menu says so, and turning it off there leaves the heading where it fits
+    await app.caretBefore("Heading made here");
+    await page.locator(".ss-menubar-trigger", { hasText: "Format" }).click();
+    await page.getByRole("menuitem").filter({ has: page.getByText("Line & paragraph spacing", { exact: true }) }).hover();
+    const keepNext = page.getByRole("menuitem").filter({ has: page.getByText("Keep with next", { exact: true }) });
+    await expect(keepNext.locator(".ss-check > *")).toHaveCount(1);
+    await keepNext.click();
+    await expect.poll(async () => (await placed(page)).map((p) => p.sheet)).toEqual([0, 0, 1]);
+    // Its own options now: lines together still, as its style had them
+    await expect(app.doc.locator("p[data-keep]")).toHaveAttribute("data-keep", "lines");
+  });
+
   test("Ctrl+Enter inserts a page break and the text after it starts a new page", async ({ app, page }) => {
     // The split must land exactly at the caret, in the same transaction as the break
     await app.open();

@@ -18,18 +18,23 @@ import {
   cssColorToHex,
   cssFontToFamily,
   cssLengthToPt,
+  canonicalKeep,
   cleanStyle,
+  effectiveKeep,
   fontStack,
   fontWeightOf,
   FONT_SIZES,
   INDENT_PT,
+  keepFlags,
   LINE_SPACINGS,
   LINK_COLOR,
   MAX_INDENT,
   MAX_LIST_LEVEL,
   NAMED_STYLES,
+  namedKeep,
   presetType,
   roundSize,
+  sameKeep,
   type Border,
   type Borders,
   type KeepOptions,
@@ -37,6 +42,7 @@ import {
   type NamedStyle,
 } from "@/lib/rich-text";
 import { presetForLevels, type Glyph } from "@/lib/list-labels";
+import { docKeeps } from "@/lib/doc-import";
 
 /** Transactions that change text as a direct edit (find and replace, capitalisation): not additions */
 export const DIRECT_META = "ssDirect";
@@ -294,12 +300,8 @@ const DocParagraph = Paragraph.extend({
       keep: {
         default: null,
         parseHTML: () => null,
-        renderHTML: (a: { keep?: KeepOptions | null }) => {
-          const k = a.keep;
-          if (!k) return {};
-          const flags = [k.withNext ? "next" : "", k.linesTogether ? "lines" : "", k.singleLines === false ? "single" : ""].filter(Boolean);
-          return flags.length ? { "data-keep": flags.join(" ") } : {};
-        },
+        // Options of its own, even none, are data-keep; with none of its own the page reads its named style's
+        renderHTML: (a: { keep?: KeepOptions | null }) => (a.keep ? { "data-keep": keepFlags(a.keep).join(" ") } : {}),
       },
       borders: {
         default: null,
@@ -492,13 +494,12 @@ const DocFormat = Extension.create({
           : { start: stepsOf(a) * INDENT_PT, first: a.firstLine ? INDENT_PT : 0 });
         return { box: { ...box, above: space.above ?? box.above ?? null, below: space.below ?? box.below ?? null }, ...(a.list ? {} : { indent: 0, firstLine: false }) };
       }),
+      // From the options the paragraph has (its own, else its style's); what its style gives needs no record
       setKeep: (keep) => updateParagraphs((a) => {
-        const next = { ...((a.keep as KeepOptions | null) ?? {}), ...keep };
-        // Docs' defaults need no record
-        if (next.withNext === false) delete next.withNext;
-        if (next.linesTogether === false) delete next.linesTogether;
-        if (next.singleLines === true) delete next.singleLines;
-        return { keep: Object.keys(next).length ? next : null };
+        const style = ((a.styleName as NamedStyle | null) ?? "normal") as NamedStyle;
+        const keeps = docKeeps(this.editor.view.dom);
+        const next = canonicalKeep({ ...effectiveKeep(a.keep as KeepOptions | null, style, keeps), ...keep });
+        return { keep: sameKeep(next, namedKeep(style, keeps)) ? null : next };
       }),
       setBorders: (borders, shading) => updateParagraphs(() => ({ borders, shading })),
       setCapitalization: (mode) => ({ tr, state, dispatch }) => {

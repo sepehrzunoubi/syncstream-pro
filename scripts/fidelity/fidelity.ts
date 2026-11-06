@@ -21,7 +21,7 @@ import { additions, PENDING_MARK } from "../../src/lib/doc-model";
 import { buildDripPlan } from "../../src/lib/drip-engine";
 import { snapshotOf } from "../../src/lib/google";
 import { listLabels } from "../../src/lib/list-labels";
-import { paragraphFromAttrs, parseFormat, plainFormat, richFromEditorJSON, styleFromMarks, type EditorNode } from "../../src/lib/rich-text";
+import { effectiveKeep, paragraphFromAttrs, parseFormat, plainFormat, richFromEditorJSON, styleFromMarks, type EditorNode } from "../../src/lib/rich-text";
 import { buildSyncRecords, parseSegments, segmentBoundaries, spotsFor } from "../../src/lib/sync-plan";
 import { runJobWindow, type RunnerDeps } from "../../src/lib/sync-runner";
 import { createMemoryStore } from "../../src/lib/sync-store";
@@ -182,7 +182,8 @@ export function differences(target: EditorNode, out: docs_v1.Schema$Document): s
     // whatever nesting level puts it there (Docs can't start a list nested; the sync indents the item instead)
     const level = raw.level ?? 0;
     const exact = raw.list ? raw.exact ?? { start: 36 * (level + 1), first: 36 * (level + 1) - 18 } : raw.exact ?? { start: raw.indent * 36, first: raw.indent * 36 + (raw.firstLine ? 36 : 0) };
-    const p = { ...raw, keep: undefined, space: sp, glyph: undefined, preset: undefined, level: undefined, exact: exact && (exact.start || exact.first) ? exact : undefined, indent: undefined, firstLine: undefined } as Record<string, unknown>;
+    // Keep options as the page lays the paragraph out: its own, else its named style's in the document
+    const p = { ...raw, keep: effectiveKeep(raw.keep, raw.style, after.defaults.keep), space: sp, glyph: undefined, preset: undefined, level: undefined, exact: exact && (exact.start || exact.first) ? exact : undefined, indent: undefined, firstLine: undefined } as Record<string, unknown>;
     const chars: string[] = [];
     for (const c of n.content ?? []) {
       const s0 = styleFromMarks((c.marks ?? []).filter((m) => m.type !== PENDING_MARK));
@@ -238,6 +239,11 @@ const NAMED_RED_H1: docs_v1.Schema$NamedStyle[] = [
   { namedStyleType: "NORMAL_TEXT", textStyle: { fontSize: { magnitude: 12, unit: "PT" }, weightedFontFamily: { fontFamily: "Times New Roman", weight: 400 } }, paragraphStyle: { lineSpacing: 100, namedStyleType: "NORMAL_TEXT" } },
   { namedStyleType: "HEADING_1", textStyle: { fontSize: { magnitude: 24, unit: "PT" }, foregroundColor: { color: { rgbColor: { red: 0.8, green: 0, blue: 0 } } } }, paragraphStyle: { keepWithNext: true, spaceAbove: { magnitude: 24, unit: "PT" }, spaceBelow: { magnitude: 12, unit: "PT" } } },
   { namedStyleType: "HEADING_3", textStyle: { fontSize: { magnitude: 14, unit: "PT" }, foregroundColor: { color: { rgbColor: { red: 0.263, green: 0.263, blue: 0.263 } } } }, paragraphStyle: { keepWithNext: true } },
+];
+
+/** A document whose headings keep nothing with the next paragraph */
+const NAMED_LOOSE_H2: docs_v1.Schema$NamedStyle[] = [
+  { namedStyleType: "HEADING_2", textStyle: { fontSize: { magnitude: 16, unit: "PT" } }, paragraphStyle: { keepWithNext: false, keepLinesTogether: false, spaceAbove: { magnitude: 18, unit: "PT" }, spaceBelow: { magnitude: 6, unit: "PT" } } },
 ];
 
 const LIST_DOC = [
@@ -353,6 +359,22 @@ export const SCENARIOS: Scenario[] = [
     name: "title-blank-body",
     what: "a centred title, an empty line, then body text",
     target: () => [P({ styleName: "title", textAlign: "center", box: { start: 0, first: 0, above: 0, below: 3 } }, ["Centered Title", [ts(26)]]), EMPTY({ box: box0 }), P({ box: box0 }, "Body text that follows the title")],
+  },
+  {
+    name: "keep-options",
+    what: "keep options: a heading made here (its style's: kept with the next), a heading that keeps nothing, a paragraph kept with the next",
+    target: () => [
+      H1("Heading made here"),
+      P({ styleName: "h1", box: { start: 0, first: 0, above: 20, below: 6 }, keep: {} }, ["Heading that keeps nothing", [ts(20)]]),
+      P({ box: box0, keep: { withNext: true, singleLines: false } }, "Kept with the next one"),
+      P({ box: box0 }, "Last"),
+    ],
+  },
+  {
+    name: "keep-from-the-doc",
+    what: "a heading made here, typed into a doc whose Heading 2 keeps nothing",
+    namedStyles: NAMED_LOOSE_H2,
+    target: () => [P({ styleName: "h2", box: { start: 0, first: 0, above: 18, below: 6 } }, ["Loose heading", [ts(16)]]), P({ box: box0 }, "Body")],
   },
   {
     name: "highlighted-bullets",

@@ -9,8 +9,9 @@ import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
 import {
   BULLET_PRESETS, DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, MAX_LIST_LEVEL, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS,
-  fontStack, type NamedStyle,
+  effectiveKeep, fontStack, type KeepOptions, type NamedStyle,
 } from "@/lib/rich-text";
+import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
 
 /** A small preview of a list style: its first three levels, as Docs' menus show them */
@@ -125,6 +126,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       const ts = e.getAttributes("textStyle");
       const para = e.getAttributes("paragraph");
       const style = (para.styleName as NamedStyle) ?? "normal";
+      // Its own keep options, else its style's, as the page lays it out and Docs has it
+      const keep = effectiveKeep(para.keep as KeepOptions | null, style, docKeeps(e.view.dom));
       return {
         bold: e.isActive("bold"),
         italic: e.isActive("italic"),
@@ -139,9 +142,9 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         indent: (para.indent as number) ?? 0,
         above: ((para.box as { above?: number | null } | null)?.above ?? 0) > 0,
         below: ((para.box as { below?: number | null } | null)?.below ?? 0) > 0,
-        keepNext: !!(para.keep as { withNext?: boolean } | null)?.withNext,
-        keepLines: !!(para.keep as { linesTogether?: boolean } | null)?.linesTogether,
-        singleLines: (para.keep as { singleLines?: boolean } | null)?.singleLines !== false,
+        keepNext: !!keep.withNext,
+        keepLines: !!keep.linesTogether,
+        singleLines: keep.singleLines !== false,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
         color: (ts.color as string | undefined) ?? null,

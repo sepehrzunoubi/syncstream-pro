@@ -5,7 +5,8 @@ import * as MB from "@radix-ui/react-menubar";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
-import { BULLET_PRESETS, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, type NamedStyle } from "@/lib/rich-text";
+import { BULLET_PRESETS, effectiveKeep, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, type KeepOptions, type NamedStyle } from "@/lib/rich-text";
+import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
 
 /** Docs' table picker: hover to size the table, click to insert */
@@ -123,7 +124,8 @@ export function DocsMenubar(p: DocsMenubarProps) {
       if (!e) return null;
       const para = e.getAttributes("paragraph");
       const box = para.box as { above?: number | null; below?: number | null } | null;
-      const keep = (para.keep as { withNext?: boolean; linesTogether?: boolean; singleLines?: boolean } | null) ?? {};
+      // Its own keep options, else its style's, as the page lays it out and Docs has it
+      const keep = effectiveKeep(para.keep as KeepOptions | null, (para.styleName as NamedStyle) ?? "normal", docKeeps(e.view.dom));
       return {
         bold: e.isActive("bold"),
         italic: e.isActive("italic"),
