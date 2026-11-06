@@ -35,7 +35,7 @@ export function useDocsList({ setSnack, setScopeError }: { setSnack: Setter<stri
   const createDoc = useCallback(async () => {
     setIsCreatingDoc(true);
     try {
-      const { ok, status, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "Untitled document", pageSetup: readPageDefault()?.setup });
+      const { ok, status, data } = await postJson<{ id: string; name: string }>("/api/docs/create", { title: "Untitled document", pageSetup: readPageDefault()?.setup, pageless: readPageDefault()?.pageless === true });
       if (status === 401) throw new Error("Your Google sign-in expired. Choose Reconnect Google account in the account menu.");
       if (!ok) throw new Error(data.error || "Couldn't create the document");
       setDocs((prev) => [{ id: data.id, name: data.name, modifiedTime: new Date().toISOString() }, ...prev]);

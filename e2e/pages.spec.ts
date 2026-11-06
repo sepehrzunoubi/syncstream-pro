@@ -118,9 +118,17 @@ test.describe("pages", () => {
     await expect(page.locator(".ss-pages")).toHaveClass(/ss-pageless/);
     await expect(page.locator(".ss-sheet")).toHaveCount(1);
     await expect(app.doc.locator(".ss-page-break-label")).toBeVisible();
-    // Paper and margins didn't change, so Google Docs is not written to
-    expect(api.edits).toEqual([]);
+    // Paper and margins didn't change: only the format is written to Google Docs
+    await expect.poll(() => api.edits.length).toBe(1);
+    expect(api.edits[0].requests).toEqual([{ updateDocumentStyle: { documentStyle: { documentFormat: { documentMode: "PAGELESS" } }, fields: "documentFormat.documentMode" } }]);
     expect(await app.text()).toContain(CLOSING_TEXT);
+  });
+
+  test("a pageless Google Doc opens as one continuous sheet", async ({ app, page, api }) => {
+    api.content = { ...api.content, pageless: true };
+    await app.open();
+    await expect(page.locator(".ss-pages")).toHaveClass(/ss-pageless/);
+    await expect(page.locator(".ss-sheet")).toHaveCount(1);
   });
 });
 

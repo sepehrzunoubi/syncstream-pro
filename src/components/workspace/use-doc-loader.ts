@@ -16,7 +16,7 @@ import type { DocContent, DocRefs, Setter } from "./doc-state";
 import type { SaveState } from "./use-autosave";
 import type { HfSetup, Segment, Segments } from "./use-header-footers";
 
-export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup, setSegments, setHfSetup, setFootnotes }: {
+export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup, setPageless, setSegments, setHfSetup, setFootnotes }: {
   editor: Editor | null;
   refs: DocRefs;
   saveNow: () => Promise<boolean>;
@@ -31,6 +31,7 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
   setSnack: Setter<string | null>;
   setScopeError: Setter<boolean>;
   setPageSetup: Setter<PageSetup>;
+  setPageless: Setter<boolean>;
   setSegments: Setter<Segments>;
   setHfSetup: Setter<HfSetup>;
   setFootnotes: Setter<Record<string, EditorNode[]>>;
@@ -71,6 +72,9 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       // The document's own page setup, headers and footers
       const docSetup = parsePageSetup(data.pageSetup);
       if (docSetup) setPageSetup(docSetup);
+      // A pageless document shows as one continuous page, as in Docs
+      const mode = (data as { pageless?: unknown }).pageless;
+      if (typeof mode === "boolean") setPageless(mode);
       const seg = (v: unknown): Segment | null => (v && typeof v === "object" && typeof (v as { id?: unknown }).id === "string" && Array.isArray((v as { nodes?: unknown }).nodes) ? { id: (v as { id: string }).id, base: (v as { nodes: EditorNode[] }).nodes } : null);
       const d = data as { header?: unknown; footer?: unknown; firstPageHeader?: unknown; firstPageFooter?: unknown; useFirstPage?: unknown; marginHeader?: unknown; marginFooter?: unknown };
       setSegments({ header: seg(d.header), footer: seg(d.footer), firstPageHeader: seg(d.firstPageHeader), firstPageFooter: seg(d.firstPageFooter) });

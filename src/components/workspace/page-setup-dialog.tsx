@@ -22,7 +22,8 @@ const MARGIN_KEYS = ["top", "bottom", "left", "right"] as const;
 export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSetDefault }: Props) {
   const [tab, setTab] = useState<"pages" | "pageless">(pageless ? "pageless" : "pages");
   const [orientation, setOrientation] = useState(setup.orientation);
-  const [paper, setPaper] = useState<PaperId>(setup.paper);
+  // "custom": the document's own size, one Docs' list doesn't have
+  const [paper, setPaper] = useState<PaperId | "custom">(setup.custom ? "custom" : setup.paper);
   const [color, setColor] = useState<string | null>(setup.color);
   const [margins, setMargins] = useState<Record<(typeof MARGIN_KEYS)[number], string>>({ top: "1", bottom: "1", left: "1", right: "1" });
   const firstRef = useRef<HTMLButtonElement>(null);
@@ -31,7 +32,7 @@ export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSet
     if (!open) return;
     setTab(pageless ? "pageless" : "pages");
     setOrientation(setup.orientation);
-    setPaper(setup.paper);
+    setPaper(setup.custom ? "custom" : setup.paper);
     setColor(setup.color);
     setMargins({ top: inches(setup.margins.top), bottom: inches(setup.margins.bottom), left: inches(setup.margins.left), right: inches(setup.margins.right) });
     setTimeout(() => firstRef.current?.focus(), 0);
@@ -49,9 +50,11 @@ export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSet
   const parsed = MARGIN_KEYS.map((k) => parseFloat(margins[k]));
   const next: PageSetup = {
     orientation,
-    paper,
+    paper: paper === "custom" ? setup.paper : paper,
     color,
     margins: { top: (parsed[0] || 0) * 72, bottom: (parsed[1] || 0) * 72, left: (parsed[2] || 0) * 72, right: (parsed[3] || 0) * 72 },
+    ...(paper === "custom" && setup.custom ? { custom: setup.custom } : {}),
+    ...(setup.flip ? { flip: true } : {}),
   };
   const { w, h } = pageSize(next);
   let error: string | null = null;
@@ -98,7 +101,8 @@ export function PageSetupDialog({ open, setup, pageless, onClose, onApply, onSet
             <div className="flex gap-4">
               <label className="block min-w-0 flex-1">
                 <span className="ss-field-label">Paper size</span>
-                <select className="ss-select" value={paper} onChange={(e) => setPaper(e.target.value as PaperId)}>
+                <select className="ss-select" value={paper} onChange={(e) => setPaper(e.target.value as PaperId | "custom")}>
+                  {setup.custom && <option value="custom">{`Custom (${inches(setup.custom.w)}" x ${inches(setup.custom.h)}")`}</option>}
                   {PAPER_ORDER.map((id) => <option key={id} value={id}>{PAPERS[id].label}</option>)}
                 </select>
               </label>

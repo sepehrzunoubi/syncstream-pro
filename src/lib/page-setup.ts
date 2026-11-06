@@ -15,6 +15,13 @@ export interface PageSetup {
   margins: { top: number; bottom: number; left: number; right: number };
   /** #rrggbb, or null for white */
   color: string | null;
+  /** A paper size Docs' list doesn't have, exactly, portrait (w <= h), in points; `paper` is then the closest listed one */
+  custom?: { w: number; h: number };
+  /**
+   * The document stores its page size the other way round and flips it (Docs' flipPageOrientation):
+   * kept so a change writes the size the same way, without touching the flip
+   */
+  flip?: boolean;
 }
 
 /** Paper sizes, portrait, in points (the list Docs offers) */
@@ -37,7 +44,7 @@ export const DEFAULT_PAGE_SETUP: PageSetup = { orientation: "portrait", paper: "
 
 /** Page width and height in points, orientation applied */
 export function pageSize(s: PageSetup): { w: number; h: number } {
-  const p = PAPERS[s.paper];
+  const p = s.custom ?? PAPERS[s.paper];
   return s.orientation === "landscape" ? { w: p.h, h: p.w } : { w: p.w, h: p.h };
 }
 
@@ -50,6 +57,7 @@ export function pageGeometry(s: PageSetup): { w: number; h: number; top: number;
 
 export const samePageSetup = (a: PageSetup, b: PageSetup) =>
   a.orientation === b.orientation && a.paper === b.paper && a.color === b.color &&
+  a.custom?.w === b.custom?.w && a.custom?.h === b.custom?.h && !!a.flip === !!b.flip &&
   a.margins.top === b.margins.top && a.margins.bottom === b.margins.bottom && a.margins.left === b.margins.left && a.margins.right === b.margins.right;
 
 const clampMargin = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(720, Math.round(v * 100) / 100)) : fallback);
@@ -68,6 +76,11 @@ export function parsePageSetup(raw: unknown): PageSetup | null {
     margins: { top: clampMargin(m.top, 72), bottom: clampMargin(m.bottom, 72), left: clampMargin(m.left, 72), right: clampMargin(m.right, 72) },
     color: color === "#ffffff" ? null : color,
   };
+  const size = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(Math.max(72, Math.min(1728, v)) * 100) / 100 : null);
+  const cw = size(r.custom?.w);
+  const chh = size(r.custom?.h);
+  if (cw && chh) setup.custom = { w: Math.min(cw, chh), h: Math.max(cw, chh) };
+  if (r.flip === true) setup.flip = true;
   const { w, h } = pageSize(setup);
   // Margins must leave room for text
   if (setup.margins.left + setup.margins.right > w - 36 || setup.margins.top + setup.margins.bottom > h - 36) return null;
@@ -84,15 +97,28 @@ interface DocumentStyle {
   marginLeft?: Dimension | null;
   marginRight?: Dimension | null;
   background?: { color?: { color?: { rgbColor?: { red?: number | null; green?: number | null; blue?: number | null } | null } | null } | null } | null;
+  flipPageOrientation?: boolean | null;
+  documentFormat?: { documentMode?: string | null } | null;
+}
+
+/** Whether a Google Doc is pageless (Docs' File > Page setup > Pageless) */
+export function isPageless(ds: DocumentStyle | null | undefined): boolean {
+  return ds?.documentFormat?.documentMode === "PAGELESS";
 }
 
 const pt = (d: Dimension | null | undefined, fallback: number) => (typeof d?.magnitude === "number" ? d.magnitude : fallback);
 
-/** The setup of an open Google Doc. Unknown paper sizes fall back to the closest listed one. */
+/**
+ * The setup of an open Google Doc. A size Docs' list doesn't have is kept exactly (the dialog
+ * shows the closest listed one), and a flipped page size is shown the way Docs shows it.
+ */
 export function pageSetupFromDocumentStyle(ds: DocumentStyle | null | undefined): PageSetup {
   if (!ds) return DEFAULT_PAGE_SETUP;
-  const w = pt(ds.pageSize?.width, 612);
-  const h = pt(ds.pageSize?.height, 792);
+  const flip = ds.flipPageOrientation === true;
+  const rawW = pt(ds.pageSize?.width, 612);
+  const rawH = pt(ds.pageSize?.height, 792);
+  const w = flip ? rawH : rawW;
+  const h = flip ? rawW : rawH;
   const orientation: Orientation = w > h ? "landscape" : "portrait";
   const pw = Math.min(w, h);
   const ph = Math.max(w, h);
@@ -105,17 +131,28 @@ export function pageSetupFromDocumentStyle(ds: DocumentStyle | null | undefined)
   const rgb = ds.background?.color?.color?.rgbColor;
   const hex = (v: number | null | undefined) => Math.round((v ?? 0) * 255).toString(16).padStart(2, "0");
   const color = rgb ? `#${hex(rgb.red)}${hex(rgb.green)}${hex(rgb.blue)}` : null;
-  return {
+  const setup: PageSetup = {
     orientation,
     paper,
     margins: { top: pt(ds.marginTop, 72), bottom: pt(ds.marginBottom, 72), left: pt(ds.marginLeft, 72), right: pt(ds.marginRight, 72) },
     color: !color || color === "#ffffff" ? null : color,
   };
+  // Within half a point is the listed size (Docs stores A4 as 595.2756 x 841.8898)
+  if (best > 1) setup.custom = { w: Math.round(pw * 100) / 100, h: Math.round(ph * 100) / 100 };
+  if (flip) setup.flip = true;
+  return setup;
+}
+
+/** The batchUpdate request that makes a Google Doc pageless, or gives it pages again */
+export function documentModeRequest(pageless: boolean): Record<string, unknown> {
+  return { updateDocumentStyle: { documentStyle: { documentFormat: { documentMode: pageless ? "PAGELESS" : "PAGES" } }, fields: "documentFormat.documentMode" } };
 }
 
 /** The batchUpdate request that gives a Google Doc this setup */
 export function documentStyleRequest(s: PageSetup): Record<string, unknown> {
-  const { w, h } = pageSize(s);
+  const shown = pageSize(s);
+  // A flipped document keeps its flip: its size is written the other way round, as it stores it
+  const { w, h } = s.flip ? { w: shown.h, h: shown.w } : shown;
   const dim = (magnitude: number) => ({ magnitude, unit: "PT" });
   const c = s.color ?? "#ffffff";
   const ch = (i: number) => parseInt(c.slice(i, i + 2), 16) / 255;

@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import type { EditorNode } from "@/lib/rich-text";
 import { NAMED_STYLE_ORDER } from "@/lib/rich-text";
-import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, samePageSetup, type PageSetup } from "@/lib/page-setup";
+import { DEFAULT_PAGE_SETUP, documentModeRequest, documentStyleRequest, pageGeometry, pageSize, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { pageStartOffsets } from "@/lib/page-offsets";
 import { tokenize } from "@/lib/doc-model";
 import { tokenPositions } from "./pagination";
@@ -123,23 +123,37 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
 
   /** Page setup from the dialog: shown here, and written to the open Google Doc */
   const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {
-    setPageless(nextPageless);
     const prev = pageSetup;
-    if (samePageSetup(prev, next)) return;
-    setPageSetup(next);
+    const prevPageless = pageless;
+    const setupChanged = !samePageSetup(prev, next);
+    const modeChanged = prevPageless !== nextPageless;
+    setPageless(nextPageless);
+    if (setupChanged) setPageSetup(next);
+    if (!setupChanged && !modeChanged) return;
     const content = docContentRef.current;
     if (content?.status !== "ready") return;
     await saveNow();
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", {
-      documentId: content.docId,
-      revisionId: revisionRef.current,
-      requests: [documentStyleRequest(next)],
-    });
-    if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
-    setPageSetup(prev);
-    if (status === 401) setScopeError(true);
-    setSnack(data.error || "Couldn't change the page setup in Google Docs");
-  }, [pageSetup, saveNow, docContentRef, revisionRef, setScopeError, setSnack]);
+    const send = (requests: Record<string, unknown>[]) => postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    if (setupChanged) {
+      const { ok, status, data } = await send([documentStyleRequest(next)]);
+      if (!ok) {
+        setPageSetup(prev);
+        setPageless(prevPageless);
+        if (status === 401) setScopeError(true);
+        setSnack(data.error || "Couldn't change the page setup in Google Docs");
+        return;
+      }
+      if (data.revisionId) revisionRef.current = data.revisionId;
+    }
+    // Pages or pageless on its own, so the rest of the setup goes in even if this doesn't
+    if (modeChanged) {
+      const { ok, status, data } = await send([documentModeRequest(nextPageless)]);
+      if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
+      setPageless(prevPageless);
+      if (status === 401) setScopeError(true);
+      setSnack(data.error || `Couldn't make the Google Doc ${nextPageless ? "pageless" : "paged"}`);
+    }
+  }, [pageSetup, pageless, saveNow, docContentRef, revisionRef, setScopeError, setSnack]);
   const setPageDefault = useCallback((setup: PageSetup, nextPageless: boolean) => {
     writePageDefault(setup, nextPageless);
     setSnack("New documents will use this page setup");

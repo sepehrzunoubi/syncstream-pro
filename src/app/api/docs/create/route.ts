@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createGoogleDoc, editDocument } from "@/lib/google";
-import { documentStyleRequest, parsePageSetup } from "@/lib/page-setup";
+import { documentModeRequest, documentStyleRequest, parsePageSetup } from "@/lib/page-setup";
 import { applyAuthCookies, googleStatus, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
@@ -14,7 +14,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   const limited = await rateLimited(req, "docs.create", { max: 20, windowMs: 60_000, userId: user.userId });
   if (limited) return limited;
 
-  const { title, pageSetup } = (await req.json().catch(() => ({}))) as { title?: unknown; pageSetup?: unknown };
+  const { title, pageSetup, pageless } = (await req.json().catch(() => ({}))) as { title?: unknown; pageSetup?: unknown; pageless?: unknown };
   const name = typeof title === "string" && title.trim() ? title.trim().slice(0, 200) : "Untitled document";
   // The user's default page setup, applied to the new document
   const setup = pageSetup == null ? null : parsePageSetup(pageSetup);
@@ -24,6 +24,11 @@ export const POST = withRoute(async (req: NextRequest) => {
     if (setup) {
       try { await withGoogleToken(user, (token) => editDocument(token, doc.id, [documentStyleRequest(setup)])); }
       catch (err) { log.warn("docs.create_page_setup_failed", { uid: uidTag(user.userId), err }); }
+    }
+    // On its own, so the page setup goes in even if Google doesn't take this
+    if (pageless === true) {
+      try { await withGoogleToken(user, (token) => editDocument(token, doc.id, [documentModeRequest(true)])); }
+      catch (err) { log.warn("docs.create_pageless_failed", { uid: uidTag(user.userId), err }); }
     }
     return applyAuthCookies(NextResponse.json(doc), user);
   } catch (err) {

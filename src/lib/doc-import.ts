@@ -9,7 +9,7 @@
  */
 
 import type { docs_v1 } from "googleapis";
-import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
+import { isPageless, pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
 import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, styleFromMarks, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
@@ -45,6 +45,8 @@ export interface ImportedDoc {
   defaults: DocDefaults;
   /** Paper size, margins and colour, from the document's style */
   pageSetup: PageSetup;
+  /** Docs' pageless format: one continuous page, no page breaks */
+  pageless: boolean;
   /** Headers and footers, when the document has them */
   header?: ImportedSegment;
   footer?: ImportedSegment;
@@ -471,6 +473,7 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
     revisionId: doc.revisionId ?? "",
     defaults,
     pageSetup: pageSetupFromDocumentStyle(doc.documentStyle),
+    pageless: isPageless(doc.documentStyle),
     header: segment(ds.defaultHeaderId, doc.headers?.[ds.defaultHeaderId ?? ""]?.content ?? undefined),
     footer: segment(ds.defaultFooterId, doc.footers?.[ds.defaultFooterId ?? ""]?.content ?? undefined),
     firstPageHeader: segment(ds.firstPageHeaderId, doc.headers?.[ds.firstPageHeaderId ?? ""]?.content ?? undefined),
