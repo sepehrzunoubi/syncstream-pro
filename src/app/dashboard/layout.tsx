@@ -11,10 +11,11 @@ const ICONS_URL =
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.googleapis.com" crossOrigin="" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+      {/* Read with CORS, so the page can draw each face's spaces from it (workspace/space-faces.ts) */}
       {/* eslint-disable-next-line @next/next/no-page-custom-font */}
-      <link rel="stylesheet" href={FONTS_URL} />
+      <link rel="stylesheet" href={FONTS_URL} crossOrigin="" />
       {/* eslint-disable-next-line @next/next/no-page-custom-font */}
       <link rel="stylesheet" href={ICONS_URL} />
       {children}

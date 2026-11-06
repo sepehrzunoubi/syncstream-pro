@@ -14,6 +14,7 @@ import { tokenize } from "@/lib/doc-model";
 import { tokenPositions } from "./pagination";
 import { postJson } from "./api";
 import { writePageDefault } from "./storage";
+import { screenStack } from "./space-faces";
 import type { DocContent, DocRefs, Setter } from "./doc-state";
 
 export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent }: {
@@ -106,12 +107,12 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
     for (const e of [editor, viewer]) {
       const dom = e?.view.dom as HTMLElement | undefined;
       if (!dom) continue;
-      dom.style.setProperty("--ss-doc-font", docDefaults ? `"${docDefaults.fontFamily}", Arimo, sans-serif` : "");
+      dom.style.setProperty("--ss-doc-font", docDefaults ? screenStack(docDefaults.fontFamily) : "");
       dom.style.setProperty("--ss-doc-size", docDefaults ? `${docDefaults.fontSize}pt` : "");
       for (const name of NAMED_STYLE_ORDER) {
         const s = docDefaults?.styles[name];
         dom.style.setProperty(`--ss-size-${name}`, s?.fontSize ? `${s.fontSize}pt` : "");
-        dom.style.setProperty(`--ss-font-${name}`, s?.fontFamily ? `"${s.fontFamily}", Arimo, sans-serif` : "");
+        dom.style.setProperty(`--ss-font-${name}`, s?.fontFamily ? screenStack(s.fontFamily) : "");
         dom.style.setProperty(`--ss-color-${name}`, s?.color ?? "");
       }
       dom.dataset.docFont = docDefaults?.fontFamily ?? "";

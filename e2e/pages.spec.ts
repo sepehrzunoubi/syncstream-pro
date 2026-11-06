@@ -270,6 +270,43 @@ test.describe("lines as Docs draws them", () => {
     expect((got[1].bottom - got[1].top) / (got[0].bottom - got[0].top)).toBeCloseTo(200 / 115, 1);
   });
 
+  test("text kerns the pairs inside a word but not a pair with a space, as Docs does", async ({ app, page }) => {
+    const text = "Tavily A round";
+    const tnr = [{ type: "textStyle", attrs: { fontFamily: "Times New Roman" } }];
+    await app.open({ plain: [{ type: "paragraph", content: [{ type: "text", text }] }, { type: "paragraph", content: [{ type: "text", text, marks: tnr }] }] });
+    await page.evaluate(async () => { await document.fonts.load('11pt "SS Space Arial"', " "); await document.fonts.load('11pt "SS Space Times New Roman"', " "); await document.fonts.ready; });
+    const got = await page.evaluate(({ sel, text }) => {
+      const pages = document.querySelector<HTMLElement>(".ss-pages")!;
+      const stacks = ['Arial, Arimo, "Liberation Sans", sans-serif', '"Times New Roman", Tinos, "Liberation Serif", serif'];
+      return Array.from(document.querySelectorAll(`${sel} > p`)).map((p, i) => {
+        const node = document.createTreeWalker(p, NodeFilter.SHOW_TEXT).nextNode() as Text;
+        const width = (from: number, to: number) => { const r = document.createRange(); r.setStart(node, from); r.setEnd(node, to); return r.getBoundingClientRect().width; };
+        // The same text in the same font, beside the page and at its zoom, kerned or not, with no space face
+        const ref = (s: string, kerning: string) => {
+          const el = document.createElement("span");
+          el.style.cssText = `position:absolute;white-space:pre;font-variant-ligatures:none;font-size:${getComputedStyle(node.parentElement!).fontSize};font-family:${stacks[i]};font-kerning:${kerning}`;
+          el.textContent = s;
+          pages.appendChild(el);
+          const w = el.getBoundingClientRect().width;
+          el.remove();
+          return w;
+        };
+        const a = text.indexOf("A ");
+        return { word: width(0, 6), wordKerned: ref("Tavily", "normal"), wordPlain: ref("Tavily", "none"), aSpace: width(a, a + 2), aSpacePlain: ref("A ", "none"), aSpaceKerned: ref("A ", "normal"), family: getComputedStyle(node.parentElement!).fontFamily };
+      });
+    }, { sel: DOC, text });
+    for (const g of got) {
+      // Each font kerns T-a and A-space, so both checks below tell kerned from not
+      expect(g.wordPlain - g.wordKerned).toBeGreaterThan(0.5);
+      expect(g.aSpacePlain - g.aSpaceKerned).toBeGreaterThan(0.3);
+      expect(Math.abs(g.word - g.wordKerned)).toBeLessThan(0.1);
+      expect(Math.abs(g.aSpace - g.aSpacePlain)).toBeLessThan(0.1);
+      expect(g.family).toMatch(/^"SS Space /);
+    }
+    // The page's space faces stay on the page: the editor's HTML, which its clipboard writes, names the fonts alone
+    expect(await page.evaluate(() => window.ssEditor!.getHTML())).not.toContain("SS Space");
+  });
+
   test("a list glyph's highlight is the height of its text's and level with it", async ({ app, page }) => {
     const text = { type: "text", text: "Highlighted item", marks: [{ type: "highlight", attrs: { color: "#fff2cc" } }] };
     await app.open({ plain: [{ type: "paragraph", attrs: { list: "bullet", level: 0 }, content: [text] }, { type: "paragraph", attrs: { list: "bullet", level: 0, lineSpacing: 200 }, content: [{ ...text, text: "Double spaced" }] }] });

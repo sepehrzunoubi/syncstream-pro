@@ -48,6 +48,8 @@ export function fontsIn(doc: EditorNode | null | undefined, extra: string[] = []
 function link(href: string, onError?: () => void) {
   const el = document.createElement("link");
   el.rel = "stylesheet";
+  // Read with CORS (Google Fonts allows it), so the page can draw each face's spaces from it (space-faces.ts)
+  el.crossOrigin = "anonymous";
   el.href = href;
   el.dataset.ssFont = "";
   if (onError) el.addEventListener("error", onError, { once: true });

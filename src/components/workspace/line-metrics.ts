@@ -7,11 +7,15 @@
  * It also measures each font's ascent and descent (--ss-asc, --ss-desc): a
  * highlight covers them, so a list glyph's highlight is drawn to match the
  * text's (see docs.css).
+ * Each family is drawn with its space face first (space-faces.ts), so kerning
+ * stays inside words as in Docs.
  */
 
-import { FONT_FAMILIES, fontStack } from "@/lib/rich-text";
+import { FONT_FAMILIES } from "@/lib/rich-text";
+import { screenStack, spaceRules } from "./space-faces";
 
 const STYLE_ID = "ss-line-metrics";
+const FACES_ID = "ss-space-faces";
 /** Families measured, in the order their rules are written */
 const families = new Set<string>();
 let probe: HTMLDivElement | null = null;
@@ -23,7 +27,7 @@ function measure(family: string): string {
     probe.style.cssText = "position:absolute;visibility:hidden;left:-9999px;top:0;font-size:100px;line-height:normal;white-space:nowrap";
   }
   if (!probe.isConnected) document.body.appendChild(probe);
-  probe.style.fontFamily = fontStack(family);
+  probe.style.fontFamily = screenStack(family);
   probe.replaceChildren("Hg");
   const nlh = Math.round((probe.getBoundingClientRect().height / 100) * 1000) / 1000;
   // Ascent and descent at a large size, where the browser's rounding to whole pixels costs little; a
@@ -41,16 +45,23 @@ function measure(family: string): string {
   return `--ss-nlh: ${nlh}; --ss-asc: ${asc}; --ss-desc: ${desc};`;
 }
 
+/** Sets a style element's text, only when it changes: new @font-face rules load again, and a load writes again */
+function setStyle(id: string, text: string) {
+  let el = document.getElementById(id);
+  if (!el) { el = document.createElement("style"); el.id = id; document.head.appendChild(el); }
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function write() {
   if (!families.size) return;
+  // The space faces first, so the metrics are measured in the stacks the page draws
+  setStyle(FACES_ID, spaceRules(families).join("\n"));
   const name = (f: string) => `"${CSS.escape(f)}"`;
   // Text in a font of its own, and a document whose default font it is (data-doc-font, see use-page-setup)
   const rules = [`.ss-doc { ${measure("Arial")} }`];
   for (const f of families) rules.push(`.ss-doc[data-doc-font=${name(f)}], .ss-doc [data-font=${name(f)}] { ${measure(f)} }`);
   probe?.remove();
-  let el = document.getElementById(STYLE_ID);
-  if (!el) { el = document.createElement("style"); el.id = STYLE_ID; document.head.appendChild(el); }
-  el.textContent = rules.join("\n");
+  setStyle(STYLE_ID, rules.join("\n"));
 }
 
 /** Measure these fonts too (a document's or a paste's); each is measured again once web fonts load */

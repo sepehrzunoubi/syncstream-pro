@@ -328,10 +328,12 @@
 
 /* Document typography: what Google Docs renders for the same formatting */
 .ss-doc {
-  /* Docs lays text out without kerning or ligatures */
+  /* Docs kerns the pairs inside a word, never a pair with a space, and draws no ligatures. Kerning
+     turns on once every family has a face of its own for spaces (space-faces.ts), which keeps it
+     inside words; until then it stays off, which is nearer Docs than kerning across spaces */
   font-kerning: none;
   font-variant-ligatures: none;
-  font-family: var(--ss-doc-font, Arial, Arimo, "Liberation Sans", sans-serif);
+  font-family: var(--ss-doc-font, "SS Space Arial", Arial, Arimo, "Liberation Sans", sans-serif);
   font-size: var(--ss-doc-size, 11pt);
   --ss-spacing: 1.15;
   line-height: calc(var(--ss-spacing) * var(--ss-nlh, 1.15));
