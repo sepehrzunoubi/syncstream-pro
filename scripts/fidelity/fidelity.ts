@@ -377,6 +377,19 @@ export const SCENARIOS: Scenario[] = [
     target: () => [P({ styleName: "h2", box: { start: 0, first: 0, above: 18, below: 6 } }, ["Loose heading", [ts(16)]]), P({ box: box0 }, "Body")],
   },
   {
+    name: "list-spacing-modes",
+    what: "list items with space after: ones that leave it out next to each other (Docs' default), ones that keep it, and ones with the document's mode",
+    target: () => [
+      P({ list: "bullet", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 }, spacingMode: "COLLAPSE_LISTS" }, "Tight item one"),
+      P({ list: "bullet", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 }, spacingMode: "COLLAPSE_LISTS" }, "Tight item two"),
+      P({ box: box0 }, "Between the lists"),
+      P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced item one"),
+      P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced item two"),
+      P({ box: box0 }, "Between again"),
+      P({ list: "bullet", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 } }, "The document's mode"),
+    ],
+  },
+  {
     name: "highlighted-bullets",
     what: "list items whose whole text is highlighted, long and short",
     target: () => [LI(0, "bullet", ["Industry subsegment value proposition", [ts(11), hl("rgb(217, 234, 211)")]]), LI(0, "bullet", ["Market size", [ts(11), hl("rgb(217, 234, 211)")]]), LI(0, "bullet", ["Big text list item with many words", [ts(14)]]), LI(0, "bullet", ["Big two", [ts(14)]])],

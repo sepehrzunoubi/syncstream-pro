@@ -176,7 +176,14 @@ export interface ParagraphFormat {
   borders?: Borders;
   /** Paragraph background, #rrggbb */
   shading?: string;
+  /**
+   * Docs' spacing mode of its own: whether its space above and below is left out next to another item of
+   * its list (COLLAPSE_LISTS, Docs' default) or kept (NEVER_COLLAPSE). Absent: its named style's
+   */
+  spacingMode?: SpacingMode;
 }
+export type SpacingMode = "COLLAPSE_LISTS" | "NEVER_COLLAPSE";
+const SPACING_MODES = new Set(["COLLAPSE_LISTS", "NEVER_COLLAPSE"]);
 
 export interface RunFormat {
   len: number;
@@ -349,6 +356,7 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   if (borders) extras.borders = borders;
   const shading = typeof a.shading === "string" && /^#[0-9a-f]{6}$/i.test(a.shading) ? a.shading.toLowerCase() : undefined;
   if (shading) extras.shading = shading;
+  if (typeof a.spacingMode === "string" && SPACING_MODES.has(a.spacingMode)) extras.spacingMode = a.spacingMode as SpacingMode;
   const end = typeof a.indentEnd === "number" && Number.isFinite(a.indentEnd) && a.indentEnd > 0 ? Math.min(1000, Math.round(a.indentEnd * 100) / 100) : undefined;
   if (end) extras.end = end;
   if (list) {
@@ -600,6 +608,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           keep: (p as ParagraphFormat).keep,
           borders: (p as ParagraphFormat).borders,
           shading: (p as ParagraphFormat).shading,
+          spacingMode: (p as ParagraphFormat).spacingMode,
         }
       : undefined
   ));
@@ -643,7 +652,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   if (images.length) format.images = images;
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
-    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, glyph: rawBase.glyph, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading });
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, glyph: rawBase.glyph, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading, spacingMode: rawBase.spacingMode });
   }
   return { ok: true, format };
 }
@@ -898,6 +907,7 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat, fresh = f
   if (JSON.stringify(a.keep ?? null) !== JSON.stringify(b.keep ?? null) || (a.style !== b.style && b.keep)) addKeep(style, fields, b.keep);
   if (JSON.stringify(a.borders ?? null) !== JSON.stringify(b.borders ?? null)) addBorders(style, fields, b.borders);
   if (a.shading !== b.shading) addShading(style, fields, b.shading);
+  if (a.spacingMode !== b.spacingMode) { if (b.spacingMode) style.spacingMode = b.spacingMode; fields.push("spacingMode"); }
   return fields.length ? { style, fields } : null;
 }
 
@@ -1130,6 +1140,9 @@ export function paragraphRequest(p: ParagraphFormat, startIndex: number, endInde
   addKeep(paragraphStyle, fields, p.keep);
   if (p.borders) addBorders(paragraphStyle, fields, p.borders);
   if (p.shading) addShading(paragraphStyle, fields, p.shading);
+  // Its own spacing mode, else unset in the mask: the named style's, not the copied paragraph's
+  if (p.spacingMode) paragraphStyle.spacingMode = p.spacingMode;
+  fields.push("spacingMode");
   return { updateParagraphStyle: { range: { startIndex, endIndex }, paragraphStyle, fields: fields.join(",") } };
 }
 
@@ -1151,7 +1164,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       : null;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, glyphStyle: p.list ? p.glyph ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null },
+      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, glyphStyle: p.list ? p.glyph ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null, spacingMode: p.spacingMode ?? null },
       content: [],
     };
     const end = pos + line.length;

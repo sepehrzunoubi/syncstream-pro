@@ -39,6 +39,8 @@ export interface DocDefaults {
   styles: Partial<Record<NamedStyle, { fontSize?: number; fontFamily?: string; color?: string }>>;
   /** Per paragraph style: the keep options the document's named style gives (Google's when it has none) */
   keep?: StyleKeeps;
+  /** Normal text's spacing mode, when it never collapses list spacing (Docs' default does) */
+  spacingMode?: "NEVER_COLLAPSE";
 }
 
 /** The keep options of the document the page shows (see use-page-setup) */
@@ -237,6 +239,7 @@ function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDe
     lineSpacing: normal?.paragraphStyle?.lineSpacing ? Math.round(normal.paragraphStyle.lineSpacing) : 115,
     styles,
     ...(Object.keys(keep).length ? { keep } : {}),
+    ...(normal?.paragraphStyle?.spacingMode === "NEVER_COLLAPSE" ? { spacingMode: "NEVER_COLLAPSE" as const } : {}),
   };
 }
 
@@ -374,6 +377,8 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
         keep,
         borders: Object.keys(borders).length ? borders : null,
         shading: shading && shading !== "#ffffff" ? shading : null,
+        // Its own spacing mode only: with none, its named style's
+        spacingMode: own.spacingMode === "COLLAPSE_LISTS" || own.spacingMode === "NEVER_COLLAPSE" ? own.spacingMode : null,
         ...(unsupported ? { locked: true } : {}),
       },
       content,

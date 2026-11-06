@@ -202,6 +202,19 @@ test.describe("lines as Docs draws them", () => {
     expect(Math.abs(got.lineHeight - 1.15 * got.natural * got.fontSize)).toBeLessThan(0.05);
   });
 
+  test("items of a list leave out the space between them unless their spacing mode keeps it, as Docs does", async ({ app, page }) => {
+    const item = (text: string, spacingMode?: string) => ({ type: "paragraph", attrs: { list: "bullet", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 }, ...(spacingMode ? { spacingMode } : {}) }, content: [{ type: "text", text }] });
+    const para = (text: string) => ({ type: "paragraph", attrs: {}, content: [{ type: "text", text }] });
+    await app.open({ plain: [item("Tight one"), item("Tight two"), para("Between"), item("Kept one", "NEVER_COLLAPSE"), item("Kept two", "NEVER_COLLAPSE"), para("After")] });
+    const gaps = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      const ps = Array.from(document.querySelectorAll(`${sel} > p`)).map((p) => p.getBoundingClientRect());
+      return ps.slice(1).map((r, i) => Math.round(((r.top - ps[i].bottom) / zoom) * 0.75 * 10) / 10);
+    }, DOC);
+    // A list's last item keeps its space below: what follows is not an item of the list
+    expect(gaps).toEqual([0, 12, 0, 12, 12]);
+  });
+
   test("a list glyph's highlight is the height of its text's and level with it", async ({ app, page }) => {
     const text = { type: "text", text: "Highlighted item", marks: [{ type: "highlight", attrs: { color: "#fff2cc" } }] };
     await app.open({ plain: [{ type: "paragraph", attrs: { list: "bullet", level: 0 }, content: [text] }, { type: "paragraph", attrs: { list: "bullet", level: 0, lineSpacing: 200 }, content: [{ ...text, text: "Double spaced" }] }] });

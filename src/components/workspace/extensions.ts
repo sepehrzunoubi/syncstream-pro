@@ -303,6 +303,12 @@ const DocParagraph = Paragraph.extend({
         // Options of its own, even none, are data-keep; with none of its own the page reads its named style's
         renderHTML: (a: { keep?: KeepOptions | null }) => (a.keep ? { "data-keep": keepFlags(a.keep).join(" ") } : {}),
       },
+      /** Docs' spacing mode of its own (see ParagraphFormat.spacingMode); the page reads it as data-sm */
+      spacingMode: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: (a: { spacingMode?: string | null }) => (a.spacingMode === "NEVER_COLLAPSE" ? { "data-sm": "never" } : a.spacingMode === "COLLAPSE_LISTS" ? { "data-sm": "collapse" } : {}),
+      },
       borders: {
         default: null,
         parseHTML: (el: HTMLElement) => (el.hasAttribute("data-spacing") ? null : pastedBorders(el)),
@@ -579,7 +585,7 @@ const DocFormat = Extension.create({
       clearFormatting: () => ({ chain }) =>
         chain()
           .unsetFormattingMarks()
-          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null, indentEnd: null, keep: null, borders: null, shading: null })))
+          .command(updateParagraphs(() => ({ indent: 0, firstLine: false, lineSpacing: 115, textAlign: null, ...NO_LIST, box: null, indentEnd: null, keep: null, borders: null, shading: null, spacingMode: null })))
           .run(),
     };
   },
