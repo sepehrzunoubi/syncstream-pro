@@ -60,6 +60,38 @@ test.describe("pages", () => {
     }
   });
 
+  test("double-spaced text flows onto pages and every line stays inside the margins", async ({ app, page }) => {
+    await app.open({ plain: Array.from({ length: 16 }, (_, i) => ({ type: "paragraph", attrs: { lineSpacing: 200 }, content: [{ type: "text", text: `${i + 1}. ${LONG_BODY}` }] })) });
+    await expect.poll(() => app.sheets()).toBeGreaterThanOrEqual(3);
+    await expect.poll(async () => (await layout(page)).gaps.length).toBe((await app.sheets()) - 1);
+    const { sheets, lines } = await page.evaluate((sel) => {
+      const rect = (r: DOMRect) => ({ top: r.top, bottom: r.bottom });
+      const out: { top: number; bottom: number }[] = [];
+      for (const p of Array.from(document.querySelectorAll(`${sel} > p`))) {
+        const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+          const range = document.createRange();
+          range.selectNodeContents(t);
+          out.push(...Array.from(range.getClientRects()).map(rect));
+        }
+      }
+      return { sheets: Array.from(document.querySelectorAll(".ss-sheet")).map((s) => rect(s.getBoundingClientRect())), lines: out };
+    }, DOC);
+    const margin = (sheets[0].bottom - sheets[0].top) / 11;
+    // Lines by where they sit (a line can come as more than one rectangle)
+    const onPage = sheets.map(() => new Set<number>());
+    for (const l of lines) {
+      const k = sheets.findIndex((s) => l.top >= s.top && l.top < s.bottom);
+      expect(k, "a line on a page").toBeGreaterThanOrEqual(0);
+      expect(l.top).toBeGreaterThanOrEqual(sheets[k].top + margin - 1);
+      expect(l.bottom).toBeLessThanOrEqual(sheets[k].bottom - margin + 1);
+      onPage[k].add(Math.round(l.top));
+    }
+    // Docs keeps a line on a page when its top and its text's natural height (12.64pt) fit: 26 double-spaced
+    // Arial 11 lines (25.28pt apart) on a 648pt page
+    expect(onPage[0].size).toBe(26);
+  });
+
   test("a table taller than a page breaks between rows", async ({ app, page }) => {
     await app.open({ plain: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text: "Before the table" }] }, tallTable(45), { type: "paragraph", attrs: {}, content: [{ type: "text", text: "After the table" }] }] });
     await expect.poll(() => app.sheets()).toBeGreaterThanOrEqual(2);
@@ -213,6 +245,29 @@ test.describe("lines as Docs draws them", () => {
     }, DOC);
     // A list's last item keeps its space below: what follows is not an item of the list
     expect(gaps).toEqual([0, 12, 0, 12, 12]);
+  });
+
+  test("text spaced wider than single sits where a single-spaced line's does, the extra space below it", async ({ app, page }) => {
+    const para = (text: string, lineSpacing: number) => ({ type: "paragraph", attrs: { lineSpacing }, content: [{ type: "text", text }] });
+    await app.open({ plain: [para("Single", 115), para("Double", 200), para("One and a half", 150), para("Single again", 115)] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        const range = document.createRange();
+        range.selectNodeContents(p.firstChild!);
+        const text = range.getClientRects()[0];
+        const box = p.getBoundingClientRect();
+        // Where the paragraph is laid out: as drawn, less how far it is drawn above that
+        const shift = (parseFloat(getComputedStyle(p).top) || 0) * zoom;
+        return { textTop: text.top / zoom, top: (box.top - shift) / zoom, bottom: (box.bottom - shift) / zoom };
+      });
+    }, DOC);
+    // Text below the top of its line by as much as single-spaced text is, whatever the spacing
+    const single = got[0].textTop - got[0].top;
+    for (const p of got) expect(Math.abs(p.textTop - p.top - single), JSON.stringify(got)).toBeLessThanOrEqual(0.6);
+    // Laid out as before: each paragraph starts where the one above ends, the double-spaced one twice as tall
+    for (let i = 1; i < got.length; i++) expect(Math.abs(got[i].top - got[i - 1].bottom)).toBeLessThanOrEqual(0.6);
+    expect((got[1].bottom - got[1].top) / (got[0].bottom - got[0].top)).toBeCloseTo(200 / 115, 1);
   });
 
   test("a list glyph's highlight is the height of its text's and level with it", async ({ app, page }) => {

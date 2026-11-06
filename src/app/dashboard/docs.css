@@ -352,6 +352,10 @@
 /* Nor after the hyphen inside a word (see line-breaks.ts) */
 .ss-doc .ss-nobreak { white-space: nowrap; }
 .ss-doc p { margin: 0; }
+/* Docs puts a line's spacing beyond single (1.15 here) below its text, where CSS splits it above and below:
+   a paragraph spaced wider is drawn that much higher, its text where a 1.15-spaced line's would sit in the
+   same line (layout is unchanged; pagination reads the shift back, see pagination.ts) */
+.ss-doc p { position: relative; top: calc((1.15 - var(--ss-spacing, 1.15)) * var(--ss-nlh, 1.15) * 0.5em); }
 /* Named styles: the document's own sizes, fonts and colours when it sets them, else Docs' defaults */
 .ss-doc p[data-style="title"] { font-size: var(--ss-size-title, 26pt); font-family: var(--ss-font-title, inherit); color: var(--ss-color-title, inherit); margin-bottom: 3pt; }
 .ss-doc p[data-style="subtitle"] { font-size: var(--ss-size-subtitle, 15pt); font-family: var(--ss-font-subtitle, inherit); color: var(--ss-color-subtitle, #666); margin-bottom: 16pt; }
