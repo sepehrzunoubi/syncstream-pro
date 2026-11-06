@@ -405,16 +405,19 @@ test.describe("lines as Docs draws them", () => {
           return w;
         };
         const a = text.indexOf("A ");
-        return { word: width(0, 6), wordKerned: ref("Tavily", "normal"), wordPlain: ref("Tavily", "none"), aSpace: width(a, a + 2), aSpacePlain: ref("A ", "none"), aSpaceKerned: ref("A ", "normal"), family: getComputedStyle(node.parentElement!).fontFamily };
+        // What the space faces resolved to, for a failure's message
+        const faces = Array.from(document.fonts).filter((f) => f.family.includes("SS Space")).map((f) => `${f.family} ${f.weight} ${f.style}: ${f.status}`);
+        return { word: width(0, 6), wordKerned: ref("Tavily", "normal"), wordPlain: ref("Tavily", "none"), aSpace: width(a, a + 2), aSpacePlain: ref("A ", "none"), aSpaceKerned: ref("A ", "normal"), space: width(a + 1, a + 2), spacePlain: ref(" ", "none"), family: getComputedStyle(node.parentElement!).fontFamily, faces };
       });
     }, { sel: DOC, text });
     for (const g of got) {
+      const seen = JSON.stringify(g);
       // Each font kerns T-a and A-space, so both checks below tell kerned from not
-      expect(g.wordPlain - g.wordKerned).toBeGreaterThan(0.5);
-      expect(g.aSpacePlain - g.aSpaceKerned).toBeGreaterThan(0.3);
-      expect(Math.abs(g.word - g.wordKerned)).toBeLessThan(0.1);
-      expect(Math.abs(g.aSpace - g.aSpacePlain)).toBeLessThan(0.1);
-      expect(g.family).toMatch(/^"SS Space /);
+      expect(g.wordPlain - g.wordKerned, seen).toBeGreaterThan(0.5);
+      expect(g.aSpacePlain - g.aSpaceKerned, seen).toBeGreaterThan(0.3);
+      expect(Math.abs(g.word - g.wordKerned), seen).toBeLessThan(0.1);
+      expect(Math.abs(g.aSpace - g.aSpacePlain), seen).toBeLessThan(0.1);
+      expect(g.family, seen).toMatch(/^"SS Space /);
     }
     // The page's space faces stay on the page: the editor's HTML, which its clipboard writes, names the fonts alone
     expect(await page.evaluate(() => window.ssEditor!.getHTML())).not.toContain("SS Space");
