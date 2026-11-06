@@ -108,6 +108,11 @@ function unwrap(raw: unknown, depth = 0): Resolved | null {
   return null;
 }
 
+/** The copied text, from Docs' copy even when the rest of it can't be read (whether its last newline was copied) */
+export function sliceText(raw: unknown): string | null {
+  return unwrap(raw)?.dsl_spacers ?? null;
+}
+
 /** The style in effect at each position of the text */
 function runs(styles: (Style | null)[] | undefined, length: number): (Style | null)[] {
   const out = new Array<Style | null>(length).fill(null);

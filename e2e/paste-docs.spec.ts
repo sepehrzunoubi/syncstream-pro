@@ -65,12 +65,15 @@ test.describe("pasting from Google Docs", () => {
     await openEmpty(app, api, page);
     await app.paste({ html: HTML, text: TEXT });
     const want = sliceParagraphs(readDocsSlice(SLICE, TEXT)!, api.content.defaults);
-    await expect.poll(async () => ((await app.json()).content as EditorNode[]).length).toBe(45);
+    // The HTML ends with the empty line that shows the last newline was copied: the paragraph pasted
+    // into stays after the pasted ones, as with Docs' own copy
+    await expect.poll(async () => ((await app.json()).content as EditorNode[]).length).toBe(46);
     const got = (await app.json()).content as EditorNode[];
+    expect(got[45].content ?? []).toEqual([]);
     // Same text, character for character (no non-breaking spaces where the document has spaces)
-    expect(await app.text()).toBe(TEXT.replace(/\n$/, ""));
+    expect(await app.text()).toBe(TEXT);
     const outline = (ps: EditorNode[]) => ps.map((p) => [p.attrs?.styleName, p.attrs?.list ?? null, p.attrs?.list ? p.attrs?.level ?? 0 : null]);
-    expect(outline(got)).toEqual(outline(want));
+    expect(outline(got.slice(0, 45))).toEqual(outline(want));
     // Highlights and the link, as copied
     expect(runsOf(got[0])).toEqual(runsOf(want[0]));
   });

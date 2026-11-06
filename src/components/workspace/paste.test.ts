@@ -128,3 +128,23 @@ test("restyleText drops what the style gives and keeps what it doesn't", () => {
   const grey: DocDefaults = { ...ARIAL, styles: { subtitle: { color: "#666666" } } };
   assert.deepEqual(marksOf(restyleText(run([]), "subtitle", "normal", grey)), [{ type: "textStyle", fontFamily: null, fontSize: 15, color: "#666666", fontWeight: null }]);
 });
+
+test("a line break inside a pasted run is restyled with the run", () => {
+  // Docs' HTML puts a soft line break inside the run's span, so it carries every value the span spells out
+  const spelled = [{ type: "textStyle", attrs: { fontFamily: "Arial", fontSize: 11, color: "rgb(0, 0, 0)", fontWeight: null } }];
+  const p = schema.nodeFromJSON({ type: "paragraph", content: [{ type: "text", text: "a", marks: spelled }, { type: "hardBreak", marks: spelled }, { type: "text", text: "b", marks: spelled }] });
+  const out = restyleText(p.content, "normal", "normal", ARIAL);
+  assert.deepEqual(Array.from({ length: out.childCount }, (_, i) => out.child(i).marks.length), [0, 0, 0]);
+});
+
+test("text pasted over a selection from a heading into the next paragraph keeps its own look", () => {
+  const doc = schema.node("doc", null, [para("Hello world", { styleName: "h2" }), para("Item one", { list: "bullet", level: 0 })]);
+  // "Hel[lo world" … "Item] one": the paragraph left is the heading, as when typing over the selection
+  const view = viewOf(doc, 4, doc.child(0).nodeSize + 5);
+  assert.equal(insertParagraphs(view, [para("body text")], false, ARIAL), true);
+  assert.deepEqual(texts(view.state.doc), ["Helbody text one"]);
+  assert.deepEqual(styles(view.state.doc), ["h2"]);
+  const run = view.state.doc.child(0).child(1);
+  assert.equal(run.text, "body text");
+  assert.equal(run.marks.find((m) => m.type.name === "textStyle")?.attrs.fontSize, 11);
+});

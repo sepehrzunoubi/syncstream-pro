@@ -12,16 +12,59 @@ import { Fragment, Slice, type Mark, type Node as PMNode, type ResolvedPos } fro
 import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { namedStyleText, type DocDefaults } from "@/lib/doc-import";
-import { DOCS_SLICE_TYPE, readDocsSlice, sliceParagraphs } from "@/lib/docs-slice";
+import { DOCS_SLICE_TYPE, readDocsSlice, sliceParagraphs, sliceText } from "@/lib/docs-slice";
 import { cssColorToHex, cssFontToFamily, DEFAULT_FONT, NAMED_STYLES, type NamedStyle } from "@/lib/rich-text";
 import { flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
 
 export const imageFilesOf = (list: FileList | null | undefined) => Array.from(list ?? []).filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
 
-export const transformPastedHTML = (html: string) => inlinePastedStyles(flattenPastedLists(pastedEmptyLines(html)));
-
 /** HTML Google Docs put on the clipboard */
 export const isDocsHTML = (html: string) => /id="docs-internal-guid-/.test(html);
+
+/**
+ * Docs writes a space it must keep (at either end of a run, or next to another space) as the
+ * entity &nbsp;, and a real non-breaking space as the character itself. Parsing makes both the
+ * same character, so the real ones are marked first (a noncharacter, never in text) and each is
+ * put back once the HTML is read (docsText): the entities are spaces, the marks non-breaking.
+ */
+const REAL_NBSP = "\ufdd0";
+export const docsSpaces = (html: string) => (isDocsHTML(html) && html.includes("\u00a0") ? html.replace(/>([^<]+)</g, (m, t: string) => (t.includes("\u00a0") ? `>${t.replace(/\u00a0/g, REAL_NBSP)}<` : m)) : html);
+const docsText = (t: string) => (/[\u00a0\ufdd0]/.test(t) ? t.replace(/\u00a0/g, " ").replace(/\ufdd0/g, "\u00a0") : t);
+
+/** The fragment with every text changed by `fn` (the same fragment when nothing changes) */
+function mapText(f: Fragment, fn: (t: string) => string): Fragment {
+  let changed = false;
+  const out: PMNode[] = [];
+  f.forEach((n) => {
+    if (n.isText) {
+      const t = fn(n.text ?? "");
+      if (t !== n.text) { changed = true; out.push(n.type.schema.text(t, n.marks)); } else out.push(n);
+    } else if (n.content.size) {
+      const c = mapText(n.content, fn);
+      if (c !== n.content) { changed = true; out.push(n.copy(c)); } else out.push(n);
+    } else out.push(n);
+  });
+  return changed ? Fragment.from(out) : f;
+}
+
+export const transformPastedHTML = (html: string) => inlinePastedStyles(flattenPastedLists(pastedEmptyLines(docsSpaces(html))));
+
+/**
+ * Whether a copy from Docs ends with a whole paragraph (its newline copied), and whether that is known.
+ * Docs' own copy says, even one this can't read. Its text/plain ends with a newline whenever more
+ * than one paragraph was copied, so for those it can't; there only an empty paragraph at the end (a
+ * <br>) shows it. Within one paragraph, text/plain ends with a newline only when that paragraph's was
+ * copied. Without Docs' copy (Safari) the HTML can't always tell: in 56 copies of 16 documents spanning
+ * paragraphs a trailing <br> is right for 45; the rest end with a newline the HTML doesn't show
+ * (Ctrl+A copies among them), so a copy without one is not known to end mid-paragraph.
+ */
+export function docsCopyEnd(html: string, slice: string | null | undefined, plain: string, paragraphs: number): { ends: boolean; known: boolean } {
+  const text = slice ? sliceText(slice) : null;
+  if (text != null) return { ends: text.endsWith("\n"), known: true };
+  if (paragraphs <= 1) return { ends: /\n$/.test(plain.replace(/\r\n?/g, "\n")), known: true };
+  const br = /<br\s*\/?>\s*(<\/b>)?\s*(<br class="Apple-interchange-newline">)?\s*$/i.test(html.trim());
+  return { ends: br, known: br };
+}
 
 /** The destination document's named styles, as the workspace shows them (see use-page-setup) */
 function destinationDefaults(view: EditorView): DocDefaults {
@@ -44,7 +87,8 @@ export function restyleText(content: Fragment, from: NamedStyle, to: NamedStyle,
   const now = namedStyleText(defaults, to);
   const nodes: PMNode[] = [];
   content.forEach((node) => {
-    if (!node.isText) { nodes.push(node); return; }
+    // A line break inside a run carries the run's marks (pasted HTML spells them out), so it is restyled with it
+    if (!node.isText && node.type.name !== "hardBreak") { nodes.push(node); return; }
     const schema = node.type.schema;
     const ts = node.marks.find((m) => m.type.name === "textStyle");
     const a = (ts?.attrs ?? {}) as Record<string, unknown>;
@@ -55,8 +99,9 @@ export function restyleText(content: Fragment, from: NamedStyle, to: NamedStyle,
     const next = { ...a, fontFamily: font !== now.font || weight ? font : null, fontSize: size !== now.size ? size : null, color: color !== now.color ? color : null, fontWeight: weight };
     let marks: readonly Mark[] = node.marks.filter((m) => m.type.name !== "textStyle").flatMap((m) => {
       if (m.type.name !== "highlight") return [m];
-      const hex = typeof m.attrs.color === "string" ? cssColorToHex(m.attrs.color) : "#ffff00";
-      return hex ? [m.type.create({ ...m.attrs, color: hex })] : [];
+      // <mark> without a colour is yellow; white is no highlight (as a Google Doc reads)
+      const hex = typeof m.attrs.color === "string" && m.attrs.color ? cssColorToHex(m.attrs.color) : "#ffff00";
+      return hex && hex !== "#ffffff" ? [m.type.create({ ...m.attrs, color: hex })] : [];
     });
     if (Object.values(next).some((v) => v != null)) marks = schema.marks.textStyle.create(next).addToSet(marks);
     nodes.push(node.mark(marks));
@@ -94,7 +139,10 @@ export function insertParagraphs(view: EditorView, paragraphs: PMNode[], endsWit
   const { state } = view;
   const { $from, $to } = state.selection;
   const paragraph = state.schema.nodes.paragraph;
-  if (!paragraphs.length || paragraphs.some((p) => p.type !== paragraph)) return false;
+  // Tables can go between the pasted paragraphs (into the body, not a cell); the paste starts and ends with a paragraph
+  if (!paragraphs.length || [paragraphs[0], paragraphs[paragraphs.length - 1]].some((p) => p.type !== paragraph)) return false;
+  const tables = paragraphs.some((p) => p.type !== paragraph);
+  if (paragraphs.some((p) => p.type !== paragraph && p.type.name !== "table") || (tables && $from.depth !== 1)) return false;
   if ($from.parent.type !== paragraph || $to.parent.type !== paragraph || $from.depth !== $to.depth || $from.node(-1) !== $to.node(-1)) return false;
   let locked = false;
   state.doc.nodesBetween($from.before(), $to.after(), (n) => { if (n.attrs.locked) locked = true; return !locked; });
@@ -107,8 +155,10 @@ export function insertParagraphs(view: EditorView, paragraphs: PMNode[], endsWit
     // A partly copied last paragraph that joins text already there takes that paragraph's format
     const joined = tail ? restyleText(tail.content, styleOf(tail), styleOf($to.parent), defaults) : Fragment.empty;
     if (!complete.length) {
-      // Text within one paragraph: the paragraph keeps its own format
-      tr.replaceSelection(new Slice(joined, 0, 0));
+      // Text within one paragraph: the paragraph keeps its own format. Over a selection reaching into later
+      // paragraphs that is the first one's (as when typing over it), so the text is restyled for that one
+      const into = $from.parent;
+      tr.replaceSelection(new Slice(into === $to.parent || !tail ? joined : restyleText(tail.content, styleOf(tail), styleOf(into), defaults), 0, 0));
     } else if ((tail || !endKnown) && $from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size) {
       // Nothing of the paragraphs pasted over is left: a last, partly copied paragraph keeps its own format
       const out = tail ? [...complete, tail] : complete;
@@ -188,6 +238,26 @@ export function plainSpaces(paragraphs: PMNode[], plain: string): PMNode[] {
   return fixed.map(({ node, content }) => (content ? node.copy(Fragment.from(content)) : node));
 }
 
+/**
+ * A list item's glyph style from Docs' HTML (its <li>'s style, see flattenPastedLists) without what
+ * the item's named style gives. Docs' HTML never says a glyph is highlighted; Docs highlights it
+ * with the whole item, so an item highlighted from end to end has its glyph highlighted too.
+ */
+function docsGlyph(p: PMNode, defaults: DocDefaults): PMNode {
+  const raw = p.attrs.glyphStyle as Record<string, unknown> | null;
+  if (!p.attrs.list || !raw) return p;
+  const style = namedStyleText(defaults, styleOf(p));
+  const g: Record<string, unknown> = { ...raw };
+  if (g.font === style.font) delete g.font;
+  if (g.size === style.size) delete g.size;
+  if (g.color === style.color) delete g.color;
+  const bgs = new Set<string | null>();
+  p.forEach((c) => { if (c.isText && c.text?.trim()) bgs.add((c.marks.find((m) => m.type.name === "highlight")?.attrs.color as string | undefined) ?? null); });
+  const [bg] = Array.from(bgs);
+  if (bgs.size === 1 && bg) g.bg = bg;
+  return p.type.create({ ...p.attrs, glyphStyle: g }, p.content, p.marks);
+}
+
 export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slice, onImageFiles: (files: File[]) => void): boolean {
   const data = event.clipboardData;
   const files = imageFilesOf(data?.files);
@@ -219,16 +289,32 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
   }
 
   if (!data?.types.includes("text/html")) return false;
-  const first = slice.content.firstChild;
-  if (first?.type.name !== "paragraph") return false;
+  const html = data.getData("text/html");
+  const docs = isDocsHTML(html);
+  // Docs' spaces as the document has them (see docsSpaces)
+  const read = slice;
+  if (docs) { const content = mapText(slice.content, docsText); if (content !== slice.content) slice = new Slice(content, slice.openStart, slice.openEnd); }
+  // ProseMirror's own paste, of the slice as read here
+  const pmPaste = () => {
+    if (slice === read) return false;
+    view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView().setMeta("paste", true).setMeta("uiEvent", "paste").setMeta("preventAutolink", true));
+    event.preventDefault();
+    return true;
+  };
+  // Text from inside one paragraph: a paragraph that doesn't end, so it takes the destination's format
+  const inline = slice.content.childCount > 0 && Array.from({ length: slice.content.childCount }, (_, i) => slice.content.child(i)).every((n) => n.isInline);
+  const first = inline ? view.state.schema.nodes.paragraph.create(null, slice.content) : slice.content.firstChild;
+  if (first?.type.name !== "paragraph") return pmPaste();
   const parsed: PMNode[] = [];
-  slice.content.forEach((n) => parsed.push(n));
+  if (inline) parsed.push(first); else slice.content.forEach((n) => parsed.push(n));
   // Values that repeat what each paragraph's style gives aren't formatting of their own
   const defaults = destinationDefaults(view);
-  const paragraphs = plainSpaces(parsed, plain).map((p) => (p.type.name === "paragraph" ? p.copy(restyleText(p.content, styleOf(p), styleOf(p), defaults)) : p));
-  // Docs' HTML: paragraphs go in as Docs pastes them. Whether the last newline was copied is the
-  // slice's to say: its text ends with one whenever the copy spans paragraphs
-  if (isDocsHTML(data.getData("text/html")) && insertParagraphs(view, paragraphs, /\n$/.test(plain.replace(/\r\n?/g, "\n")), defaults, false)) {
+  // Docs' HTML has its spaces right already (see docsSpaces); others' are put right from text/plain
+  const spaced = docs ? parsed : plainSpaces(parsed, plain);
+  const paragraphs = spaced.map((p) => (p.type.name === "paragraph" ? p.copy(restyleText(p.content, styleOf(p), styleOf(p), defaults)) : p)).map((p) => (docs ? docsGlyph(p, defaults) : p));
+  // Docs' HTML: paragraphs go in as Docs pastes them, ending as Docs' copy says (see docsCopyEnd)
+  const end = inline ? { ends: false, known: true } : docsCopyEnd(html, raw, plain, paragraphs.length);
+  if ((docs || inline) && insertParagraphs(view, paragraphs, docs ? end.ends : false, defaults, docs ? end.known : true)) {
     event.preventDefault();
     return true;
   }
@@ -240,7 +326,7 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
     event.preventDefault();
     return true;
   }
-  if (paragraphs.every((p, i) => p.eq(parsed[i]))) return false;
+  if (paragraphs.every((p, i) => p.eq(parsed[i]))) return pmPaste();
   // ProseMirror's own paste, with the spaces put right
   const fixed = new Slice(Fragment.from(paragraphs), slice.openStart, slice.openEnd);
   view.dispatch(view.state.tr.replaceSelection(fixed).scrollIntoView().setMeta("paste", true).setMeta("preventAutolink", true));

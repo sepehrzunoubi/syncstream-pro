@@ -128,17 +128,30 @@ function pastedBox(el: HTMLElement): PastedBox | null {
   const pt = (v: string) => { const n = cssLengthToPt(v); return n == null ? null : Math.max(-1000, Math.min(1000, Math.round(n * 2) / 2)); };
   if (el.hasAttribute("data-list")) {
     const exact = pt(s.getPropertyValue("--ss-li-start"));
-    const above = pt(s.marginTop);
-    const below = pt(s.marginBottom);
+    let above = pt(s.marginTop);
+    let below = pt(s.marginBottom);
+    if (cssColorToHex(el.getAttribute("data-shading") ?? s.backgroundColor) && !(pt(s.paddingLeft) ?? 0) && !(pt(s.paddingRight) ?? 0)) {
+      if ((pt(s.paddingTop) ?? 0) > 0) above = (above ?? 0) + pt(s.paddingTop)!;
+      if ((pt(s.paddingBottom) ?? 0) > 0) below = (below ?? 0) + pt(s.paddingBottom)!;
+    }
     if (exact == null && above == null && below == null) return null;
     const level = Math.max(0, Math.min(MAX_LIST_LEVEL, parseInt(el.getAttribute("data-level") ?? "0", 10) || 0));
     return { start: exact ?? INDENT_PT * (level + 1), marker: pt(s.getPropertyValue("--ss-li-marker")) ?? -18, above, below };
   }
   if (el.hasAttribute("data-indent") || el.hasAttribute("data-first-line")) return null;
   if (!s.marginLeft && !s.paddingLeft && !s.textIndent && !s.marginTop && !s.marginBottom) return null;
-  const start = pt(s.marginLeft) ?? pt(s.paddingLeft) ?? 0;
+  // Padding is an indent only on a plain paragraph: on a shaded or bordered one it is the shading's or the
+  // border's (Docs writes a border's padding even for an invisible border, and the space of a shaded
+  // paragraph next to another as padding, so the shading covers it)
+  const framed = !!cssColorToHex(el.getAttribute("data-shading") ?? s.backgroundColor) || !!s.borderLeftStyle || !!s.borderTopStyle || !!s.borderBottomStyle;
+  const start = pt(s.marginLeft) ?? (framed ? null : pt(s.paddingLeft)) ?? 0;
   const first = pt(s.textIndent) ?? 0;
-  return { start: Math.max(0, start), first, above: pt(s.marginTop), below: pt(s.marginBottom) };
+  let above = pt(s.marginTop), below = pt(s.marginBottom);
+  if (framed && !(pt(s.paddingLeft) ?? 0) && !(pt(s.paddingRight) ?? 0)) {
+    if (!s.borderTopStyle && (pt(s.paddingTop) ?? 0) > 0) above = (above ?? 0) + pt(s.paddingTop)!;
+    if (!s.borderBottomStyle && (pt(s.paddingBottom) ?? 0) > 0) below = (below ?? 0) + pt(s.paddingBottom)!;
+  }
+  return { start: Math.max(0, start), first, above, below };
 }
 
 /** Paragraphs carry the Google Docs paragraph properties we support. */
@@ -288,7 +301,8 @@ const DocParagraph = Paragraph.extend({
             if (!Number.isFinite(fs) || fs <= 0 || !sameUnit) return 115;
             pct = (lh / fs / 1.2) * 100;
           } else pct = (lh / 1.2) * 100;
-          const near = LINE_SPACINGS.find((s) => Math.abs(s.value - pct) <= 6);
+          const fromDocs = !!el.closest('[id^="docs-internal-guid-"]');
+          const near = LINE_SPACINGS.find((s) => Math.abs(s.value - pct) <= (fromDocs ? 0.5 : 6));
           return near ? near.value : Math.max(50, Math.min(500, Math.round(pct)));
         },
         renderHTML: (a: { lineSpacing?: number }) => {
@@ -316,7 +330,7 @@ const DocParagraph = Paragraph.extend({
       },
       shading: {
         default: null,
-        parseHTML: (el: HTMLElement) => (el.hasAttribute("data-spacing") ? null : cssColorToHex(el.style.backgroundColor) ?? null),
+        parseHTML: (el: HTMLElement) => { if (el.hasAttribute("data-spacing")) return null; const c = cssColorToHex(el.getAttribute("data-shading") ?? el.style.backgroundColor); return c && c !== "#ffffff" ? c : null; },
         renderHTML: (a: { shading?: string | null }) => (a.shading ? { style: `background-color: ${a.shading}` } : {}),
       },
     };
@@ -715,20 +729,60 @@ export function flattenPastedLists(html: string): string {
   if (typeof DOMParser === "undefined" || !/<(ol|ul)\b/i.test(html)) return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
   type Item = { p: HTMLElement; level: number; glyph: Glyph | null };
-  const flatten = (list: Element, depth: number, out: (Element | Item)[]) => {
+  const lengthPt = (v: string | null | undefined) => (v ? cssLengthToPt(v) ?? null : null);
+  // `outer`: how far the enclosing lists inset their items, in points, when they all say (Docs' copies do)
+  const flatten = (list: Element, depth: number, out: (Element | Item)[], outer: number | null) => {
     const type = list.tagName === "OL" ? "ordered" : "bullet";
+    const pad = lengthPt((list as HTMLElement).style.paddingInlineStart || (list as HTMLElement).style.paddingLeft);
+    const inset = outer != null && pad != null ? outer + pad : null;
     for (const child of Array.from(list.children)) {
-      if (child.tagName === "OL" || child.tagName === "UL") { flatten(child, depth + 1, out); continue; }
+      if (child.tagName === "OL" || child.tagName === "UL") { flatten(child, depth + 1, out, inset); continue; }
       if (child.tagName !== "LI") { out.push(child); continue; }
       const li = child as HTMLElement;
       const nested = Array.from(li.children).filter((c) => c.tagName === "OL" || c.tagName === "UL");
       nested.forEach((n) => n.remove());
+      // A Docs checklist item: the tick is an image of the box, and "checked" is drawn as a line through the text
+      const checkbox = li.getAttribute("role") === "checkbox";
+      for (const img of Array.from(li.querySelectorAll('img[aria-roledescription="checkbox"]'))) img.remove();
+      if (checkbox && li.getAttribute("aria-checked") === "true") {
+        for (const el of [li, ...Array.from(li.querySelectorAll<HTMLElement>("[style]"))]) {
+          const d = el.style.textDecorationLine || el.style.textDecoration;
+          if (/line-through/.test(d)) el.style.textDecoration = d.replace(/line-through/g, "").trim() || "none";
+        }
+      }
       const inner = li.children.length === 1 && li.firstElementChild?.tagName === "P" ? (li.firstElementChild as HTMLElement) : null;
       const p = doc.createElement("p");
       // The item's own paragraph keeps what it says about itself (SyncStream's copies say a lot)
       for (const a of Array.from(inner?.attributes ?? [])) if (a.name !== "role" && a.name !== "style") p.setAttribute(a.name, a.value);
       const style = [li.getAttribute("style"), inner?.getAttribute("style")].filter(Boolean).join("; ");
       if (style) p.setAttribute("style", style);
+      if (li.hasAttribute("aria-level") && !p.hasAttribute("data-box")) {
+        // Docs' copy: the lists inset the item (48px a level) and the item's margin moves its glyph,
+        // its padding the text: glyph at inset + margin - 18pt, text at inset + margin + padding
+        if (inset != null) {
+          const ml = lengthPt(li.style.marginLeft) ?? 0;
+          const pl = lengthPt(li.style.paddingLeft) ?? 0;
+          // A checklist's box is drawn as an image before the text (17.6px + 3px), not as a marker
+          const start = inset + ml + pl + (checkbox ? 15 : 0);
+          const glyph = checkbox ? start - 18 : inset + ml - 18;
+          p.style.setProperty("--ss-li-start", `${start}pt`);
+          p.style.setProperty("--ss-li-marker", `${glyph - start}pt`);
+        }
+        // The item's own style is its glyph's (Docs' bullet style); a highlight never shows there
+        if (!p.hasAttribute("data-glyph-style")) {
+          const g: Record<string, unknown> = {};
+          const font = cssFontToFamily(li.style.fontFamily);
+          if (font) g.font = font;
+          const size = lengthPt(li.style.fontSize);
+          if (size) g.size = roundSize(size);
+          const color = cssColorToHex(li.style.color);
+          if (color) g.color = color;
+          const w = fontWeightOf(li.style.fontWeight);
+          if (w && w >= 700) g.b = 1; else if (w && w !== 400) g.w = w;
+          if (li.style.fontStyle === "italic") g.i = 1;
+          if (Object.keys(g).length) p.setAttribute("data-glyph-style", JSON.stringify(g));
+        }
+      }
       const aria = parseInt(li.getAttribute("aria-level") ?? "", 10);
       const level = p.hasAttribute("data-level") ? parseInt(p.getAttribute("data-level")!, 10) || 0 : Number.isFinite(aria) ? Math.max(0, aria - 1) : depth;
       if (level > 0) p.setAttribute("data-level", String(level));
@@ -738,15 +792,17 @@ export function flattenPastedLists(html: string): string {
       }
       p.innerHTML = inner ? inner.innerHTML : li.innerHTML.replace(/^\s*<p[^>]*>|<\/p>\s*$/gi, "");
       out.push({ p, level, glyph: glyphOfListStyle(li.style.listStyleType || (li.parentElement as HTMLElement | null)?.style.listStyleType || "", type) });
-      for (const n of nested) flatten(n, depth + 1, out);
+      for (const n of nested) flatten(n, depth + 1, out, inset);
     }
   };
   const top = Array.from(doc.querySelectorAll("ol, ul")).filter((l) => !l.parentElement?.closest("ol, ul"));
   for (const list of top) {
     const out: (Element | Item)[] = [];
-    flatten(list, 0, out);
+    flatten(list, 0, out, 0);
     // A list pasted from elsewhere is drawn in the Docs list style closest to its glyphs, as Docs would make it
     const items = out.filter((x): x is Item => !(x instanceof Element));
+    // A checklist has one Docs style (its items have no glyph to match)
+    for (const i of items) if (i.p.getAttribute("data-list") === "check" && !i.p.hasAttribute("data-preset")) i.p.setAttribute("data-preset", "BULLET_CHECKBOX");
     for (const kind of ["bullet", "ordered"]) {
       const own = items.filter((i) => i.p.getAttribute("data-list") === kind && !i.p.hasAttribute("data-preset"));
       if (!own.length) continue;
@@ -853,7 +909,7 @@ const DocTableCell = TableCell.extend({
       ...spanAttr,
       background: {
         default: null,
-        parseHTML: (el: HTMLElement) => cssColorToHex(el.style.backgroundColor) ?? null,
+        parseHTML: (el: HTMLElement) => cssColorToHex(el.getAttribute("data-bg") ?? el.style.backgroundColor) ?? null,
         renderHTML: (a: { background?: string | null }) => (a.background ? { style: `background-color: ${a.background}` } : {}),
       },
     };
@@ -1132,13 +1188,27 @@ function ownStyle(el: HTMLElement): InlineStyle {
   out.fontFamily = set(s.fontFamily);
   out.fontSize = set(s.fontSize);
   out.color = set(s.color);
-  out.backgroundColor = set(s.backgroundColor) && !/^transparent$/i.test(s.backgroundColor) ? s.backgroundColor : undefined;
+  // A transparent background (Docs spells it out on every run, browsers' copies as rgba(…, 0)) is none of
+  // its own: an inline parent's highlight still shows through it
+  out.backgroundColor = set(s.backgroundColor) && !/^transparent$|rgba\([^)]*,\s*0(\.0+)?\s*\)$/i.test(s.backgroundColor) ? s.backgroundColor : undefined;
   out.fontWeight = set(s.fontWeight) ?? out.fontWeight;
   out.fontStyle = set(s.fontStyle) ?? out.fontStyle;
   out.textDecoration = set(s.textDecorationLine || s.textDecoration) ?? out.textDecoration;
   const va = set(s.verticalAlign);
   if (va === "super" || va === "sub") out.verticalAlign = va;
   return out;
+}
+
+/** A CSS colour as the canvas reads it: "#rrggbb" (or rgba() with transparency) */
+function canvasColor(v: string): string {
+  try {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (!ctx) return v;
+    ctx.fillStyle = "#010203";
+    ctx.fillStyle = v;
+    // An unknown colour leaves the canvas's as it was
+    return ctx.fillStyle === "#010203" && !/^#010203$/i.test(v.trim()) ? v : ctx.fillStyle;
+  } catch { return v; }
 }
 
 /**
@@ -1165,13 +1235,26 @@ export function inlinePastedStyles(html: string): string {
     textDecoration: "text-decoration",
     verticalAlign: "vertical-align",
   };
+  const BLOCK = /^(P|H[1-6]|LI|UL|OL|DIV|TD|TH|TR|TBODY|TABLE|BLOCKQUOTE|BODY)$/;
+  // Colours as rgb(): a named colour ("red") or hsl() reads like any other
+  const rgb = (v: string | undefined) => (!v || /^(#|rgb)/i.test(v) || v === "transparent" ? v : canvasColor(v));
   for (const text of texts) {
     if (!text.data || !text.parentElement) continue;
     // Whitespace between blocks isn't text anyone sees
     if (!text.data.trim() && /^(BODY|DIV|UL|OL|TABLE|TBODY|TR)$/.test(text.parentElement.tagName)) continue;
     const style: InlineStyle = {};
+    let scale = 1;
     for (let el: HTMLElement | null = text.parentElement; el && el !== doc.body; el = el.parentElement) {
       const own = ownStyle(el);
+      // A paragraph's or cell's background is its shading, not the text's highlight
+      if (BLOCK.test(el.tagName)) own.backgroundColor = undefined;
+      // A relative size scales the size it inherits; Docs draws super- and subscript at 0.6em, which is
+      // the offset's look, not the text's size
+      if (own.fontSize && /(em|%)\s*$/.test(own.fontSize)) {
+        const offset = own.verticalAlign === "super" || own.verticalAlign === "sub" || el.tagName === "SUP" || el.tagName === "SUB";
+        if (style.fontSize == null && !offset) scale *= parseFloat(own.fontSize) / (/%\s*$/.test(own.fontSize) ? 100 : 1);
+        own.fontSize = undefined;
+      }
       for (const k of keys) if (style[k] == null && own[k] != null) style[k] = own[k];
       // A link with no colour or underline of its own (from inside it) looks as a link does: Docs'
       // copies always say how theirs look; other pages' bare links get the look Docs gives a new link
@@ -1180,12 +1263,23 @@ export function inlinePastedStyles(html: string): string {
         style.textDecoration ??= "underline";
       }
     }
+    if (style.fontSize && scale !== 1) { const pt = cssLengthToPt(style.fontSize); if (pt) style.fontSize = `${Math.round(pt * scale * 10) / 10}pt`; }
+    style.color = rgb(style.color);
+    style.backgroundColor = rgb(style.backgroundColor);
     const decl = keys.filter((k) => style[k] != null).map((k) => `${css[k]}: ${style[k]}`).join("; ");
     if (!decl) continue;
     const span = doc.createElement("span");
     span.setAttribute("style", decl);
     text.replaceWith(span);
     span.appendChild(text);
+  }
+  // A paragraph's or a cell's background is its shading: kept for the paragraph (or cell), and taken
+  // out of its style so the highlight rule doesn't paint its text with it
+  for (const el of Array.from(doc.body.querySelectorAll<HTMLElement>("p[style], h1[style], h2[style], h3[style], h4[style], h5[style], h6[style], li[style], td[style], th[style]"))) {
+    const bg = el.style.backgroundColor;
+    if (!bg) continue;
+    el.setAttribute(/^T[DH]$/.test(el.tagName) ? "data-bg" : "data-shading", bg);
+    el.style.removeProperty("background-color");
   }
   return doc.body.innerHTML;
 }
