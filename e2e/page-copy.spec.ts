@@ -81,6 +81,30 @@ test.describe("copies of the page", () => {
     await expect(page.locator(".ss-hf-editing")).toHaveCount(1);
   });
 
+  test("Ctrl+A straight after a double-click on the header selects the header", async ({ app, api, page }) => {
+    const doc = { ...EMPTY_DOC, documentStyle: { ...EMPTY_DOC.documentStyle, defaultHeaderId: "kix.header" }, headers: { "kix.header": { headerId: "kix.header", content: [{ startIndex: 0, endIndex: 12, paragraph: { elements: [{ startIndex: 0, endIndex: 12, textRun: { content: "Header text\n", textStyle: {} } }], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } }] } } };
+    api.content = importDoc(doc as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    // As soon as the page has drawn the header as edited, before the header has taken focus
+    await page.locator(".ss-hf-header").first().evaluate(async (el) => {
+      el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      while (!document.querySelector(".ss-hf-editing")) await new Promise((r) => requestAnimationFrame(r));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    const selected = () => page.evaluate(() => {
+      const ed = (document.querySelector(".ss-hf-editing .ProseMirror") as (HTMLElement & { editor?: { state: { selection: { from: number; to: number }; doc: { textBetween(a: number, b: number): string } } } }) | null)?.editor;
+      return ed ? ed.state.doc.textBetween(ed.state.selection.from, ed.state.selection.to) : null;
+    });
+    await expect.poll(selected).toBe("Header text");
+    // And it stays selected once the header has taken focus
+    await page.waitForTimeout(200);
+    expect(await selected()).toBe("Header text");
+    await expect(page.locator(".ss-hf-editing")).toHaveCount(1);
+    // The body's text isn't what is selected
+    expect(await page.evaluate(() => { const s = window.ssEditor!.state.selection; return s.to - s.from; })).toBe(0);
+  });
+
   test("while a sync shows, Ctrl+A selects what it is typing and a copy of it is the editor's own", async ({ app, page, api }) => {
     const now = Date.now();
     api.jobs = [{
@@ -122,7 +146,8 @@ test.describe("copies of the page", () => {
     await expect.poll(() => copies.count()).toBeGreaterThan(0);
     await expect(copies.first()).toContainText("Header text");
     // The text itself (the page's documents are selectable, .ss-doc)
-    expect(await copies.first().getByText("Header text").evaluate((el) => getComputedStyle(el).userSelect)).toBe("none");
+    // (polled: the copies are drawn again as the pages settle)
+    await expect.poll(() => copies.first().getByText("Header text").evaluate((el) => (el.isConnected ? getComputedStyle(el).userSelect : null))).toBe("none");
     // The live header is text to select and edit
     expect(await page.locator(".ss-hf-body:not(.ss-static-copy) .ss-doc").first().evaluate((el) => getComputedStyle(el).userSelect)).toBe("text");
   });

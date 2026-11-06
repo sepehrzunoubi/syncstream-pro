@@ -117,8 +117,17 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     }
     setEditingHf(which);
     const ed = which === "header" ? (first ? firstHeaderEditor : headerEditor) : first ? firstFooterEditor : footerEditor;
-    setTimeout(() => ed?.commands.focus("end"), 50);
-  }, [docEdit, hfSetup.useFirstPage, headerEditor, footerEditor, firstHeaderEditor, firstFooterEditor, setEditingHf, setSnack]);
+    // It is the editor shown from now (the toolbar's, Ctrl+A's), not from when it takes focus
+    if (ed) setSegmentEditor(ed);
+    // Unless it has a selection of its own by then (Ctrl+A, a click in it; its focus comes a frame
+    // later), which stays. New content read from the document doesn't count
+    const opened = ed?.state;
+    setTimeout(() => {
+      if (!ed || ed.isDestroyed || ed.isFocused) return;
+      if (opened && ed.state.doc === opened.doc && !ed.state.selection.eq(opened.selection)) return;
+      ed.commands.focus("end");
+    }, 50);
+  }, [docEdit, hfSetup.useFirstPage, headerEditor, footerEditor, firstHeaderEditor, firstFooterEditor, setEditingHf, setSegmentEditor, setSnack]);
 
   const removeHeaderFooter = useCallback(async (which: "header" | "footer") => {
     const cur = segmentsRef.current;
