@@ -946,33 +946,49 @@ export function pastedEmptyLines(html: string): string {
 }
 
 /**
- * A pasted table's column widths (its <colgroup>, as Docs' copies give them) on its cells, each by the
- * columns it's in. The editor reads a cell's width from the <col> at the cell's place in its row, which
- * after a merged cell isn't its column, and takes one width for a cell across columns.
+ * A pasted table's column widths (its <colgroup>, as Docs' copies give them, or bare <col>s, as Excel's
+ * do) on its cells, each by the columns it's in, 0 for a column with no width. The editor reads a cell's
+ * width only from that (see cellWidths): the <col> at the cell's place in its row isn't its column after
+ * a merged cell. A width in pixels is a plain number, or one in px; a percentage or a share ("1*") isn't.
  */
 export function pastedColumnWidths(html: string): string {
-  if (typeof DOMParser === "undefined" || !/<colgroup\b/i.test(html)) return html;
+  if (typeof DOMParser === "undefined" || !/<col\b/i.test(html)) return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
+  const px = (v: string | null) => {
+    const m = /^\s*(\d+(?:\.\d+)?)\s*(px)?\s*$/i.exec(v ?? "");
+    const w = m ? Math.round(parseFloat(m[1])) : 0;
+    return w > 0 ? w : null;
+  };
+  // How many columns a <col> covers, as the browser takes it
+  const span = (el: Element) => Math.min(1000, Math.max(1, parseInt(el.getAttribute("span") ?? "", 10) || 1));
   for (const table of Array.from(doc.querySelectorAll("table"))) {
-    const widths: (number | null)[] = [];
-    for (const col of Array.from(table.querySelectorAll(":scope > colgroup > col"))) {
-      const w = parseFloat(col.getAttribute("width") ?? "");
-      for (let k = 0; k < Math.max(1, parseInt(col.getAttribute("span") ?? "", 10) || 1); k++) widths.push(w > 0 ? Math.round(w) : null);
-    }
-    if (!widths.length) continue;
+    // Each cell's first column, past the cells above that reach down into its row
     const rows = Array.from(table.rows);
     const taken = rows.map(() => new Set<number>());
+    const placed: { cell: HTMLTableCellElement; col: number; cs: number }[] = [];
+    let columns = 0;
     rows.forEach((row, r) => {
       let col = 0;
       for (const cell of Array.from(row.cells)) {
         while (taken[r].has(col)) col++;
         const cs = Math.max(1, cell.colSpan || 1);
         for (let dr = 0; dr < Math.max(1, cell.rowSpan || 1) && r + dr < rows.length; dr++) for (let dc = 0; dc < cs; dc++) taken[r + dr].add(col + dc);
-        const w = widths.slice(col, col + cs);
-        if (!cell.hasAttribute("colwidth") && w.length === cs && w.every((x) => x != null)) cell.setAttribute("colwidth", w.join(","));
+        placed.push({ cell, col, cs });
         col += cs;
+        columns = Math.max(columns, col);
       }
     });
+    // The table's columns' widths (a colgroup with no <col> in it is its span's columns, at its own width)
+    const widths: (number | null)[] = [];
+    for (const group of Array.from(table.querySelectorAll(":scope > colgroup"))) {
+      const cols = Array.from(group.querySelectorAll(":scope > col"));
+      for (const el of cols.length ? cols : [group]) for (let k = span(el); k > 0 && widths.length < columns; k--) widths.push(px(el.getAttribute("width")));
+    }
+    if (!widths.some((w) => w != null)) continue;
+    for (const { cell, col, cs } of placed) {
+      const w = Array.from({ length: cs }, (_, k) => widths[col + k] ?? 0);
+      if (!cell.hasAttribute("colwidth") && w.some((x) => x > 0)) cell.setAttribute("colwidth", w.join(","));
+    }
   }
   return doc.body.innerHTML;
 }
@@ -1185,10 +1201,24 @@ const DocTable = Table.extend({
   addAttributes() { return { ...this.parent?.(), ...idAttr("tid"), ...spanAttr }; },
 }).configure({ resizable: false, HTMLAttributes: { class: "ss-table" } });
 const DocTableRow = TableRow.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("rid"), ...spanAttr }; } });
+/**
+ * A cell's widths from its own colwidth only (a paste's are put there by pastedColumnWidths), not from
+ * the <col> at its place in the row; none when no column of it has one
+ */
+const cellWidths = (parent: Record<string, object> | undefined) => ({
+  colwidth: {
+    ...parent?.colwidth,
+    parseHTML: (el: HTMLElement) => {
+      const w = (el.getAttribute("colwidth") ?? "").split(",").map((x) => parseInt(x, 10) || 0);
+      return w.some((x) => x > 0) ? w : null;
+    },
+  },
+});
 const DocTableCell = TableCell.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
+      ...cellWidths(this.parent?.()),
       ...idAttr("cid"),
       ...spanAttr,
       background: {
@@ -1200,7 +1230,7 @@ const DocTableCell = TableCell.extend({
   },
 });
 // Header cells from pasted HTML become ordinary cells (Docs has none)
-const DocTableHeader = TableHeader.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("cid"), ...spanAttr }; } });
+const DocTableHeader = TableHeader.extend({ addAttributes() { return { ...this.parent?.(), ...cellWidths(this.parent?.()), ...idAttr("cid"), ...spanAttr }; } });
 
 /**
  * The blocks of a section laid out in columns. Only a view: the document

@@ -185,6 +185,34 @@ test("headers, footers and footnotes are read as their own segments", async () =
   assert.equal(body.attrs?.locked, undefined, "a paragraph with a footnote reference stays editable");
 });
 
+test("a header's table is shown cell by cell and kept as it is: the header's editor can load it, and typing after it saves only what's typed", async () => {
+  const { getSchema } = await import("@tiptap/core");
+  const { segmentExtensions } = await import("../components/workspace/extensions");
+  const { segmentEdits } = await import("./doc-model");
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex)], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  // "Head", then a table of one row (Address | Phone), then the paragraph Docs keeps after a table
+  const table = { startIndex: 5, endIndex: 21, table: { rows: 1, columns: 2, tableRows: [{ startIndex: 6, endIndex: 20, tableCells: [
+    { startIndex: 7, endIndex: 13, content: [para("Addr\n", 8)] },
+    { startIndex: 13, endIndex: 20, content: [para("Phone\n", 14)] },
+  ] }] } };
+  const doc = {
+    revisionId: "r",
+    documentStyle: { defaultHeaderId: "kix.h" },
+    headers: { "kix.h": { content: [para("Head\n", 0), table, para("\n", 21)] } },
+    body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: {} }, para("Body\n", 1)] },
+  };
+  const nodes = importDoc(doc as never).header!.nodes;
+  assert.deepEqual(nodes.map((n) => [n.type, (n.content ?? []).map((c) => c.text).join(""), n.attrs?.locked ?? false, n.attrs?.span ?? null]), [
+    ["paragraph", "Head", false, null], ["paragraph", "Addr", true, 16], ["paragraph", "Phone", true, 0], ["paragraph", "", false, null],
+  ]);
+  assert.doesNotThrow(() => getSchema(segmentExtensions()).nodeFromJSON({ type: "doc", content: nodes }));
+  const typed = nodes.map((n, i) => (i === 3 ? { ...n, content: [{ type: "text", text: "Hi" }] } : n));
+  const { requests } = segmentEdits({ type: "doc", content: nodes }, { type: "doc", content: typed }, "kix.h");
+  assert.deepEqual(requests.map((r) => Object.keys(r)[0]).filter((k) => k !== "updateTextStyle"), ["insertText"]);
+  assert.deepEqual(requests[0], { insertText: { location: { index: 21, segmentId: "kix.h" }, text: "Hi" } });
+});
+
 test("section breaks are read with their column layout, the first as a hidden marker", async () => {
   const { importDoc } = await import("./doc-import");
   const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });

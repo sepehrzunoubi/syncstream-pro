@@ -510,6 +510,50 @@ test.describe("Docs' HTML against Docs' own copy", () => {
     await expect.poll(widths).toEqual([[["A", [120]], ["B", [200, 300]]], [["C", [200]], ["D", [300]]], [["E", [120, 200, 300]]]]);
   });
 
+  test("a pasted table's columns with no width in pixels (Docs' evenly distributed <col />, a percentage, a share) have none, whatever cell is in them", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const td = (t: string, spans = "") => `<td${spans}>${para(span(t))}</td>`;
+    const table = (cols: string, rows: string[]) => `<table style="border:none;border-collapse:collapse;"><colgroup>${cols}</colgroup><tbody>${rows.map((r) => `<tr>${r}</tr>`).join("")}</tbody></table>`;
+    const widths = async () => ((await app.json()).content as EditorNode[]).filter((n) => n.type === "table")
+      .map((t) => t.content?.map((r) => (r.content ?? []).map((c) => [(c.content ?? []).map((p) => (p.content ?? []).map((x) => x.text).join("")).join(""), c.attrs?.colwidth ?? null])));
+    await app.paste({
+      html: docs(para(span("Before"))
+        // A cell two rows tall, then the second row's first cell in the evenly distributed column
+        + table('<col width="198" /><col /><col width="300" />', [td("A", ' rowspan="2"') + td("B") + td("C"), td("D") + td("E")])
+        // A cell two columns wide across a column with a width and one without
+        + table('<col width="120" /><col width="200" /><col />', [td("F", ' rowspan="2"') + td("G") + td("H"), td("I", ' colspan="2"')])
+        + table('<col width="25%"><col width="75%">', [td("J") + td("K")])
+        + table('<col width="1*"><col width="3*">', [td("L") + td("M")])
+        + para(span("After"))),
+      text: "Before\nA\nB\nC\nD\nE\nF\nG\nH\nI\nJ\nK\nL\nM\nAfter\n",
+    });
+    await expect.poll(widths).toEqual([
+      [[["A", [198]], ["B", null], ["C", [300]]], [["D", null], ["E", [300]]]],
+      [[["F", [120]], ["G", [200]], ["H", null]], [["I", [200, 0]]]],
+      [[["J", null], ["K", null]]],
+      [[["L", null], ["M", null]]],
+    ]);
+  });
+
+  test("a table pasted from Excel (its <col>s straight in the <table>, one across columns of the same width) takes each column's width", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const html = '<html><head><style>td{mso-number-format:General;}</style></head><body><table border=0 cellpadding=0 cellspacing=0 width=478 style="border-collapse:collapse;width:358pt">'
+      + "<!--StartFragment--><col width=150><col width=64 span=2><col width=200>"
+      + "<tr height=20><td>a</td><td>b</td><td>c</td><td>d</td></tr><!--EndFragment--></table></body></html>";
+    await app.paste({ html, text: "a\tb\tc\td\n" });
+    const widths = async () => (((await app.json()).content as EditorNode[]).find((n) => n.type === "table")?.content?.[0].content ?? []).map((c) => c.attrs?.colwidth ?? null);
+    await expect.poll(widths).toEqual([[150], [64], [64], [200]]);
+  });
+
+  test("a pasted <col> that says it spans a billion columns is taken as the table's own columns, and doesn't hold up the page", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const started = Date.now();
+    await app.paste({ html: '<table><colgroup><col width="100" span="999999999"></colgroup><tr><td>a</td><td>b</td></tr></table>', text: "a\tb\n" });
+    const widths = async () => (((await app.json()).content as EditorNode[]).find((n) => n.type === "table")?.content?.[0].content ?? []).map((c) => c.attrs?.colwidth ?? null);
+    await expect.poll(widths).toEqual([[100], [100]]);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
   test("a pasted image that can't be uploaded is left out, with a message: the page doesn't show what the document won't have", async ({ app, api, page }) => {
     await openEmpty(app, api, page);
     api.imagesFail = true;

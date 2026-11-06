@@ -357,8 +357,11 @@ test("a column's width the editor has and the document doesn't is one updateTabl
   assert.deepEqual(directEdits(base, doc([312, 312], [312], [312])).requests, []);
   assert.deepEqual(directEdits(base, doc(null, null, null)).requests, []);
   assert.deepEqual(directEdits(base, doc([3, 621], null, null)).requests, [width(0, 5), width(1, 465.75)]);
-  // which, read back, is the document's width from then on
+  // which, read back, is the document's width from then on; and after a save that doesn't read it back
+  // (the base is then what the editor had), still nothing
   assert.deepEqual(directEdits(doc([7, 621], [7], [621]), doc([3, 621], null, null)).requests, []);
+  assert.deepEqual(directEdits(doc([3, 621], null, null), doc([3, 621], null, null)).requests, []);
+  assert.deepEqual(directEdits(doc([1, 621], [1], [621]), doc([6, 621], [6], [621])).requests, []);
   // Kept through adoption, for the next save to write
   const mine = { type: "doc", content: [p("Intro"), { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: { colwidth: [120] }, content: [p("")] }] }] }, p("After")] };
   const theirs = { type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t9", span: 1, endSpan: 1 }, content: [{ type: "tableRow", attrs: { rid: "t9r0", span: 1 }, content: [{ type: "tableCell", attrs: { cid: "t9c0", span: 2, colwidth: [624] }, content: [p("")] }] }] }, p("After")] };

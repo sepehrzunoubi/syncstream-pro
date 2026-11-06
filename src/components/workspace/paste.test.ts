@@ -261,6 +261,10 @@ test("pasted HTML's images given as data are shown from blob: addresses until th
   // Not an image: left for the editor to drop
   assert.equal(srcs[2], "data:text/html;base64,PGI+");
   assert.equal(isUploadingImage(srcs[1]), false);
+  // The same image twice in a copy: one address, so one upload
+  const twice = Array.from(pastedImageSources(`<p><img src="${png}"><img src='${png}'></p>`).matchAll(/src=(["'])([^"']*)\1/g), (m) => m[2]);
+  assert.match(twice[0], /^blob:/);
+  assert.equal(twice[1], twice[0]);
   // Nothing to do
   const plain = "<p>no images</p>";
   assert.equal(pastedImageSources(plain), plain);

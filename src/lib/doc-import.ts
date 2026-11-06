@@ -523,13 +523,20 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
   if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
   markListLines(nodes);
 
-  // Headers, footers and footnotes: paragraphs of their own, read the same way
+  // Headers, footers and footnotes: paragraphs of their own, read the same way. A table (a letterhead's)
+  // is shown cell by cell and kept as it is, as a table of contents is: their editors have no tables
   const segment = (id: string | null | undefined, content: Element[] | undefined): ImportedSegment | undefined => {
     if (!id) return undefined;
     const out: EditorNode[] = [];
     for (const el of content ?? []) {
-      if (el.paragraph) { const node = paragraphNode(el.paragraph); out.push(node.attrs?.locked ? lock(node, (el.endIndex ?? 0) - (el.startIndex ?? 0)) : node); }
-      else if (el.table) out.push(tableNode(el, `t${++blockId}`));
+      const size = (el.endIndex ?? 0) - (el.startIndex ?? 0);
+      if (el.paragraph) { const node = paragraphNode(el.paragraph); out.push(node.attrs?.locked ? lock(node, size) : node); }
+      else if (el.table) {
+        const cells: EditorNode[] = [];
+        cellParagraphs([el], cells);
+        if (!cells.length) cells.push({ type: "paragraph", attrs: {}, content: [] });
+        cells.forEach((c, k) => out.push(lock(c, k === 0 ? size : 0)));
+      }
     }
     if (!out.length) out.push({ type: "paragraph", attrs: {}, content: [] });
     return { id, nodes: out };
