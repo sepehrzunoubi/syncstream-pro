@@ -2,6 +2,7 @@
 
 import React, { useEffect } from "react";
 import { EditorContent, useEditor, useEditorState, type Editor, type JSONContent } from "@tiptap/react";
+import { DOCS_RULES } from "./editor-config";
 import { segmentExtensions } from "./extensions";
 import type { EditorNode } from "@/lib/rich-text";
 
@@ -14,6 +15,7 @@ export function useSegmentEditor(content: EditorNode[] | null, onChange: (doc: J
     extensions: segmentExtensions(),
     immediatelyRender: false,
     editorProps: { attributes: { class: "ss-doc ss-segment-doc", spellcheck: "true" } },
+    ...DOCS_RULES,
     onUpdate: ({ editor: e }) => onChange(e.getJSON()),
     onFocus: ({ editor: e }) => onFocus(e),
   });

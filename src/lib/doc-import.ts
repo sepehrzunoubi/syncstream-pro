@@ -10,7 +10,7 @@
 
 import type { docs_v1 } from "googleapis";
 import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
-import { BORDER_SIDES, DEFAULT_FONT, NAMED_STYLES, OBJ, PAGE_BREAK, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
+import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
 type Element = docs_v1.Schema$StructuralElement;
@@ -138,6 +138,16 @@ function listInfo(lists: Doc["lists"], bullet: docs_v1.Schema$Bullet) {
   };
 }
 
+/** The font, size and colour a paragraph style gives text that sets none of its own */
+export function namedStyleText(defaults: DocDefaults, style: NamedStyle): { font: string; size: number; color: string } {
+  const own = defaults.styles[style] ?? {};
+  return {
+    font: own.fontFamily ?? defaults.fontFamily,
+    size: own.fontSize ?? (style === "normal" ? defaults.fontSize : NAMED_STYLES[style].size),
+    color: own.color ?? "#000000",
+  };
+}
+
 function textMarks(ts: TextStyle, style: NamedStyle, defaults: DocDefaults): NonNullable<EditorNode["marks"]> {
   const marks: NonNullable<EditorNode["marks"]> = [];
   if (ts.bold) marks.push({ type: "bold" });
@@ -155,16 +165,16 @@ function textMarks(ts: TextStyle, style: NamedStyle, defaults: DocDefaults): Non
   const color = hex(ts.foregroundColor);
   // A value the paragraph's named style already gives is not a mark: the editor shows the
   // document's defaults itself, and text with no mark is written to Docs without an explicit value
-  const own = defaults.styles[style] ?? {};
-  const styleFont = own.fontFamily ?? defaults.fontFamily;
-  const styleSize = own.fontSize ?? (style === "normal" ? defaults.fontSize : NAMED_STYLES[style].size);
-  const styleColor = own.color ?? "#000000";
+  const { font: styleFont, size: styleSize, color: styleColor } = namedStyleText(defaults, style);
+  // A weighted font (Roboto Light, Montserrat SemiBold) keeps its weight, and then its family too
+  const weight = fontWeightOf(ts.weightedFontFamily?.weight ?? undefined);
   const attrs = {
-    fontFamily: font && font !== styleFont ? font : null,
+    fontFamily: font && (font !== styleFont || weight) ? font : null,
     fontSize: size && size !== styleSize ? size : null,
     color: color && color !== styleColor ? color : null,
+    fontWeight: font && weight ? weight : null,
   };
-  if (attrs.fontFamily || attrs.fontSize || attrs.color) marks.push({ type: "textStyle", attrs });
+  if (attrs.fontFamily || attrs.fontSize || attrs.color || attrs.fontWeight) marks.push({ type: "textStyle", attrs });
   return marks;
 }
 
@@ -205,7 +215,12 @@ function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDe
   };
 }
 
-export function importDoc(doc: Doc): ImportedDoc {
+/**
+ * `defaults` reads the paragraphs against another document's named styles:
+ * content pasted from one document into another keeps its own look, and
+ * only what differs from the destination's styles becomes formatting.
+ */
+export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): ImportedDoc {
   let blockId = 0;
   const lock = (node: EditorNode, span: number) => {
     node.attrs = { ...node.attrs, locked: true, span, bid: `b${++blockId}` };
@@ -213,7 +228,7 @@ export function importDoc(doc: Doc): ImportedDoc {
   };
   const namedStyles = new Map<string, docs_v1.Schema$NamedStyle>();
   for (const s of doc.namedStyles?.styles ?? []) if (s.namedStyleType) namedStyles.set(s.namedStyleType, s);
-  const defaults = docDefaults(namedStyles);
+  const defaults = opts.defaults ?? docDefaults(namedStyles);
   let hasContent = false;
 
   const paragraphNode = (p: docs_v1.Schema$Paragraph): EditorNode => {
@@ -320,7 +335,7 @@ export function importDoc(doc: Doc): ImportedDoc {
         ...(rule ? { kind: "rule" } : {}),
         indent: 0,
         firstLine: false,
-        lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : 115,
+        lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : defaults.lineSpacing,
         list,
         ...listAttrs,
         indentEnd: pt(ps.indentEnd) || null,

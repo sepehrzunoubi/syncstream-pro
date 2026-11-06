@@ -17,6 +17,7 @@ import {
   cssFontToFamily,
   cssLengthToPt,
   fontStack,
+  fontWeightOf,
   FONT_SIZES,
   INDENT_PT,
   LINE_SPACINGS,
@@ -31,6 +32,7 @@ import {
   type ListType,
   type NamedStyle,
 } from "@/lib/rich-text";
+import { presetForLevels, type Glyph } from "@/lib/list-labels";
 
 /** Transactions that change text as a direct edit (find and replace, capitalisation): not additions */
 export const DIRECT_META = "ssDirect";
@@ -106,13 +108,24 @@ function bordersCss(b: Borders): string[] {
  * The exact indents and spacing of a pasted paragraph, in points, as Google
  * Docs and other editors put them in the clipboard. Paragraphs SyncStream
  * rendered itself with indent steps say so with data attributes and keep
- * those instead.
+ * those instead. A list item keeps its spacing; its indent is its level's
+ * (Docs' HTML nests lists half an inch a level) unless SyncStream's own copy
+ * gives the exact one.
  */
-function pastedBox(el: HTMLElement): { start: number; first: number; above: number | null; below: number | null } | null {
-  if (el.hasAttribute("data-indent") || el.hasAttribute("data-first-line") || el.hasAttribute("data-list")) return null;
+type PastedBox = { start: number; first?: number; marker?: number; above: number | null; below: number | null };
+function pastedBox(el: HTMLElement): PastedBox | null {
   const s = el.style;
-  if (!s.marginLeft && !s.paddingLeft && !s.textIndent && !s.marginTop && !s.marginBottom) return null;
   const pt = (v: string) => { const n = cssLengthToPt(v); return n == null ? null : Math.max(-1000, Math.min(1000, Math.round(n * 2) / 2)); };
+  if (el.hasAttribute("data-list")) {
+    const exact = pt(s.getPropertyValue("--ss-li-start"));
+    const above = pt(s.marginTop);
+    const below = pt(s.marginBottom);
+    if (exact == null && above == null && below == null) return null;
+    const level = Math.max(0, Math.min(MAX_LIST_LEVEL, parseInt(el.getAttribute("data-level") ?? "0", 10) || 0));
+    return { start: exact ?? INDENT_PT * (level + 1), marker: pt(s.getPropertyValue("--ss-li-marker")) ?? -18, above, below };
+  }
+  if (el.hasAttribute("data-indent") || el.hasAttribute("data-first-line")) return null;
+  if (!s.marginLeft && !s.paddingLeft && !s.textIndent && !s.marginTop && !s.marginBottom) return null;
   const start = pt(s.marginLeft) ?? pt(s.paddingLeft) ?? 0;
   const first = pt(s.textIndent) ?? 0;
   return { start: Math.max(0, start), first, above: pt(s.marginTop), below: pt(s.marginBottom) };
@@ -307,6 +320,18 @@ const FontAttributes = Extension.create({
               return pt ? roundSize(pt) : null;
             },
             renderHTML: (a: { fontSize?: number | null }) => (a.fontSize ? { style: `font-size: ${a.fontSize}pt` } : {}),
+          },
+          /**
+           * A weighted font's weight (Light 300, Medium 500, SemiBold 600...), as Docs' weightedFontFamily
+           * has it. 700 and above is bold (the bold mark), which Docs keeps separately.
+           */
+          fontWeight: {
+            default: null,
+            parseHTML: (el: HTMLElement) => {
+              const w = fontWeightOf(el.style.fontWeight);
+              return w && w < 700 ? w : w && w > 700 ? w : null;
+            },
+            renderHTML: (a: { fontWeight?: number | null }) => (a.fontWeight ? { style: `font-weight: ${a.fontWeight}`, "data-weight": String(a.fontWeight) } : {}),
           },
         },
       },
@@ -637,11 +662,13 @@ const DocFormat = Extension.create({
 
 /**
  * Google Docs copies an empty paragraph as a bare <br> between paragraphs,
- * and browsers add one after the copied content. The first becomes an empty
- * paragraph (which syncs as a new line); the trailing one is dropped.
+ * including at the end of the copy; other pages get one from the browser
+ * after the copied content. Each of Docs' becomes an empty paragraph (which
+ * syncs as a new line); the browser's trailing one is dropped.
  */
 export function pastedEmptyLines(html: string): string {
   if (typeof DOMParser === "undefined" || !/<br\b/i.test(html)) return html;
+  const fromDocs = /id="docs-internal-guid-/.test(html);
   const doc = new DOMParser().parseFromString(html, "text/html");
   for (const br of Array.from(doc.querySelectorAll("br"))) {
     const parent = br.parentElement;
@@ -650,7 +677,7 @@ export function pastedEmptyLines(html: string): string {
     const blocks = Array.from(parent.children).some((c) => c.matches(BLOCK) || c.querySelector(BLOCK));
     if (!blocks) continue; // a line break inside a paragraph
     const last = !br.nextElementSibling && !(br.nextSibling?.textContent ?? "").trim();
-    if (last || br.classList.contains("Apple-interchange-newline")) br.remove();
+    if ((last && !fromDocs) || br.classList.contains("Apple-interchange-newline")) br.remove();
     else br.replaceWith(doc.createElement("p"));
   }
   return doc.body.innerHTML;
@@ -665,35 +692,66 @@ export function pastedEmptyLines(html: string): string {
 export function flattenPastedLists(html: string): string {
   if (typeof DOMParser === "undefined" || !/<(ol|ul)\b/i.test(html)) return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const flatten = (list: Element, depth: number, out: Element[]) => {
+  type Item = { p: HTMLElement; level: number; glyph: Glyph | null };
+  const flatten = (list: Element, depth: number, out: (Element | Item)[]) => {
     const type = list.tagName === "OL" ? "ordered" : "bullet";
     for (const child of Array.from(list.children)) {
       if (child.tagName === "OL" || child.tagName === "UL") { flatten(child, depth + 1, out); continue; }
       if (child.tagName !== "LI") { out.push(child); continue; }
-      const li = child;
+      const li = child as HTMLElement;
       const nested = Array.from(li.children).filter((c) => c.tagName === "OL" || c.tagName === "UL");
       nested.forEach((n) => n.remove());
-      const inner = li.children.length === 1 && li.firstElementChild?.tagName === "P" ? li.firstElementChild : null;
+      const inner = li.children.length === 1 && li.firstElementChild?.tagName === "P" ? (li.firstElementChild as HTMLElement) : null;
       const p = doc.createElement("p");
+      // The item's own paragraph keeps what it says about itself (SyncStream's copies say a lot)
+      for (const a of Array.from(inner?.attributes ?? [])) if (a.name !== "role" && a.name !== "style") p.setAttribute(a.name, a.value);
       const style = [li.getAttribute("style"), inner?.getAttribute("style")].filter(Boolean).join("; ");
       if (style) p.setAttribute("style", style);
       const aria = parseInt(li.getAttribute("aria-level") ?? "", 10);
-      const level = Number.isFinite(aria) ? Math.max(0, aria - 1) : depth;
+      const level = p.hasAttribute("data-level") ? parseInt(p.getAttribute("data-level")!, 10) || 0 : Number.isFinite(aria) ? Math.max(0, aria - 1) : depth;
       if (level > 0) p.setAttribute("data-level", String(level));
-      p.setAttribute("data-list", li.getAttribute("role") === "checkbox" || li.querySelector("input[type=checkbox]") ? "check" : type);
+      if (!p.hasAttribute("data-list")) {
+        p.setAttribute("data-list", li.getAttribute("role") === "checkbox" || li.querySelector("input[type=checkbox]") ? "check" : type);
+        p.setAttribute("data-pasted-list", "");
+      }
       p.innerHTML = inner ? inner.innerHTML : li.innerHTML.replace(/^\s*<p[^>]*>|<\/p>\s*$/gi, "");
-      out.push(p);
+      out.push({ p, level, glyph: glyphOfListStyle(li.style.listStyleType || (li.parentElement as HTMLElement | null)?.style.listStyleType || "", type) });
       for (const n of nested) flatten(n, depth + 1, out);
     }
   };
   const top = Array.from(doc.querySelectorAll("ol, ul")).filter((l) => !l.parentElement?.closest("ol, ul"));
   for (const list of top) {
-    const out: Element[] = [];
+    const out: (Element | Item)[] = [];
     flatten(list, 0, out);
-    for (const el of out) list.parentNode?.insertBefore(el, list);
+    // A list pasted from elsewhere is drawn in the Docs list style closest to its glyphs, as Docs would make it
+    const items = out.filter((x): x is Item => !(x instanceof Element));
+    for (const kind of ["bullet", "ordered"]) {
+      const own = items.filter((i) => i.p.getAttribute("data-list") === kind && !i.p.hasAttribute("data-preset"));
+      if (!own.length) continue;
+      const levels: (Glyph | null)[] = [];
+      const weights: number[] = [];
+      for (const i of own) { levels[i.level] ??= i.glyph; weights[i.level] = (weights[i.level] ?? 0) + 1; }
+      if (!levels.some(Boolean)) continue;
+      const preset = presetForLevels(kind, levels, weights);
+      for (const i of own) i.p.setAttribute("data-preset", preset);
+    }
+    for (const el of out) list.parentNode?.insertBefore(el instanceof Element ? el : el.p, list);
     list.remove();
   }
   return doc.body.innerHTML;
+}
+
+/** What a CSS list-style-type draws, as a Docs list glyph */
+function glyphOfListStyle(type: string, kind: string): Glyph | null {
+  const t = type.trim().toLowerCase();
+  const symbol: Record<string, string> = { disc: "●", circle: "○", square: "■" };
+  const numbered: Record<string, string> = { decimal: "DECIMAL", "decimal-leading-zero": "ZERO_DECIMAL", "lower-alpha": "ALPHA", "lower-latin": "ALPHA", "upper-alpha": "UPPER_ALPHA", "upper-latin": "UPPER_ALPHA", "lower-roman": "ROMAN", "upper-roman": "UPPER_ROMAN" };
+  if (symbol[t]) return { symbol: symbol[t] };
+  if (numbered[t]) return { type: numbered[t], format: null };
+  // A string glyph: list-style-type: "❖ "
+  const quoted = /^["'](.+?)\s*["']$/.exec(type.trim());
+  if (quoted) return { symbol: quoted[1] };
+  return kind === "bullet" && !t ? null : null;
 }
 
 /** Inline, resizable images, like Docs' in-line images */
@@ -831,6 +889,36 @@ const FootnoteRef = Node.create({
   },
 });
 
+/**
+ * Bold as Docs reads it: a weight of 700 or more. Lighter weights (Medium 500,
+ * SemiBold 600) are the font's own weight, not bold. No Markdown shortcuts:
+ * Docs doesn't turn **text** into bold by default, typed or pasted.
+ */
+const DocBold = Mark.create({
+  name: "bold",
+  parseHTML() {
+    const heavy = (v: string) => /^(bold(er)?)$/i.test(v.trim()) || (/^\d{3}$/.test(v.trim()) && parseInt(v, 10) >= 700);
+    return [
+      { tag: "strong", getAttrs: (node: HTMLElement) => (node.style.fontWeight && !heavy(node.style.fontWeight) ? false : null) },
+      { tag: "b", getAttrs: (node: HTMLElement) => (node.style.fontWeight && !heavy(node.style.fontWeight) ? false : null) },
+      // Docs wraps everything it copies in <b style="font-weight:normal">; a lighter weight clears bold
+      { style: "font-weight", clearMark: (mark) => mark.type.name === "bold", getAttrs: (v: string | HTMLElement) => (typeof v === "string" && !heavy(v) ? null : false) },
+      { style: "font-weight", getAttrs: (v: string | HTMLElement) => (typeof v === "string" && heavy(v) ? null : false) },
+    ];
+  },
+  renderHTML: () => ["strong", 0],
+  addCommands() {
+    return {
+      setBold: () => ({ commands }) => commands.setMark(this.name),
+      toggleBold: () => ({ commands }) => commands.toggleMark(this.name),
+      unsetBold: () => ({ commands }) => commands.unsetMark(this.name),
+    };
+  },
+  addKeyboardShortcuts() {
+    return { "Mod-b": () => this.editor.commands.toggleBold(), "Mod-B": () => this.editor.commands.toggleBold() };
+  },
+});
+
 /** Superscript and subscript, one or the other, as Docs' Format > Text has them */
 const Superscript = Mark.create({
   name: "superscript",
@@ -942,10 +1030,11 @@ const ClipboardHTML = Extension.create({
 /** What a header, footer or footnote editor offers: the body's formatting, no pages, no additions */
 export const segmentExtensions = () => [
   StarterKit.configure({
-    paragraph: false, heading: false, blockquote: false, codeBlock: false, code: false, bulletList: false, orderedList: false, listItem: false, listKeymap: false, horizontalRule: false,
+    paragraph: false, heading: false, blockquote: false, codeBlock: false, code: false, bulletList: false, orderedList: false, listItem: false, listKeymap: false, horizontalRule: false, bold: false,
     link: { openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: "https", HTMLAttributes: { rel: "noopener noreferrer", target: null } },
   }),
   DocParagraph,
+  DocBold,
   TextStyle,
   FontAttributes,
   DocColor,
@@ -971,9 +1060,11 @@ export const editorExtensions = [
     listItem: false,
     listKeymap: false,
     horizontalRule: false,
+    bold: false,
     link: { openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: "https", HTMLAttributes: { rel: "noopener noreferrer", target: null } },
   }),
   DocParagraph,
+  DocBold,
   TextStyle,
   FontAttributes,
   DocColor,

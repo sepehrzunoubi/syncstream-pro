@@ -223,7 +223,8 @@ export class App {
    * draft typed without a document (nothing to save, everything pending), as the pagination
    * tests want.
    */
-  async open(opts: { draft?: Draft; plain?: Record<string, unknown>[] } = {}): Promise<void> {
+  /** `named: false` opens a document that doesn't start with the fixture's name (an empty one) */
+  async open(opts: { draft?: Draft; plain?: Record<string, unknown>[]; named?: boolean } = {}): Promise<void> {
     const draft: Draft = { selectedDocId: FIXTURE_DOC_ID, breaksMode: "auto", durationMinutes: 60, ...opts.draft };
     if (opts.plain) {
       this.api.docs = [];
@@ -243,7 +244,7 @@ export class App {
     } else {
       // The document is in: its paragraphs are on the page and the editor glows new text
       await expect(this.page.locator(`${DOC}.ss-glow`)).toBeAttached();
-      await expect(this.doc).toContainText(FIXTURE_DOC_NAME);
+      if (opts.named !== false) await expect(this.doc).toContainText(FIXTURE_DOC_NAME);
       await expect(this.subtitle()).toContainText(/Edits save to Google Docs|New text glows/);
     }
     await this.page.waitForFunction(() => !!window.ssEditor);
@@ -336,9 +337,11 @@ export class App {
   }
 
   /** Paste into the editor at the current selection, as the clipboard would (HTML and/or plain text) */
-  async paste(data: { html?: string; text: string }): Promise<void> {
-    await this.page.evaluate(({ html, text, sel }) => {
+  async paste(data: { html?: string; text: string; slice?: string }): Promise<void> {
+    await this.page.evaluate(({ html, text, slice, sel }) => {
       const dt = new DataTransfer();
+      // Google Docs' own copy of the selection, as Chrome hands it to the page
+      if (slice) dt.setData("application/x-vnd.google-docs-document-slice-clip+wrapped", slice);
       if (html) dt.setData("text/html", html);
       dt.setData("text/plain", text);
       document.querySelector(sel)!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));

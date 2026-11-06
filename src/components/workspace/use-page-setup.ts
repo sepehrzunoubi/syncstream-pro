@@ -115,6 +115,9 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
         dom.style.setProperty(`--ss-color-${name}`, s?.color ?? "");
       }
       dom.dataset.docFont = docDefaults?.fontFamily ?? "";
+      // What a paste from another document is read against (see paste.ts)
+      if (docDefaults) dom.dataset.docDefaults = JSON.stringify(docDefaults);
+      else delete dom.dataset.docDefaults;
     }
   }, [editor, viewer, docDefaults]);
 

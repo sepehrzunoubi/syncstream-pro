@@ -164,6 +164,12 @@ export interface RunFormat {
   /** Small caps */
   sc?: 1;
   font?: string;
+  /**
+   * Font weight of the family (Docs' weightedFontFamily.weight) when it is not
+   * the regular 400: Light 300, Medium 500, SemiBold 600 and so on. Bold is
+   * separate, as in Docs.
+   */
+  w?: number;
   /** Point size; when absent the paragraph's named-style size applies */
   size?: number;
   /** Text colour, #rrggbb */
@@ -380,11 +386,15 @@ export function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
     else if (m.type === "textStyle") {
       const font = typeof m.attrs?.fontFamily === "string" ? cssFontToFamily(m.attrs.fontFamily) : undefined;
       if (font) s.font = font;
+      const weight = fontWeightOf(m.attrs?.fontWeight);
+      if (weight) s.w = weight;
       const raw = m.attrs?.fontSize;
       const size = typeof raw === "number" ? raw : typeof raw === "string" ? cssLengthToPt(raw) : undefined;
       if (size != null && size > 0) s.size = roundSize(size);
+      // An explicit colour is kept, black included: a heading style may be grey, and pasted
+      // black text must stay black (imported text that only shows its style's colour has no mark)
       const color = typeof m.attrs?.color === "string" ? cssColorToHex(m.attrs.color) : undefined;
-      if (color && color !== "#000000") s.color = color;
+      if (color) s.color = color;
     } else if (m.type === "highlight") {
       const bg = typeof m.attrs?.color === "string" ? cssColorToHex(m.attrs.color) : "#ffff00";
       if (bg) s.bg = bg;
@@ -397,8 +407,16 @@ export function styleFromMarks(marks: EditorNode["marks"]): RunStyle {
 }
 
 export const sameStyle = (a: RunStyle, b: RunStyle) =>
-  a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.sup === b.sup && a.sub === b.sub && a.font === b.font && a.size === b.size &&
+  a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.sup === b.sup && a.sub === b.sub && a.sc === b.sc && a.font === b.font && a.w === b.w && a.size === b.size &&
   a.color === b.color && a.bg === b.bg && a.link === b.link;
+
+/** A font weight other than regular (400), from a number or CSS value; Docs takes multiples of 100 from 100 to 900 */
+export function fontWeightOf(raw: unknown): number | undefined {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" && /^\s*\d{3}\s*$/.test(raw) ? parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(n)) return undefined;
+  const w = Math.max(100, Math.min(900, Math.round(n / 100) * 100));
+  return w === 400 ? undefined : w;
+}
 
 /** Convert editor JSON into source text plus formatting. */
 export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: string; format: RichFormat } {
@@ -541,7 +559,10 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
     if (run.s) clean.s = 1;
     if (run.sup) clean.sup = 1;
     else if (run.sub) clean.sub = 1;
+    if (run.sc) clean.sc = 1;
     if (typeof run.font === "string" && isSafeFontName(run.font)) clean.font = run.font;
+    const weight = fontWeightOf(run.w);
+    if (weight) clean.w = weight;
     if (typeof run.size === "number" && Number.isFinite(run.size) && run.size > 0) clean.size = roundSize(run.size);
     if (typeof run.color === "string" && /^#[0-9a-f]{6}$/i.test(run.color)) clean.color = run.color.toLowerCase();
     if (typeof run.bg === "string" && /^#[0-9a-f]{6}$/i.test(run.bg)) clean.bg = run.bg.toLowerCase();
@@ -953,7 +974,7 @@ export function resolveTextStyle(run: RunStyle): DocsRequest {
   // Fields listed in the mask but left unset are reset to their defaults: text with no size or
   // font of its own takes the document's named style, as text typed in Docs does
   if (run.size) style.fontSize = { magnitude: run.size, unit: "PT" };
-  if (run.font) style.weightedFontFamily = { fontFamily: run.font, weight: 400 };
+  if (run.font) style.weightedFontFamily = { fontFamily: run.font, weight: run.w ?? 400 };
   const color = run.color ?? (run.link ? LINK_COLOR : undefined);
   if (color) style.foregroundColor = rgb(color);
   if (run.bg) style.backgroundColor = rgb(run.bg);
@@ -1030,7 +1051,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       if (run.sub) marks.push({ type: "subscript" });
       if (run.link) marks.push({ type: "link", attrs: { href: run.link } });
       if (run.bg) marks.push({ type: "highlight", attrs: { color: run.bg } });
-      if (run.font || run.size || run.color) marks.push({ type: "textStyle", attrs: { fontFamily: run.font ?? null, fontSize: run.size ?? null, color: run.color ?? null } });
+      if (run.font || run.size || run.color || run.w) marks.push({ type: "textStyle", attrs: { fontFamily: run.font ?? null, fontSize: run.size ?? null, color: run.color ?? null, fontWeight: run.w ?? null } });
       // Images and page breaks are single placeholder characters; emit them as nodes
       let cursor = at;
       for (let k = at; k < segEnd; k++) {

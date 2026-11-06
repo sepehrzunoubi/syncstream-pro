@@ -10,6 +10,14 @@ import { ProgressMarks } from "./pagination";
 import { clipboardTextParser, handlePaste, imageFilesOf, transformPastedHTML } from "./paste";
 
 export const bodyExtensions = editorExtensions;
+
+/**
+ * Typing and pasting behave as in Google Docs: lists start from "* " and
+ * "1. " (Docs' list detection), but Markdown marks typed or pasted
+ * (*italic*, ~~strike~~) stay text, as Docs keeps them. URLs in pasted
+ * plain text become links, as in Docs; formatted text keeps the links it has.
+ */
+export const DOCS_RULES: Pick<EditorOptions, "enableInputRules" | "enablePasteRules"> = { enableInputRules: ["docFormat"], enablePasteRules: ["link"] };
 /** A read-only copy of the editor shows a running sync, paginated the same way */
 export const viewerExtensions = [...editorExtensions, ProgressMarks];
 

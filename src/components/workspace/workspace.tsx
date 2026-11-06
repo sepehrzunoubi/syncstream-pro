@@ -26,7 +26,7 @@ import type { Editor } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { countWords } from "@/lib/format";
-import { bodyEditorProps, bodyExtensions, useEditorDebugHook, viewerEditorProps, viewerExtensions, type ImageFilesHandler } from "./editor-config";
+import { bodyEditorProps, bodyExtensions, DOCS_RULES, useEditorDebugHook, viewerEditorProps, viewerExtensions, type ImageFilesHandler } from "./editor-config";
 import { useDocRefs, type DocContent } from "./doc-state";
 import { Snackbar, useSnack } from "./snack";
 import { useDocsList } from "./use-docs-list";
@@ -69,6 +69,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     immediatelyRender: false,
     autofocus: "end",
     editorProps: bodyEditorProps(imageFilesRef),
+    ...DOCS_RULES,
     onUpdate: ({ editor: e }) => setDocJSON(e.getJSON()),
     onFocus: () => { setSegmentEditor(null); setEditingHf(null); },
   });

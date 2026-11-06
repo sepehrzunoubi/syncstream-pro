@@ -17,14 +17,19 @@ const baseURL = `http://localhost:${port}`;
  * cache is empty, the newest Chromium there is used instead. PLAYWRIGHT_BROWSERS_PATH wins.
  */
 function chromiumExecutable(): string | undefined {
-  if (process.env.PLAYWRIGHT_BROWSERS_PATH) return undefined;
+  if (process.env.E2E_CHROMIUM) return process.env.E2E_CHROMIUM;
   const cache = path.join(os.homedir(), ".cache", "ms-playwright");
-  if (fs.existsSync(cache) && fs.readdirSync(cache).some((d) => d.startsWith("chromium"))) return undefined;
-  for (const root of ["/opt/pw-browsers"]) {
-    if (!fs.existsSync(root)) continue;
+  if (!process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync(cache) && fs.readdirSync(cache).some((d) => d.startsWith("chromium"))) return undefined;
+  for (const root of [process.env.PLAYWRIGHT_BROWSERS_PATH, "/opt/pw-browsers"]) {
+    if (!root || !fs.existsSync(root)) continue;
+    // The pinned Playwright's own build, when it is there, is used as is
+    const pinned = fs.readdirSync(root).some((d) => /^chromium_headless_shell-1194$/.test(d));
+    if (pinned) return undefined;
     const dir = fs.readdirSync(root).filter((d) => /^chromium-\d+$/.test(d)).sort().pop();
-    const exe = dir ? path.join(root, dir, "chrome-linux", "chrome") : null;
-    if (exe && fs.existsSync(exe)) return exe;
+    for (const sub of ["chrome-linux", "chrome-linux64"]) {
+      const exe = dir ? path.join(root, dir, sub, "chrome") : null;
+      if (exe && fs.existsSync(exe)) return exe;
+    }
   }
   return undefined;
 }

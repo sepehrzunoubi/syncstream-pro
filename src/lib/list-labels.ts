@@ -109,3 +109,31 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
     return g.format.replace(/%(\d)/g, (_, d: string) => glyphNumber(counts[Number(d)] ?? 1, Number(d) === level ? g.type : "DECIMAL"));
   });
 }
+
+const presetKind = (preset: string) => (preset === "BULLET_CHECKBOX" ? "check" : preset.startsWith("BULLET") ? "bullet" : "ordered");
+
+/**
+ * The Docs list style that draws a list's levels most like its own glyphs.
+ * Docs can only make new lists in its list styles, so a list pasted from
+ * another document is shown (and synced) in the closest one. `weights`
+ * counts the list's items at each level: the levels it uses decide.
+ */
+export function presetForLevels(kind: string, levels: (Glyph | null | undefined)[], weights: number[] = [1]): string {
+  let best = DEFAULT_PRESET[kind] ?? DEFAULT_PRESET.bullet;
+  let bestScore = -1;
+  for (const preset of Object.keys(PRESET_LEVELS)) {
+    if (presetKind(preset) !== kind) continue;
+    let score = 0;
+    for (let level = 0; level < 9; level++) {
+      const w = weights[level] ?? 0;
+      const own = levels[level];
+      if (!w || !own) continue;
+      const g = presetGlyph(preset, level);
+      if (typeof g === "string") score += own.symbol === g ? w : 0;
+      else if (own.type === g.type) score += own.format === g.format ? w : w / 2;
+    }
+    // Ties go to the first style listed, Docs' default for the kind
+    if (score > bestScore) { best = preset; bestScore = score; }
+  }
+  return best;
+}
