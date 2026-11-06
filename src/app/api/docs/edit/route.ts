@@ -4,28 +4,10 @@ import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, wi
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
+import { EDIT_REQUESTS } from "@/lib/docs-requests";
 
 export const dynamic = "force-dynamic";
 
-/** The kinds of change the editor saves directly (formatting, deleting, restoring text) */
-const ALLOWED = new Set([
-  "updateTextStyle",
-  "updateParagraphStyle",
-  "deleteContentRange",
-  "insertText",
-  "insertInlineImage",
-  "createParagraphBullets",
-  "deleteParagraphBullets",
-  "updateDocumentStyle",
-  "insertPageBreak",
-  "insertSectionBreak",
-  "createHeader",
-  "createFooter",
-  "deleteHeader",
-  "deleteFooter",
-  "createFootnote",
-  "updateSectionStyle",
-]);
 const MAX_REQUESTS = 2000;
 
 /**
@@ -53,7 +35,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
   for (const r of requests) {
     const keys = r && typeof r === "object" ? Object.keys(r) : [];
-    if (keys.length !== 1 || !ALLOWED.has(keys[0])) return NextResponse.json({ error: "Unsupported edit" }, { status: 400 });
+    if (keys.length !== 1 || !EDIT_REQUESTS.has(keys[0])) return NextResponse.json({ error: "Unsupported edit" }, { status: 400 });
   }
   const revisionId = typeof body.revisionId === "string" && body.revisionId ? body.revisionId : undefined;
   const done = startTimer();

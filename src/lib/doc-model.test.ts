@@ -224,6 +224,15 @@ test("tables: cells are editable paragraphs between structure tokens that keep D
   assert.deepEqual(directEdits(base, fresh).requests, [{ insertTable: { rows: 1, columns: 1, location: { index: 22 } } }]);
   const gone = { type: "doc", content: [p("Intro"), p("After")] };
   assert.deepEqual(directEdits(base, gone).requests, [{ deleteContentRange: { range: { startIndex: 7, endIndex: 22 } } }]);
+  // A removed column
+  const narrow = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A"))), row("r1", cell("c0", p("C")))), p("After")] };
+  const r4 = directEdits(base, narrow);
+  assert.deepEqual(r4.requests, [{ deleteTableColumn: { tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex: 0, columnIndex: 1 } } }]);
+  // The edit route takes every one of these (it refused table structure before)
+  const { EDIT_REQUESTS } = await import("./docs-requests");
+  for (const r of [r1, r2, r3, r4, directEdits(base, fresh), directEdits(base, gone)]) {
+    for (const q of r.requests) assert.ok(EDIT_REQUESTS.has(Object.keys(q)[0]), `${Object.keys(q)[0]} is not an edit the route takes`);
+  }
 });
 
 test("a header's edits are saved in its own segment, from index 0, never as additions", async () => {
