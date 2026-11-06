@@ -423,38 +423,49 @@ function within(a: string, b: string): boolean {
 
 const imagesIn = (n: EditorNode) => (n.content ?? []).filter((c) => c.type === "image").length;
 
+/** A paragraph with images and no text (Docs writes a floating image before the <p> it's drawn by, which pastes as one) */
+const imageOnly = (n: EditorNode) => n.type === "paragraph" && imagesIn(n) > 0 && !/[^\s ]/.test(nodeText(n));
+const imageCount = (ns: EditorNode[]): number => ns.reduce((a, n) => a + (n.type === "image" ? 1 : 0) + imageCount(n.content ?? []), 0);
+
 /**
  * An exact paragraph from Docs' copy with the images its HTML counterpart draws in it (a positioned
- * image, which the copy anchors elsewhere): each where the HTML has it, after as much of the text.
+ * image, which the copy anchors elsewhere): each where the HTML has it, after as much of the text. When
+ * the two have the same text, that is counted in characters; otherwise in what isn't a space. A line
+ * break counts as one either way.
  */
 function withHtmlImages(node: EditorNode, h: EditorNode): EditorNode {
+  const plain = (n: EditorNode) => nodeText(n).replace(/ /g, " ");
+  const same = plain(node) === plain(h);
+  const size = (s: string) => (same ? s.length : s.replace(/[\s ]/g, "").length);
   const images: { at: number; node: EditorNode }[] = [];
   let seen = 0;
   for (const c of h.content ?? []) {
     if (c.type === "image") images.push({ at: seen, node: c });
-    else seen += squash(nodeText(c)).length;
+    else seen += c.type === "hardBreak" ? 1 : size(nodeText(c));
   }
   if (!images.length) return node;
   const content: EditorNode[] = [];
   let count = 0;
   let next = 0;
-  // Each image goes just before the text past its place (after any spaces that end its place)
-  const place = (ahead: boolean) => { while (next < images.length && (ahead ? images[next].at <= count : true)) content.push(images[next++].node); };
+  // Each image goes just before what is past its place (counting only what isn't a space, after the spaces that end it)
+  const place = (all: boolean) => { while (next < images.length && (all || images[next].at <= count)) content.push(images[next++].node); };
+  place(false);
   for (const c of node.content ?? []) {
+    if (c.type === "hardBreak") { place(false); content.push(c); count++; continue; }
     if (c.type !== "text" || !c.text) { content.push(c); continue; }
     let from = 0;
     for (let i = 0; i < c.text.length; i++) {
-      if (!squash(c.text[i])) continue;
+      if (!size(c.text[i])) continue;
       if (next < images.length && images[next].at <= count) {
         if (i > from) content.push({ ...c, text: c.text.slice(from, i) });
         from = i;
-        place(true);
+        place(false);
       }
       count++;
     }
     content.push(from ? { ...c, text: c.text.slice(from) } : c);
   }
-  place(false);
+  place(true);
   return { ...node, content };
 }
 
@@ -478,14 +489,18 @@ export function mergeSliceWithHtml(parts: DocsSliceParts, sliceNodes: EditorNode
     if (b.kind === "paragraph" && b.exact) {
       // Its counterpart, if the HTML has it (it leaves out an empty paragraph before a table). An empty
       // one's may be a line break (Docs writes some empty paragraphs as <p><br><span><br></span></p>)
+      // A paragraph of images only before it holds floating images it draws, and is never an empty one's own
       let own: EditorNode | null = null;
+      const floats: EditorNode[] = [];
       for (let k = j; k < html.length; k++) {
         const h = html[k];
-        const text = h.type === "paragraph" ? nodeText(h) : null;
+        const text = h.type === "paragraph" && !imageOnly(h) ? nodeText(h) : null;
         if (text != null && (text.replace(/\u00a0/g, " ") === b.text || (b.text ? squash(text) === squash(b.text) : emptyAt(k) && /^\n*$/.test(text)))) { own = h; j = k + 1; break; }
+        if (b.text && imageOnly(h)) { floats.push(...(h.content ?? []).filter((c) => c.type === "image")); continue; }
         if (!emptyAt(k) || !b.text) break;
       }
-      out.push(own ? withHtmlImages(node, own) : node);
+      const merged = own ? withHtmlImages(node, own) : node;
+      out.push(own && floats.length ? { ...merged, content: [...floats, ...(merged.content ?? [])] } : merged);
       continue;
     }
     // A paragraph's counterpart has its text, and its images: one with only an image has no text to go by
@@ -508,5 +523,6 @@ export function mergeSliceWithHtml(parts: DocsSliceParts, sliceNodes: EditorNode
     j = found + 1;
     out.push(b.kind === "table" ? h : { ...h, attrs: { ...(h.attrs ?? {}), ...(node.attrs ?? {}) } });
   }
-  return out;
+  // Every image the HTML draws, or the HTML is pasted as it is
+  return imageCount(out) < imageCount(html) ? null : out;
 }

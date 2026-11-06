@@ -336,6 +336,51 @@ test("a positioned image, which the copy anchors on the paragraph before, is pas
   }
 });
 
+test("a floating image Docs writes before the <p> it's drawn by goes with that paragraph, not an empty one before it, and every later one is still found", () => {
+  const text = "Intro\n\nYou can check\nNext step\nRight click it\nEnd\n";
+  const positioned: (object | null)[] = Array.from({ length: text.length }, () => null);
+  positioned[text.indexOf("\n\nYou") + 1] = ["kix.a"];
+  positioned[text.indexOf("\nRight")] = ["kix.b"];
+  const parts = readDocsSliceParts(clip(text, {}, { dsl_entitypositionmap: { positioned }, dsl_entitytypemap: { "kix.a": "positioned", "kix.b": "positioned" }, dsl_entitymap: { "kix.a": {}, "kix.b": {} } }))!;
+  const p = (...content: EditorNode[]): EditorNode => ({ type: "paragraph", attrs: {}, content });
+  const img = (src: string): EditorNode => ({ type: "image", attrs: { src } });
+  const t = (s: string): EditorNode => ({ type: "text", text: s });
+  const shape = (n: EditorNode) => (n.content ?? []).map((c) => (c.type === "image" ? `<${c.attrs?.src}>` : c.type === "hardBreak" ? "<br>" : c.text)).join("");
+  // ...</p><br><img style="float:right"><p>You can check: the image pastes as a paragraph of its own
+  const html = [p(t("Intro")), p(), p(img("A")), p(t("You can check")), p(t("Next step")), p(img("B"), t("Right click it")), p(t("End"))];
+  assert.deepEqual(mergeSliceWithHtml(parts, sliceParagraphs(parts, ARIAL), html)!.map(shape), ["Intro", "", "<A>You can check", "Next step", "<B>Right click it", "End"]);
+  // One the merge can't place (no paragraph after it) isn't lost: the HTML is pasted as it is
+  const last = readDocsSliceParts(clip("Intro\n", {}, { dsl_entitypositionmap: { positioned: [null, null, null, null, null, ["kix.a"]] }, dsl_entitytypemap: { "kix.a": "positioned" }, dsl_entitymap: { "kix.a": {} } }))!;
+  assert.equal(mergeSliceWithHtml(last, sliceParagraphs(last, ARIAL), [p(t("Intro")), p(img("A"))]), null);
+});
+
+test("an image the HTML draws at the start of a paragraph goes before its spaces, dashes and line breaks", () => {
+  const p = (...content: EditorNode[]): EditorNode => ({ type: "paragraph", attrs: {}, content });
+  const img: EditorNode = { type: "image", attrs: { src: "https://lh7-rt.googleusercontent.com/docsz/pos" } };
+  const t = (s: string): EditorNode => ({ type: "text", text: s });
+  const br: EditorNode = { type: "hardBreak" };
+  const shape = (n: EditorNode) => (n.content ?? []).map((c) => (c.type === "image" ? "<IMG>" : c.type === "hardBreak" ? "<br>" : c.text)).join("");
+  for (const [drawn, want] of [
+    [[img, t("- dash item")], "<IMG>- dash item"],
+    [[img, t("  indented")], "<IMG>  indented"],
+    [[img, t("#1 rule")], "<IMG>#1 rule"],
+    [[img, t("---")], "<IMG>---"],
+    [[img, br, t("line two")], "<IMG><br>line two"],
+    [[t("line one"), br, img, t("two")], "line one<br><IMG>two"],
+    [[t("Step 1"), img, t(" - click")], "Step 1<IMG> - click"],
+    // Text that differs in its spaces: placed by what isn't a space
+    [[t("Step  1 "), img, t("click")], "Step 1 <IMG>click"],
+  ] as [EditorNode[], string][]) {
+    const own = (drawn.filter((c) => c.type !== "image").map((c) => (c.type === "hardBreak" ? "\u000b" : c.text)).join("")).replace(/  /, " ");
+    const text = `Steps\n${own}\nEnd\n`;
+    const positioned: (object | null)[] = Array.from({ length: text.length }, () => null);
+    positioned[text.indexOf("\n")] = ["kix.pos"];
+    const parts = readDocsSliceParts(clip(text, {}, { dsl_entitypositionmap: { positioned }, dsl_entitytypemap: { "kix.pos": "positioned" }, dsl_entitymap: { "kix.pos": {} } }))!;
+    const merged = mergeSliceWithHtml(parts, sliceParagraphs(parts, ARIAL), [p(t("Steps")), p(...drawn), p(t("End"))]);
+    assert.equal(merged && shape(merged[1]), want, want);
+  }
+});
+
 test("a page break is read in its paragraph (Docs' text/plain leaves it out), and a section break is no paragraph", () => {
   const slice = readDocsSlice(clip("One\u000ctwo\n\ue905Next\n"), "Onetwo\nNext\n")!;
   assert.ok(slice);
