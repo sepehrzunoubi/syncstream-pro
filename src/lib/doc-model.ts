@@ -887,6 +887,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
       paragraphs.push(paragraphFromAttrs(nextNl(target, q)?.attrs));
       lineStart = false;
     }
+    // Docs drops soft line breaks sent through its API (commit 5675618), so a line break is typed as a new paragraph
     if (t.k === "nl" || t.k === "br") {
       const style = { ...lastStyle };
       delete style.link;

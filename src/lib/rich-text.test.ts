@@ -214,10 +214,16 @@ test("pasted paragraphs keep exact indents and spacing, and send them to Docs", 
   assert.equal(paragraphDelta(para, same), null);
   const wider = paragraphFromAttrs({ styleName: "normal", lineSpacing: 200, box: { start: 72, first: 36, above: 0, below: 18 } });
   assert.deepEqual(paragraphDelta(para, wider)?.fields, ["spaceAbove", "spaceBelow"]);
-  // A paragraph with no spacing of its own leaves Docs' alone
+  // A paragraph with no spacing of its own takes its named style's: the fields are in the mask,
+  // unset, so the spacing a typed newline copied from the paragraph before is not kept
   const plain = paragraphFromAttrs({ styleName: "normal" });
   assert.equal(plain.space, undefined);
-  assert.doesNotMatch((paragraphRequest(plain, 1, 10).updateParagraphStyle as { fields: string }).fields, /space/);
+  const reset = paragraphRequest(plain, 1, 10).updateParagraphStyle as { paragraphStyle: Record<string, unknown>; fields: string };
+  assert.match(reset.fields, /spaceAbove,spaceBelow/);
+  assert.equal(reset.paragraphStyle.spaceAbove, undefined);
+  assert.deepEqual(paragraphDelta({ ...plain, space: { above: 20, below: 6 } }, plain, true)?.fields, ["spaceAbove", "spaceBelow"]);
+  // An existing paragraph's spacing is left as the doc has it when the editor has none to give
+  assert.equal(paragraphDelta({ ...plain, space: { above: 20, below: 6 } }, plain), null);
   // And it all comes back to the editor as the same box
   const json = richToEditorJSON("x", { v: 1, paragraphs: [para], runs: [{ len: 1 }] });
   assert.deepEqual(json.content?.[0].attrs?.box, { start: 72, first: 36, above: 0, below: 10 });
@@ -298,4 +304,81 @@ test("list levels and styles: bullets are created with leading tabs that Docs re
   const li = richToEditorJSON("x", { v: 1, paragraphs: [fmt.paragraphs[1]], runs: [{ len: 1 }] }).content?.[0].attrs;
   assert.equal(li?.level, 1);
   assert.equal(li?.preset, "BULLET_STAR_CIRCLE_SQUARE");
+});
+
+test("every paragraph one write opens is corrected against the paragraph it was typed in, not the line before it", async () => {
+  const { SegmentFormat, DEFAULT_PARAGRAPH } = await import("./rich-text");
+  const h1 = { ...DEFAULT_PARAGRAPH, style: "h1" as const, space: { above: 20, below: 6 } };
+  // "Heading" typed and styled already; this write types "\n\nBody": Docs copies the heading into both new paragraphs
+  const text = "Heading\n\nBody";
+  const sf = new SegmentFormat(text, { v: 1, base: { ...DEFAULT_PARAGRAPH }, paragraphs: [h1, { ...DEFAULT_PARAGRAPH }, { ...DEFAULT_PARAGRAPH }], runs: [{ len: text.length }] });
+  const { requests } = sf.writeRequests(7, 13, 8, null);
+  const styled = requests.filter((r) => r.updateParagraphStyle).map((r) => r.updateParagraphStyle as { range: { startIndex: number }; paragraphStyle: Record<string, unknown>; fields: string });
+  assert.deepEqual(styled.map((u) => [u.range.startIndex, u.paragraphStyle.namedStyleType]), [[9, "NORMAL_TEXT"], [10, "NORMAL_TEXT"]]);
+  // and the heading's spacing goes back to Normal text's
+  assert.ok(styled.every((u) => /spaceAbove,spaceBelow/.test(u.fields) && u.paragraphStyle.spaceAbove === undefined));
+});
+
+test("bullets a write makes are dropped from the new paragraphs that are not list items", async () => {
+  const { SegmentFormat, DEFAULT_PARAGRAPH } = await import("./rich-text");
+  const item = { ...DEFAULT_PARAGRAPH, list: "bullet" as const };
+  const text = "Item\n\nAfter";
+  const sf = new SegmentFormat(text, { v: 1, base: { ...DEFAULT_PARAGRAPH }, paragraphs: [item, { ...DEFAULT_PARAGRAPH }, { ...DEFAULT_PARAGRAPH }], runs: [{ len: text.length }] });
+  // "Item" is a bullet already; "\n\nAfter" opens two paragraphs, both copies of the bullet
+  const { requests, docList } = sf.writeRequests(4, 11, 5, { type: "bullet", start: 0, level: 0 });
+  const deleted = requests.filter((r) => r.deleteParagraphBullets).map((r) => (r.deleteParagraphBullets as { range: { startIndex: number } }).range.startIndex);
+  assert.deepEqual(deleted, [6, 7]);
+  assert.equal(docList, null);
+});
+
+test("a finished list item is styled whole so its glyph takes its text's style, and its text keeps its own", async () => {
+  const { SegmentFormat, DEFAULT_PARAGRAPH } = await import("./rich-text");
+  const item = { ...DEFAULT_PARAGRAPH, list: "bullet" as const };
+  const text = "Key point\n";
+  const sf = new SegmentFormat(text, { v: 1, base: { ...DEFAULT_PARAGRAPH }, paragraphs: [item, { ...DEFAULT_PARAGRAPH }], runs: [{ len: 3, b: 1, bg: "#d9ead3" }, { len: 7, bg: "#d9ead3" }] });
+  const { requests } = sf.writeRequests(4, 10, 5, { type: "bullet", start: 0, level: 0 });
+  const text1 = requests.filter((r) => r.updateTextStyle).map((r) => r.updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: Record<string, unknown> });
+  // the whole item [1, 11) with the first character's style, then "Key" and the rest restored
+  assert.deepEqual(text1[0].range, { startIndex: 1, endIndex: 11 });
+  assert.equal(text1[0].textStyle.bold, true);
+  assert.ok(text1.some((u) => u.range.startIndex === 1 && u.range.endIndex === 4 && u.textStyle.bold === true));
+  assert.ok(text1.some((u) => u.range.startIndex === 4 && u.textStyle.bold === false));
+});
+
+test("the empty last paragraph a trailing newline opens is styled by the write that opens it", async () => {
+  const text = "Item\n";
+  const fi = new FormatIndex(text, { v: 1, paragraphs: [{ style: "normal", align: "left", indent: 0, firstLine: false, spacing: 115, list: "bullet" }, { style: "normal", align: "left", indent: 0, firstLine: false, spacing: 115 }], runs: [{ len: 5 }] });
+  // "Item" was typed and bulleted; the last write types its newline, which copies the bullet into the doc's last paragraph
+  const { requests, docList } = fi.writeRequests(4, 5, 5, { type: "bullet", start: 0, level: 0 });
+  const del = requests.find((r) => r.deleteParagraphBullets)?.deleteParagraphBullets as { range: { startIndex: number; endIndex: number } } | undefined;
+  assert.deepEqual(del?.range, { startIndex: 6, endIndex: 7 });
+  assert.equal(docList, null);
+});
+
+test("a list item's own glyph style goes through the format to the sync, and back to the editor", async () => {
+  const { SegmentFormat, DEFAULT_PARAGRAPH, paragraphFromAttrs, richToEditorJSON } = await import("./rich-text");
+  // As the editor has it: the glyph style Docs gave the bullet (bold, 14pt), not the text's
+  const item = paragraphFromAttrs({ list: "bullet", glyphStyle: { b: 1, size: 14, link: "https://x.test", color: "red" } });
+  assert.deepEqual(item.glyph, { b: 1, size: 14 });
+  // Kept by the server's check, and dropped from paragraphs that aren't list items
+  const parsed = parseFormat("Item\n", { v: 1, paragraphs: [item, { ...DEFAULT_PARAGRAPH, glyph: { b: 1 } }], runs: [{ len: 5 }] });
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.format.paragraphs.map((p) => p.glyph), [{ b: 1, size: 14 }, undefined]);
+  // The finished item is styled whole with it, then its text gets its own style back
+  const sf = new SegmentFormat("Item\n", { ...parsed.format, base: { ...DEFAULT_PARAGRAPH } });
+  const { requests } = sf.writeRequests(4, 5, 5, { type: "bullet", start: 0, level: 0 });
+  const styles = requests.filter((r) => r.updateTextStyle).map((r) => r.updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: Record<string, unknown> });
+  assert.deepEqual(styles[0].range, { startIndex: 1, endIndex: 6 });
+  assert.equal(styles[0].textStyle.bold, true);
+  assert.deepEqual(styles[0].textStyle.fontSize, { magnitude: 14, unit: "PT" });
+  assert.ok(styles.slice(1).some((u) => u.range.startIndex === 1 && u.range.endIndex === 5 && u.textStyle.bold === false));
+  // Back in the editor, the item carries it
+  const json = richToEditorJSON("Item", { v: 1, paragraphs: [item], runs: [{ len: 4 }] });
+  assert.deepEqual(json.content?.[0].attrs?.glyphStyle, { b: 1, size: 14 });
+});
+
+test("a style from a paste keeps only checked values, so nothing else gets into the page's CSS", async () => {
+  const { cleanStyle } = await import("./rich-text");
+  assert.deepEqual(cleanStyle({ font: "Arial; background: url(https://x.test/p)", color: "red;x:y", bg: "#FFF2CC", size: "12", b: 1 }), { bg: "#fff2cc", b: 1 });
+  assert.deepEqual(cleanStyle(null), {});
 });

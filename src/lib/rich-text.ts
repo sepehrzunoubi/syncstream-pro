@@ -138,6 +138,8 @@ export interface ParagraphFormat {
   level?: number;
   /** Docs list style (bulletPreset) of a list item */
   preset?: string;
+  /** Text style of a list item's glyph (Docs' bullet.textStyle); absent: its first character's */
+  glyph?: RunStyle;
   /** Exact indents in points, from a paragraph of an existing Google Doc (overrides indent/firstLine) */
   exact?: { start: number; first: number };
   /** Right indent in points */
@@ -328,12 +330,41 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   if (list) {
     const level = typeof a.level === "number" && Number.isFinite(a.level) ? Math.max(0, Math.min(MAX_LIST_LEVEL, Math.round(a.level))) : 0;
     const preset = typeof a.preset === "string" && ALL_PRESETS.has(a.preset) && presetType(a.preset) === list ? a.preset : undefined;
+    // The glyph's own style, as Docs has it (an empty one is a plain glyph); a glyph has no link
+    const rawGlyph = a.glyphStyle ?? a.glyph;
+    if (rawGlyph && typeof rawGlyph === "object") {
+      const glyph = cleanStyle(rawGlyph);
+      delete glyph.link;
+      extras.glyph = glyph;
+    }
     return { style, align, indent: 0, firstLine: false, spacing, list, ...(level ? { level } : {}), ...(preset ? { preset } : {}), ...extras };
   }
   const p: ParagraphFormat = { style, align, indent, firstLine: a.firstLine === true, spacing, ...extras };
   if (box && typeof box === "object") p.exact = { start: num(box.start), first: num(box.start) + num(box.first) };
   else if (exact && typeof exact === "object") p.exact = { start: num(exact.start), first: num(exact.first) };
   return p;
+}
+
+/** A run's style with only what Docs can take, each value checked */
+export function cleanStyle(raw: unknown): RunStyle {
+  const run = (raw && typeof raw === "object" ? raw : {}) as RunStyle;
+  const clean: RunStyle = {};
+  if (run.b) clean.b = 1;
+  if (run.i) clean.i = 1;
+  if (run.u) clean.u = 1;
+  if (run.s) clean.s = 1;
+  if (run.sup) clean.sup = 1;
+  else if (run.sub) clean.sub = 1;
+  if (run.sc) clean.sc = 1;
+  if (typeof run.font === "string" && isSafeFontName(run.font)) clean.font = run.font;
+  const weight = fontWeightOf(run.w);
+  if (weight) clean.w = weight;
+  if (typeof run.size === "number" && Number.isFinite(run.size) && run.size > 0) clean.size = roundSize(run.size);
+  if (typeof run.color === "string" && /^#[0-9a-f]{6}$/i.test(run.color)) clean.color = run.color.toLowerCase();
+  if (typeof run.bg === "string" && /^#[0-9a-f]{6}$/i.test(run.bg)) clean.bg = run.bg.toLowerCase();
+  const link = typeof run.link === "string" ? normalizeLink(run.link) : undefined;
+  if (link) clean.link = link;
+  return clean;
 }
 
 function parseKeep(raw: unknown): KeepOptions | undefined {
@@ -530,6 +561,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           list: (p as ParagraphFormat).list,
           level: (p as ParagraphFormat).level,
           preset: (p as ParagraphFormat).preset,
+          glyph: (p as ParagraphFormat).glyph,
           indentEnd: (p as ParagraphFormat).end,
           exact: (p as ParagraphFormat).exact,
           space: (p as ParagraphFormat).space,
@@ -552,23 +584,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
     const run = item as RunFormat;
     if (!Number.isInteger(run.len) || run.len <= 0) return { ok: false, error: "Invalid run length" };
     total += run.len;
-    const clean: RunFormat = { len: run.len };
-    if (run.b) clean.b = 1;
-    if (run.i) clean.i = 1;
-    if (run.u) clean.u = 1;
-    if (run.s) clean.s = 1;
-    if (run.sup) clean.sup = 1;
-    else if (run.sub) clean.sub = 1;
-    if (run.sc) clean.sc = 1;
-    if (typeof run.font === "string" && isSafeFontName(run.font)) clean.font = run.font;
-    const weight = fontWeightOf(run.w);
-    if (weight) clean.w = weight;
-    if (typeof run.size === "number" && Number.isFinite(run.size) && run.size > 0) clean.size = roundSize(run.size);
-    if (typeof run.color === "string" && /^#[0-9a-f]{6}$/i.test(run.color)) clean.color = run.color.toLowerCase();
-    if (typeof run.bg === "string" && /^#[0-9a-f]{6}$/i.test(run.bg)) clean.bg = run.bg.toLowerCase();
-    const link = typeof run.link === "string" ? normalizeLink(run.link) : undefined;
-    if (link) clean.link = link;
-    runs.push(clean);
+    runs.push({ len: run.len, ...cleanStyle(run) });
   }
   if (total !== text.length) return { ok: false, error: `format covers ${total} characters, text has ${text.length}` };
 
@@ -595,7 +611,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   if (images.length) format.images = images;
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
-    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading });
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, glyph: rawBase.glyph, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading });
   }
   return { ok: true, format };
 }
@@ -620,8 +636,12 @@ export function bulletRequests(paragraphs: { start: number; end: number; level: 
   // indent back on top of the tabs when bullets are created again: start every item from zero
   requests.push({ updateParagraphStyle: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end }, paragraphStyle: { indentStart: { magnitude: 0, unit: "PT" }, indentFirstLine: { magnitude: 0, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
   let tabs = 0;
-  for (const p of [...paragraphs].reverse()) {
-    if (p.level > 0) { requests.push({ insertText: { location: { index: p.start }, text: "\t".repeat(p.level) } }); tabs += p.level; }
+  // Tabs nest a paragraph relative to the others of the request: one on its own lands at level 0
+  // whatever its tabs, and Docs leaves them in its text (live probe, commit acc3a59)
+  if (paragraphs.length > 1) {
+    for (const p of [...paragraphs].reverse()) {
+      if (p.level > 0) { requests.push({ insertText: { location: { index: p.start }, text: "\t".repeat(p.level) } }); tabs += p.level; }
+    }
   }
   requests.push({ createParagraphBullets: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end + tabs }, bulletPreset: preset } });
   return requests;
@@ -652,6 +672,11 @@ export class FormatIndex {
 
   paragraphAt(offset: number): ParagraphFormat {
     return this.format.paragraphs[this.paragraphIndexAt(offset)] ?? DEFAULT_PARAGRAPH;
+  }
+
+  /** The style of the character at `offset` */
+  runAt(offset: number): RunStyle | undefined {
+    return this.format.runs.length ? this.format.runs[this.runIndexAt(Math.max(0, Math.min(offset, this.text.length - 1)))] : undefined;
   }
 
   private runIndexAt(offset: number): number {
@@ -688,12 +713,16 @@ export class FormatIndex {
     const processed = new Map<number, DocListState>();
 
     const firstPara = this.paragraphIndexAt(start);
-    const lastPara = this.paragraphIndexAt(end - 1);
+    // The source's last paragraph is empty when it ends with a newline: no later write types into
+    // it, so the write that opens it styles it
+    const closesSource = end === this.text.length && this.text[end - 1] === "\n";
+    const lastPara = this.paragraphIndexAt(closesSource ? end : end - 1);
     for (let p = firstPara; p <= lastPara; p++) {
       const pStart = this.paraStarts[p];
-      if (pStart < start || pStart >= end) continue;
+      if (pStart < start || pStart > end || (pStart === end && !closesSource)) continue;
       const pEnd = this.paraStarts[p + 1] ?? this.text.length;
-      const segEnd = Math.min(end, Math.max(pEnd, pStart + 1));
+      // The closing paragraph is only its newline, the one the doc already ends with
+      const segEnd = pStart === end ? end + 1 : Math.min(end, Math.max(pEnd, pStart + 1));
       const para = this.format.paragraphs[p] ?? DEFAULT_PARAGRAPH;
       if (!para.list) {
         if (docList) requests.push({ deleteParagraphBullets: { range: { startIndex: at(pStart), endIndex: at(segEnd) } } });
@@ -726,7 +755,8 @@ export class FormatIndex {
     // The paragraph the next write appends to: created by this write (it
     // inherited the old state), or the last paragraph this write styled.
     let next = docList;
-    if (end > 0 && this.text[end - 1] !== "\n") {
+    if (closesSource && processed.has(lastPara)) next = processed.get(lastPara) ?? null;
+    else if (end > 0 && this.text[end - 1] !== "\n") {
       const pl = this.paragraphIndexAt(end - 1);
       if (processed.has(pl)) next = processed.get(pl) ?? null;
     }
@@ -788,9 +818,11 @@ export class FormatIndex {
 /**
  * Only the paragraph style fields that differ between a and b. Setting the
  * named style resets a paragraph's text to that style's font in Docs, so it
- * is only sent when it really changes.
+ * is only sent when it really changes. `fresh`: b is a paragraph a typed
+ * newline just made as a copy of a, so what b doesn't set goes back to its
+ * named style's; otherwise what b doesn't set is left as the doc has it.
  */
-export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style: DocsRequest; fields: string[] } | null {
+export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat, fresh = false): { style: DocsRequest; fields: string[] } | null {
   const style: DocsRequest = {};
   const fields: string[] = [];
   if (a.style !== b.style) { style.namedStyleType = NAMED_STYLES[b.style].docs; fields.push("namedStyleType"); }
@@ -811,6 +843,10 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style:
     style.spaceAbove = { magnitude: b.space.above, unit: "PT" };
     style.spaceBelow = { magnitude: b.space.below, unit: "PT" };
     fields.push("spaceAbove", "spaceBelow");
+  } else if (fresh && !b.space && a.space) {
+    // A typed newline copies the spacing of the paragraph it was typed in: in the mask and
+    // unset, the fields go back to what the named style gives, as the editor shows it
+    fields.push("spaceAbove", "spaceBelow");
   }
   if (JSON.stringify(a.keep ?? null) !== JSON.stringify(b.keep ?? null)) addKeep(style, fields, b.keep);
   if (JSON.stringify(a.borders ?? null) !== JSON.stringify(b.borders ?? null)) addBorders(style, fields, b.borders);
@@ -820,6 +856,8 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat): { style:
 
 const KEEP_FIELDS: Record<keyof KeepOptions, string> = { withNext: "keepWithNext", linesTogether: "keepLinesTogether", singleLines: "avoidWidowAndOrphan" };
 function addKeep(style: DocsRequest, fields: string[], keep: KeepOptions | undefined) {
+  // None of its own: the named style's (a heading keeps with the next paragraph)
+  if (!keep) { fields.push(...Object.values(KEEP_FIELDS)); return; }
   for (const key of Object.keys(KEEP_FIELDS) as (keyof KeepOptions)[]) {
     // Docs' own default for single lines is on; the other two default to off
     const value = keep?.[key] ?? (key === "singleLines");
@@ -886,6 +924,14 @@ export class SegmentFormat {
     // A newline typed last opens the next paragraph: style that one too
     if (this.text[end - 1] === "\n") last += 1;
     let cur = list;
+    // One insertText opens every paragraph of this write, and each is a copy of the paragraph
+    // the text is typed into as Docs has it before this batch, bullets included: the base until
+    // this sync first styles the segment's first line, then the format a write already gave it
+    // (a write styles the paragraph its last newline opens)
+    const typedInto = first === 0 && start === 0 ? this.format.base : this.format.paragraphs[first];
+    // List items whose bullet glyph needs its text style: the glyph is only styled by an
+    // updateTextStyle whose range fully contains the paragraph, and a created bullet has none
+    const glyphs = new Set<number>();
     for (let l = first; l <= last; l++) {
       const lineStart = this.lineStarts[l] ?? this.text.length;
       const lineEnd = (this.lineStarts[l + 1] ?? this.text.length + 1) - 1; // offset of its newline
@@ -899,22 +945,26 @@ export class SegmentFormat {
       // when the named style is set)
       const fresh = lineStart >= start;
       if (fresh) {
-        const prev = l === 0 ? this.format.base : this.format.paragraphs[l - 1];
+        const prev = typedInto;
         if (prev) {
-          const d = paragraphDelta(prev, para);
+          const d = paragraphDelta(prev, para, true);
           if (d) requests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
         } else {
           requests.push(paragraphRequest(para, range.startIndex, range.endIndex));
         }
       }
       const want = para.list ?? null;
+      // Docs' list state of this line before the batch's bullet requests: the typed-into paragraph's
+      const docState = list;
+      const ours = !!want && !!cur && cur.start >= 0 && cur.type === want && (cur.preset ?? LIST_PRESETS[cur.type]) === presetOf(para);
+      const listStart = ours ? cur!.start : lineStart;
+      const asWanted = want ? !!docState && sameList(docState, para) && (docState.start < 0 || docState.start === listStart) : !docState;
       // A paragraph this sync continues keeps the bullets it has; only paragraphs it starts are (re)made
-      if (fresh && ((cur?.type ?? null) !== want || (want && !sameList(cur, para)))) {
+      if (fresh && !asWanted) {
         // Docs reads nesting from leading tabs relative to the other paragraphs of the same
         // createParagraphBullets request, and only for paragraphs not already bulleted: a
         // paragraph created on its own always lands at level 0. So a list this sync started is
         // re-created from its first item, every item at its level, after its bullets are removed.
-        const ours = !!cur && want && cur.start >= 0 && cur.type === want && (cur.preset ?? LIST_PRESETS[cur.type]) === presetOf(para);
         if (ours) {
           const firstLine = lastLE(this.lineStarts, cur!.start);
           const items: { start: number; end: number; level: number }[] = [];
@@ -925,18 +975,31 @@ export class SegmentFormat {
           }
           requests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: range.endIndex } } });
           requests.push(...bulletRequests(items, presetOf(para)));
+          for (let q = firstLine; q <= l; q++) glyphs.add(q);
           cur = { type: want, start: cur!.start, level: para.level ?? 0, preset: presetOf(para) };
           continue;
         }
-        if (cur) requests.push({ deleteParagraphBullets: { range } });
+        if (docState) requests.push({ deleteParagraphBullets: { range } });
         if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0 }], presetOf(para)));
+        if (want) glyphs.add(l);
         cur = want ? { type: want, start: lineStart, level: para.level ?? 0, preset: presetOf(para) } : null;
         if (!want) {
           // Indents Docs kept from the bullets
           const ind = effectiveIndent(para);
           requests.push({ updateParagraphStyle: { range, paragraphStyle: { indentStart: { magnitude: ind.start, unit: "PT" }, indentFirstLine: { magnitude: ind.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
         }
-      }
+      } else if (fresh) cur = docState;
+      if (want && lineEnd < end) glyphs.add(l);
+    }
+    // Style each finished item whole with its glyph's style, then put its text's own styles back
+    for (const l of glyphs) {
+      const lineStart = this.lineStarts[l];
+      const lineEnd = (this.lineStarts[l + 1] ?? this.text.length + 1) - 1;
+      if (lineEnd >= end || !this.format.paragraphs[l]?.list) continue; // its newline is not in the doc yet
+      const glyph = { ...(this.format.paragraphs[l]?.glyph ?? (lineStart < lineEnd ? this.index.runAt(lineStart) : this.index.runAt(lineEnd)) ?? {}) };
+      delete glyph.link;
+      requests.push(textRequest(resolveTextStyle(glyph), at(lineStart), at(lineEnd + 1)));
+      if (lineStart < start) requests.push(...this.index.textRequests(lineStart, Math.min(lineEnd + 1, start), at(lineStart)));
     }
     requests.push(...this.index.textRequests(start, end, docIndex));
     return { requests, docList: cur };
@@ -1006,9 +1069,10 @@ export function paragraphRequest(p: ParagraphFormat, startIndex: number, endInde
   if (p.space) {
     paragraphStyle.spaceAbove = { magnitude: p.space.above, unit: "PT" };
     paragraphStyle.spaceBelow = { magnitude: p.space.below, unit: "PT" };
-    fields.push("spaceAbove", "spaceBelow");
   }
-  if (p.keep) addKeep(paragraphStyle, fields, p.keep);
+  // Unset in the mask: the named style's spacing and keep options, not the copied paragraph's
+  fields.push("spaceAbove", "spaceBelow");
+  addKeep(paragraphStyle, fields, p.keep);
   if (p.borders) addBorders(paragraphStyle, fields, p.borders);
   if (p.shading) addShading(paragraphStyle, fields, p.shading);
   return { updateParagraphStyle: { range: { startIndex, endIndex }, paragraphStyle, fields: fields.join(",") } };
@@ -1032,7 +1096,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       : null;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null },
+      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, glyphStyle: p.list ? p.glyph ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null },
       content: [],
     };
     const end = pos + line.length;
