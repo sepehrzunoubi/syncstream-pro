@@ -63,6 +63,13 @@ export async function prepareImage(file: Blob): Promise<{ dataUrl: string; width
   throw new Error("That image is too large, even after shrinking it");
 }
 
+/** An upload the route refused: its status, and when it's too many, how many seconds until it takes more */
+export class UploadError extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfter: number | null = null) {
+    super(message);
+  }
+}
+
 /** Upload for use in a sync; Google fetches it from the returned URL. */
 export async function uploadImage(file: Blob): Promise<{ url: string; width: number; height: number }> {
   const { dataUrl, width, height } = await prepareImage(file);
@@ -72,7 +79,10 @@ export async function uploadImage(file: Blob): Promise<{ url: string; width: num
     body: JSON.stringify({ dataUrl }),
   });
   const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
-  if (!res.ok || !data.url) throw new Error(data.error || "Couldn't upload the image");
+  if (!res.ok || !data.url) {
+    const after = parseInt(res.headers.get("Retry-After") ?? "", 10);
+    throw new UploadError(data.error || "Couldn't upload the image", res.status, after > 0 ? after : null);
+  }
   return { url: data.url, width, height };
 }
 

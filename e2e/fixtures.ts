@@ -89,6 +89,14 @@ export class FakeGoogle {
   imageFailures = 0;
   /** How long the upload route takes to answer, in ms */
   imageDelay = 0;
+  /** Uploads still to answer as the route does when a user has sent too many (429, try again in a second) */
+  imagesTooMany = 0;
+  /** Uploads answered with 429, and the most the route had in hand at once */
+  imageRefusals = 0;
+  imagesAtOnce = 0;
+  private imagesNow = 0;
+  /** How long starting a sync takes, in ms */
+  startDelay = 0;
   /** Calls to API routes this fake doesn't know: always a bug in the test or the app */
   unexpected: string[] = [];
 
@@ -139,7 +147,14 @@ export class FakeGoogle {
           return json(route, { revisionId: this.nextRevision(), replies: b.requests.map(() => ({})) });
         }
         case "/api/images": {
+          this.imagesAtOnce = Math.max(this.imagesAtOnce, ++this.imagesNow);
           if (this.imageDelay) await new Promise((r) => setTimeout(r, this.imageDelay));
+          this.imagesNow--;
+          if (this.imagesTooMany > 0) {
+            this.imagesTooMany--;
+            this.imageRefusals++;
+            return route.fulfill({ status: 429, contentType: "application/json", headers: { "Retry-After": "1" }, body: JSON.stringify({ error: "Too many requests. Try again in 1 second.", code: "rate_limited" }) });
+          }
           if (this.imagesFail) { this.imageFailures++; return json(route, { error: "Image storage is unavailable" }, 503); }
           this.uploads.push(String(body().dataUrl ?? ""));
           return json(route, { url: `https://images.e2e.test/img/${this.uploads.length}.png` });
@@ -150,9 +165,13 @@ export class FakeGoogle {
           this.docs = this.docs.map((d) => (d.id === b.documentId ? { ...d, name: b.name } : d));
           return json(route, { name: b.name });
         }
+        // The Style engine's tab, when a test goes there: not set up
+        case "/api/style/status":
+          return json(route, { llm: { provider: "none", model: "", configured: false, reachable: false, detail: "" }, style: { ready: false, name: "", samples: 0, candidateId: null, builtAt: null, evaluation: null } });
         case "/api/sync/list":
           return json(route, { jobs: this.jobs, now: Date.now() });
         case "/api/sync/start": {
+          if (this.startDelay) await new Promise((r) => setTimeout(r, this.startDelay));
           const b = body() as unknown as StartBody;
           this.starts.push(b);
           const text = b.segments ? b.segments.map((s) => s.text).join("") : b.text ?? "";

@@ -87,6 +87,89 @@ test.describe("starting a sync", () => {
     expect(JSON.stringify(api.starts[0].segments)).toContain("https://images.e2e.test/img/1.png");
   });
 
+  test("pasted images upload a few at a time, the same one once, and wait when the route has had too many: none is lost", async ({ app, page, api }) => {
+    await app.open();
+    // Five different images, and the first again
+    const pngs = await page.evaluate(() => ["#c00", "#0c0", "#00c", "#cc0", "#0cc"].map((color) => {
+      const c = document.createElement("canvas");
+      c.width = 2;
+      c.height = 2;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 2, 2);
+      return c.toDataURL("image/png");
+    }));
+    api.imageDelay = 300;
+    api.imagesTooMany = 2;
+    await app.caretAtEnd(CLOSING_TEXT);
+    await app.paste({ html: `<meta charset="utf-8"><span>Logos </span>${[...pngs, pngs[0]].map((p) => `<img src="${p}" width="2" height="2">`).join("")}`, text: "Logos " });
+    const images = () => page.evaluate(() => {
+      const out: string[] = [];
+      window.ssEditor!.state.doc.descendants((n) => { if (n.type.name === "image" && n.attrs.src.startsWith("https://images.e2e.test/")) out.push(String(n.attrs.src)); });
+      return out;
+    });
+    await expect.poll(async () => (await images()).length, { timeout: 15_000 }).toBe(6);
+    expect(api.imageRefusals).toBe(2);
+    expect(api.uploads).toHaveLength(5);
+    expect(api.imagesAtOnce).toBeLessThanOrEqual(3);
+    const srcs = await images();
+    expect(srcs.filter((s) => s === srcs[0])).toHaveLength(2);
+    await expect(page.getByText(/Couldn't add a pasted image/)).toHaveCount(0);
+  });
+
+  test("nothing can be typed or pasted while a sync starts: the sync takes what the page shows", async ({ app, page, api }) => {
+    await app.open();
+    await app.caretAtEnd(CLOSING_TEXT);
+    await page.keyboard.type(" Typed first.");
+    api.startDelay = 2000;
+    await page.getByRole("button", { name: "Start sync" }).click();
+    // (while the start is still on its way)
+    expect(await page.evaluate(() => window.ssEditor!.isEditable)).toBe(false);
+    await page.evaluate(() => window.ssEditor!.view.dom.focus());
+    await page.keyboard.type(" Typed while starting.");
+    expect(await page.evaluate(() => window.ssEditor!.getText())).not.toContain("Typed while starting");
+    expect(api.starts).toHaveLength(0);
+    await expect.poll(() => api.starts.length).toBe(1);
+    expect(api.starts[0].segments?.map((s) => s.text)).toEqual([" Typed first."]);
+  });
+
+  test("a pasted image the document can't have is taken out with why: one too long an address for Docs, another site's blob:", async ({ app, page }) => {
+    await app.open();
+    await app.caretAtEnd(CLOSING_TEXT);
+    const images = () => page.evaluate(() => {
+      let n = 0;
+      window.ssEditor!.state.doc.descendants((node) => { if (node.type.name === "image" && !String(node.attrs.src).startsWith("https://images.e2e.test/")) n++; });
+      return n;
+    });
+    const before = await images();
+    await app.paste({ html: `<meta charset="utf-8"><span>Signed </span><img src="https://cdn.example.test/photo.png?sig=${"a".repeat(2100)}" width="24" height="24">`, text: "Signed " });
+    await expect(page.getByText("Couldn't add a pasted image: its web address is too long for Google Docs. It was left out.")).toBeVisible();
+    await expect.poll(images).toBe(before);
+    await app.paste({ html: '<meta charset="utf-8"><span>Chat </span><img src="blob:https://chat.example.test/4f1c2d1e-0d6b-4d55-9a57-3e6b2f6b9a10" width="24" height="24">', text: "Chat " });
+    await expect(page.getByText(/Couldn't add a pasted image: another site shows it/)).toBeVisible();
+    await expect.poll(images).toBe(before);
+  });
+
+  test("an image whose upload finishes while its document isn't shown has its address after a reload", async ({ app, page, api }) => {
+    api.contentMode = "always";
+    await app.open();
+    await app.caretAtEnd(CLOSING_TEXT);
+    api.imageDelay = 1500;
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    await app.paste({ html: `<meta charset="utf-8"><span>Logo </span><img src="${png}" width="24" height="24">`, text: "Logo " });
+    await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("blob:"))).toBe(true);
+    // To the Style engine (the editor goes), where the upload finishes
+    await page.waitForTimeout(700);
+    await page.getByRole("link", { name: "Style engine" }).click();
+    await page.waitForURL(/\/dashboard\/style/);
+    await expect.poll(() => api.uploads.length, { timeout: 8000 }).toBe(1);
+    await page.waitForTimeout(300);
+    await page.goto("/dashboard");
+    await page.waitForFunction(() => !!window.ssEditor);
+    await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("https://images.e2e.test/img/1.png")), { timeout: 8000 }).toBe(true);
+    await expect(page.getByText(/Couldn't add a pasted image/)).toHaveCount(0);
+  });
+
   test("a pasted image whose upload failed doesn't come back with redo, and one gone with a reload is taken out: the page never shows an image the sync would leave out", async ({ app, page, api }) => {
     const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
     const images = () => page.evaluate(() => {

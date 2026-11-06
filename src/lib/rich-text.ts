@@ -19,6 +19,8 @@ export const OBJ = "\uFFFC";
  * a newline, the two being what insertPageBreak puts in the document.
  */
 export const PAGE_BREAK = "\u000C";
+/** An image address a sync can insert: one on the web Google can fetch, no longer than Docs takes (2 kB) */
+export const isInsertableImageSrc = (src: unknown): src is string => typeof src === "string" && /^https?:\/\//i.test(src) && src.length <= 2000;
 
 export const LIST_PRESETS: Record<ListType, string> = {
   bullet: "BULLET_DISC_CIRCLE_SQUARE",
@@ -677,7 +679,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
     for (const item of rawImages) {
       const im = item as Partial<ImageRef>;
       if (!im || !Number.isInteger(im.at) || typeof im.src !== "string") return { ok: false, error: "Invalid image" };
-      if (!/^https?:\/\//i.test(im.src) || im.src.length > 2000) return { ok: false, error: "Images need a web address" };
+      if (!isInsertableImageSrc(im.src)) return { ok: false, error: "Images need a web address" };
       const clamp = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.min(2000, n)) : 0);
       images.push({ at: im.at as number, src: im.src, w: clamp(im.w), h: clamp(im.h) });
     }

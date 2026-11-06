@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObjec
 import type { Editor, JSONContent } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
-import { richFromEditorJSON, richToEditorJSON } from "@/lib/rich-text";
+import { isInsertableImageSrc, richFromEditorJSON, richToEditorJSON } from "@/lib/rich-text";
 import { additions, PENDING_MARK, rebase } from "@/lib/doc-model";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
@@ -155,22 +155,32 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     if (!editor || busy || !selectedDocId || docBusy) return;
     setBusy(true);
     setStartError(null);
+    // Nothing is typed or pasted while the sync starts: what it takes is what the page then shows
+    editor.setEditable(false, false);
     try {
       if (docContent?.docId === selectedDocId && docContent.status === "loading") throw new Error("The document is still opening. Try again in a moment.");
-      // An image the sync can't insert (yet): it would be left out
-      let blocked: string | null = null;
-      editor.state.doc.descendants((n) => {
-        if (blocked || n.type.name !== "image") return !blocked;
-        if (isUploadingImage(n.attrs.src)) blocked = "A pasted image is still uploading. Try again in a moment.";
-        else if (n.marks.some((m) => m.type.name === PENDING_MARK) && !/^https?:\/\//i.test(typeof n.attrs.src === "string" ? n.attrs.src : "")) blocked = "An image in the text isn't on the web, so the sync can't add it to the document. Take it out, or paste the image itself.";
-        return !blocked;
-      });
-      if (blocked) throw new Error(blocked);
+      // An image the sync can't insert (yet): it would be left out. Looked for in what the sync takes
+      const checkImages = () => {
+        let blocked: string | null = null;
+        editor.state.doc.descendants((n) => {
+          if (blocked || n.type.name !== "image") return !blocked;
+          const src: unknown = n.attrs.src;
+          if (isUploadingImage(src)) blocked = "A pasted image is still uploading. Try again in a moment.";
+          else if (n.marks.some((m) => m.type.name === PENDING_MARK) && !isInsertableImageSrc(src)) {
+            blocked = typeof src === "string" && /^https?:\/\//i.test(src)
+              ? "An image's web address is too long for Google Docs. Take it out, or paste the image itself."
+              : "An image in the text isn't on the web, so the sync can't add it to the document. Take it out, or paste the image itself.";
+          }
+          return !blocked;
+        });
+        if (blocked) throw new Error(blocked);
+      };
       let payload: Record<string, unknown>;
       let source: Source;
       const inDoc = docContent?.docId === selectedDocId && docContent.status === "ready" && !!baseRef.current;
       if (inDoc) {
         if (!(await saveNow())) throw new Error("Couldn't save your other changes to the document. Try again.");
+        checkImages();
         const target = editor.getJSON() as EditorNode;
         const { segments, text } = additions(baseRef.current!, target);
         if (!segments.length) throw new Error("Type the text you want to add first. New text glows until a sync types it in.");
@@ -179,6 +189,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
         payload = { segments: segments.map(({ at, mode, text: t, format }) => ({ at, mode, text: t, format })), revisionId: revisionRef.current, context };
         source = { text, format: null, context };
       } else {
+        checkImages();
         const current = richFromEditorJSON(editor.getJSON());
         if (!current.text.trim()) return;
         payload = { text: current.text, format: current.format };
@@ -217,6 +228,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     } catch (err) {
       setStartError(err instanceof Error ? err.message : "Couldn't start the sync");
     } finally {
+      editor.setEditable(!docBusy, false);
       setBusy(false);
     }
   }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
