@@ -91,15 +91,26 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       for (const [id, v] of Object.entries(fns)) { const s = seg(v); if (s) next[id] = s.base; }
       setFootnotes(next);
       const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
+      // A tab deleted in Google Docs: its new text isn't put back into another tab's paragraphs.
+      // It goes at the end of the tab opened instead, still glowing, and the message says so
+      let orphan: EditorNode | null = null;
+      if (data.tabGone) {
+        const left = keep ? (editor.getJSON() as EditorNode) : tab ? readAdditions(docId, { id: tab })?.doc : null;
+        if (left && hasPending(left)) orphan = additionsOnly(left);
+        if (tab) writeAdditions(docId, null, { id: tab });
+      }
+      const append = (doc: EditorNode, extra: EditorNode | null): EditorNode => (extra ? { type: "doc", content: [...(doc.content ?? []), ...(extra.content ?? [])] } : doc);
       let target = fresh;
-      if (keep) target = rebase(fresh, editor.getJSON() as EditorNode);
+      if (keep && !data.tabGone) target = rebase(fresh, editor.getJSON() as EditorNode);
       else {
         const saved = readAdditions(docId, { id: tabId, first: tabs[0]?.id === tabId });
-        // Google's copy is the truth: only the glowing additions come back from last time
+        // Google's copy is the truth: only the glowing additions come back from last time. Text
+        // carried over (typed before a document was open, or a sync's text to edit again) goes at the end
         if (saved) target = rebase(fresh, saved.doc);
-        else if (legacyTextRef.current) target = { type: "doc", content: [...(fresh.content ?? []), ...(legacyTextRef.current.content ?? [])] };
+        target = append(target, legacyTextRef.current);
         legacyTextRef.current = null;
       }
+      target = append(target, orphan);
       try {
         loadDocument(editor, target, true);
       } catch (err) {
@@ -116,7 +127,7 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       // From now on the tab is asked for by its id, so it stays this one if the tabs are reordered
       tabRef.current = tabId ?? "";
       setSelectedTabId(tabId ?? "");
-      if (data.tabGone) setSnack("That tab is no longer in the document, so SyncStream opened its first tab.");
+      if (data.tabGone) setSnack(orphan ? "That tab was deleted in Google Docs, so SyncStream opened the first tab. The new text you had in the deleted tab is at the end here, still glowing: delete it if it doesn't belong." : "That tab is no longer in the document, so SyncStream opened its first tab.");
       else if (keep) setSnack("The document changed in Google Docs. SyncStream reloaded it and kept your new text.");
     } catch (err) {
       if (req !== contentReq.current) return;

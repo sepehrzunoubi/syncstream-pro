@@ -169,6 +169,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       let payload: Record<string, unknown>;
       let source: Source;
       const inDoc = docContent?.docId === selectedDocId && docContent.status === "ready" && !!baseRef.current;
+      const startedOn = inDoc ? { docId: docContent!.docId, tabId: docContent!.tabId ?? null } : null;
       if (inDoc) {
         if (!(await saveNow())) throw new Error("Couldn't save your other changes to the document. Try again.");
         const target = editor.getJSON() as EditorNode;
@@ -205,11 +206,15 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       setJobs((prev) => [data.job, ...prev]);
       setFocusedJobId(data.job.id);
       setComposing(false);
-      // The additions now belong to the sync; the editor shows the document without them
+      // The additions now belong to the sync; the editor shows the document without them. Unless
+      // another tab or document opened while it started: that one's own new text stays where it is
       if (inDoc) {
         writeAdditions(selectedDocId, null, shownTab(docContent));
-        loadDocument(editor, baseRef.current!, true);
-        contentStale.current = true;
+        const now = refs.docContentRef.current;
+        if (now?.docId === startedOn!.docId && (now.tabId ?? null) === startedOn!.tabId) {
+          loadDocument(editor, baseRef.current!, true);
+          contentStale.current = true;
+        }
       } else {
         loadDocument(editor, { type: "doc", content: [{ type: "paragraph" }] }, false);
       }
@@ -222,7 +227,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     } finally {
       setBusy(false);
     }
-  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, refs.tabRef, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
+  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, refs.tabRef, refs.docContentRef, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
 
   const jobAction = useCallback(async (path: "pause" | "resume" | "cancel", jobId: string) => {
     if (busy) return;
