@@ -23,7 +23,7 @@ function chromiumExecutable(): string | undefined {
   for (const root of [process.env.PLAYWRIGHT_BROWSERS_PATH, "/opt/pw-browsers"]) {
     if (!root || !fs.existsSync(root)) continue;
     // The pinned Playwright's own build, when it is there, is used as is
-    const pinned = fs.readdirSync(root).some((d) => /^chromium_headless_shell-1194$/.test(d));
+    const pinned = fs.readdirSync(root).some((d) => /^chromium_headless_shell-1243$/.test(d));
     if (pinned) return undefined;
     const dir = fs.readdirSync(root).filter((d) => /^chromium-\d+$/.test(d)).sort().pop();
     for (const sub of ["chrome-linux", "chrome-linux64"]) {
