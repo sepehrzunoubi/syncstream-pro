@@ -214,6 +214,30 @@ test("a list that numbers one level and bullets the others, and a checklist, eac
   assert.deepEqual(listLabels(nodes.map((n) => n.attrs ?? {})), ["●", "○", "■", "■", "1.", "●", null, null]);
 });
 
+test("an older document's list presets (glyph codes 0-7, no symbol or format) are its bullets and numbers", () => {
+  // As chicago-guide copies: legacy codes with empty symbol and format fields
+  const level = (gt: number) => ({ b_gt: gt, b_gf: "", b_gs: "", b_sn: 1, b_il: 36, b_ifl: 18, b_a: 0 });
+  const entity = (codes: number[]) => ({ le_nb: Object.fromEntries(codes.map((c, i) => [`nl_${i}`, level(c)])) });
+  const text = "disc\ncircle\nsquare\none\nletter\nroman\n";
+  const ends = [...text].flatMap((ch, i) => (ch === "\n" ? [i] : []));
+  const list: Record<number, object> = {};
+  ends.forEach((at, k) => { list[at] = k < 3 ? { ls_id: "kix.old", ls_nest: k } : { ls_id: "kix.oldnum", ls_nest: k - 3 }; });
+  const slice = readDocsSlice(clip(text, { list }, {
+    dsl_entitymap: { "kix.old": entity([0, 1, 2]), "kix.oldnum": entity([3, 5, 7]) },
+    dsl_entitytypemap: { "kix.old": "list", "kix.oldnum": "list" },
+  }))!;
+  const nodes = sliceParagraphs(slice, ARIAL);
+  assert.deepEqual(nodes.map((n) => [n.attrs?.list, n.attrs?.level]), [["bullet", 0], ["bullet", 1], ["bullet", 2], ["ordered", 0], ["ordered", 1], ["ordered", 2]]);
+  assert.deepEqual(listLabels(nodes.map((n) => n.attrs ?? {})), ["●", "○", "■", "1.", "a.", "i."]);
+});
+
+test("a weighted font is its family and its weight", () => {
+  // Docs copies Lexend Light as "Lexend;300", its weight field saying 400
+  const slice = readDocsSlice(clip("light text\n", { text: { 0: ts({ ts_ff: "Lexend;300", ts_fs: 12 }) } }))!;
+  const [p] = sliceParagraphs(slice, ARIAL);
+  assert.deepEqual(p.content![0].marks, [{ type: "textStyle", attrs: { fontFamily: "Lexend", fontSize: 12, color: null, fontWeight: 300 } }]);
+});
+
 test("presetForLevels weighs the levels a list uses", () => {
   assert.equal(presetForLevels("bullet", [{ symbol: "●" }, { symbol: "○" }, { symbol: "■" }]), "BULLET_DISC_CIRCLE_SQUARE");
   assert.equal(presetForLevels("bullet", [{ symbol: "❖" }, { symbol: "➢" }, { symbol: "■" }], [3, 1]), "BULLET_DIAMONDX_ARROW3D_SQUARE");

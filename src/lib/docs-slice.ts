@@ -64,6 +64,16 @@ const ALIGNMENT: Record<number, string> = { 0: "START", 1: "CENTER", 2: "END", 3
 const GLYPH: Record<number, string> = { 10: "DECIMAL", 11: "ZERO_DECIMAL", 12: "UPPER_ALPHA", 13: "ALPHA", 14: "UPPER_ROMAN", 15: "ROMAN" };
 /** A checklist level; the Docs API gives a checkbox no glyph type of its own or symbol (doc-import reads it so) */
 const CHECKBOX = 17;
+/**
+ * Glyph codes of Docs' older list presets, which come with no symbol or format of their own (documents made
+ * before the current presets): 0-2 are the bullets ● ○ ■, 3-7 numbers (4 and 6 by the pattern; never seen)
+ */
+const LEGACY: Record<number, { symbol?: string; type?: string }> = {
+  0: { symbol: "\u25cf" }, 1: { symbol: "\u25cb" }, 2: { symbol: "\u25a0" },
+  3: { type: "DECIMAL" }, 4: { type: "UPPER_ALPHA" }, 5: { type: "ALPHA" }, 6: { type: "UPPER_ROMAN" }, 7: { type: "ROMAN" },
+};
+/** A weighted font is its family and its weight: Docs copies Lexend Light as "Lexend;300" */
+const WEIGHTED = /^(.+);(\d{3})$/;
 const DASH: Record<number, string> = { 0: "SOLID", 1: "DOT", 2: "DASH" };
 
 /** Kinds of content the slice can hold that this reader doesn't turn into paragraphs */
@@ -122,8 +132,10 @@ export function textStyleOf(ts: Style | null | undefined, link?: Style | null): 
   if (own("ts_sc")) out.smallCaps = ts.ts_sc === true;
   if (own("ts_va")) out.baselineOffset = ts.ts_va === "sup" ? "SUPERSCRIPT" : ts.ts_va === "sub" ? "SUBSCRIPT" : "NONE";
   if (own("ts_fs") && num(ts.ts_fs)) out.fontSize = pt(ts.ts_fs);
-  const weight = num(ts.ts_tw) ?? 400;
-  if (own("ts_ff") && typeof ts.ts_ff === "string" && ts.ts_ff) out.weightedFontFamily = { fontFamily: ts.ts_ff, weight };
+  if (own("ts_ff") && typeof ts.ts_ff === "string" && ts.ts_ff) {
+    const weighted = WEIGHTED.exec(ts.ts_ff);
+    out.weightedFontFamily = weighted ? { fontFamily: weighted[1], weight: Number(weighted[2]) } : { fontFamily: ts.ts_ff, weight: num(ts.ts_tw) ?? 400 };
+  }
   if (own("ts_fgc2")) { const c = colorOf(ts.ts_fgc2); if (c) out.foregroundColor = optionalColor(c); }
   if (own("ts_bgc2")) { const c = colorOf(ts.ts_bgc2); if (c) out.backgroundColor = optionalColor(c); }
   const url = (link?.lnks_link as { ulnk_url?: unknown } | null | undefined)?.ulnk_url;
@@ -157,6 +169,8 @@ export function paragraphStyleOf(ps: Style | null | undefined): docs_v1.Schema$P
   if (own("ps_awao")) out.avoidWidowAndOrphan = ps.ps_awao === true;
   if (own("ps_pbb")) out.pageBreakBefore = ps.ps_pbb === true;
   if (ps.ps_ltr === false) out.direction = "RIGHT_TO_LEFT";
+  // Spacing between items of a list: 0 leaves it out (COLLAPSE_LISTS), 1 keeps it
+  if (own("ps_sm")) out.spacingMode = num(ps.ps_sm) === 1 ? "NEVER_COLLAPSE" : "COLLAPSE_LISTS";
   const sides: [string, keyof docs_v1.Schema$ParagraphStyle][] = [["ps_bt", "borderTop"], ["ps_bb", "borderBottom"], ["ps_bl", "borderLeft"], ["ps_br", "borderRight"], ["ps_bbtw", "borderBetween"]];
   for (const [k, field] of sides) {
     if (!own(k)) continue;
@@ -179,10 +193,11 @@ function listOf(entity: Style | undefined): docs_v1.Schema$List | undefined {
     const b = levels[`nl_${n}`];
     if (!b) { nestingLevels.push({}); continue; }
     const code = num(b.b_gt);
-    const symbol = typeof b.b_gs === "string" ? b.b_gs : "";
-    const numbered = code != null ? GLYPH[code] : undefined;
+    const legacy = code != null && !b.b_gs ? LEGACY[code] : undefined;
+    const symbol = typeof b.b_gs === "string" && b.b_gs ? b.b_gs : legacy?.symbol ?? "";
+    const numbered = code != null ? GLYPH[code] ?? legacy?.type : undefined;
     const level: docs_v1.Schema$NestingLevel = {
-      glyphFormat: typeof b.b_gf === "string" ? b.b_gf : `%${n}`,
+      glyphFormat: typeof b.b_gf === "string" && b.b_gf ? b.b_gf : numbered ? `%${n}.` : `%${n}`,
       startNumber: num(b.b_sn) ?? 1,
       indentStart: pt(b.b_il),
       indentFirstLine: pt(b.b_ifl),
@@ -192,7 +207,9 @@ function listOf(entity: Style | undefined): docs_v1.Schema$List | undefined {
     if (numbered) level.glyphType = numbered;
     else if (code === CHECKBOX) level.glyphType = "GLYPH_TYPE_UNSPECIFIED";
     else if (symbol) level.glyphSymbol = symbol;
-    else level.glyphType = code === 9 ? "NONE" : "DECIMAL";
+    // A symbol level with no symbol draws none; a glyph code this doesn't know is drawn as a bullet
+    else if (code === 9) level.glyphType = "NONE";
+    else level.glyphSymbol = "\u25cf";
     nestingLevels.push(level);
   }
   return { listProperties: { nestingLevels } };
