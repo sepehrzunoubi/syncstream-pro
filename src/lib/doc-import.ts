@@ -305,10 +305,13 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
     const content: EditorNode[] = [];
     let unsupported = false;
     let rule = false;
+    // The look of the paragraph's newline: an empty paragraph is as tall as it makes it
+    let newline: NonNullable<EditorNode["marks"]> = [];
     for (const pe of p.elements ?? []) {
       if (pe.textRun?.content != null) {
         const ts = { ...baseText, ...stripNull(pe.textRun.textStyle ?? {}) };
         const marks = textMarks(ts, style, defaults);
+        if (pe.textRun.content.endsWith("\n")) newline = marks.filter((m) => m.type !== "link");
         const text = pe.textRun.content.replace(/\n$/, "");
         text.split("\u000b").forEach((part, i) => {
           if (i > 0) content.push({ type: "hardBreak" });
@@ -391,6 +394,7 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
         // Its own spacing mode only: with none, its named style's
         spacingMode: own.spacingMode === "COLLAPSE_LISTS" || own.spacingMode === "NEVER_COLLAPSE" ? own.spacingMode : null,
         ...(unsupported ? { locked: true } : {}),
+        ...(!content.length && newline.length ? { nl: newline } : {}),
       },
       content,
     };

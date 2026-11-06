@@ -528,9 +528,9 @@ export function fontWeightOf(raw: unknown): number | undefined {
 /** Convert editor JSON into source text plus formatting. */
 export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: string; format: RichFormat } {
   type Piece = { text: string; style: RunStyle; image?: Omit<ImageRef, "at"> };
-  const lines: { para: ParagraphFormat; pieces: Piece[] }[] = [];
+  const lines: { para: ParagraphFormat; pieces: Piece[]; nl?: RunStyle }[] = [];
   const newLine = (para: ParagraphFormat) => {
-    const line = { para, pieces: [] as Piece[] };
+    const line: { para: ParagraphFormat; pieces: Piece[]; nl?: RunStyle } = { para, pieces: [] };
     lines.push(line);
     return line;
   };
@@ -565,6 +565,8 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
     if (isTextBlock) {
       const para = paragraphFromAttrs(node.attrs);
       const state = { line: newLine(para) };
+      // An empty paragraph's newline has a look of its own (its text's, in Docs), which sets its height
+      if (!node.content?.length && Array.isArray(node.attrs?.nl)) state.line.nl = styleFromMarks(node.attrs.nl as EditorNode["marks"]);
       for (const child of node.content ?? []) visitInline(child, para, state);
     } else {
       for (const child of node.content ?? []) visitBlock(child);
@@ -595,8 +597,8 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
   lines.forEach((line, idx) => {
     if (idx > 0) {
       const prev = lines[idx - 1].pieces;
-      // Docs can't link a newline, so it never carries the link
-      const nl: RunStyle = prev.length ? { ...prev[prev.length - 1].style } : {};
+      // A newline has its text's look (an empty paragraph's, its own); Docs can't link a newline, so it never carries the link
+      const nl: RunStyle = prev.length ? { ...prev[prev.length - 1].style } : { ...(lines[idx - 1].nl ?? {}) };
       delete nl.link;
       push(1, nl);
       text += "\n";

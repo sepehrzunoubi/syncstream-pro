@@ -893,7 +893,11 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     }
     // Docs drops soft line breaks sent through its API (commit 5675618), so a line break is typed as a new paragraph
     if (t.k === "nl" || t.k === "br") {
-      const style = { ...lastStyle };
+      // A newline has the look of the text it ends; an empty paragraph's has its own (Docs gives typed text
+      // the look of the text before it, so this one is styled too, not left with that)
+      const empty = q === 0 || ["nl", "br", "block", "st"].includes(target[q - 1].k);
+      const own = t.k === "nl" && Array.isArray(t.attrs?.nl) ? styleFromMarks(t.attrs.nl as EditorNode["marks"]) : {};
+      const style = empty ? own : { ...lastStyle };
       delete style.link;
       text += "\n";
       push(1, style);

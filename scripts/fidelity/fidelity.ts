@@ -83,17 +83,17 @@ export function pasteSlice(slice: DocsSlice, base: EditorNode[], name = "the cop
   return (state.doc.toJSON() as EditorNode).content ?? [];
 }
 
-/** A copy from Docs of these paragraphs, the ones with a list item's `level` in one numbered list */
-export function docsCopy(paras: { text: string; level?: number }[]): DocsSlice {
+/** A copy from Docs of these paragraphs (in a `size` of their own), the ones with a list item's `level` in one numbered list */
+export function docsCopy(paras: { text: string; level?: number; size?: number }[]): DocsSlice {
   let at = 1;
-  const content: docs_v1.Schema$StructuralElement[] = paras.map(({ text, level }) => {
+  const content: docs_v1.Schema$StructuralElement[] = paras.map(({ text, level, size }) => {
     const startIndex = at;
     at += text.length + 1;
     return {
       startIndex,
       endIndex: at,
       paragraph: {
-        elements: [{ startIndex, endIndex: at, textRun: { content: `${text}\n`, textStyle: {} } }],
+        elements: [{ startIndex, endIndex: at, textRun: { content: `${text}\n`, textStyle: size ? { fontSize: { magnitude: size, unit: "PT" } } : {} } }],
         paragraphStyle: { namedStyleType: "NORMAL_TEXT", ...(level == null ? {} : { indentStart: { magnitude: 36 * (level + 1), unit: "PT" }, indentFirstLine: { magnitude: 36 * level + 18, unit: "PT" } }) },
         ...(level == null ? {} : { bullet: { listId: "kix.copied", nestingLevel: level } }),
       },
@@ -202,6 +202,8 @@ export function differences(target: EditorNode, out: docs_v1.Schema$Document): s
     const exact = raw.list ? raw.exact ?? { start: 36 * (level + 1), first: 36 * (level + 1) - 18 } : raw.exact ?? { start: raw.indent * 36, first: raw.indent * 36 + (raw.firstLine ? 36 : 0) };
     // Keep options as the page lays the paragraph out: its own, else its named style's in the document
     const p = { ...raw, keep: effectiveKeep(raw.keep, raw.style, after.defaults.keep), space: sp, glyph: undefined, preset: undefined, level: undefined, exact: exact && (exact.start || exact.first) ? exact : undefined, indent: undefined, firstLine: undefined, cont: undefined } as Record<string, unknown>;
+    // An empty line is as tall as its newline's look makes it
+    if (!n.content?.length) p.newline = filled(styleFromMarks(((n.attrs?.nl as Marks | undefined) ?? []).filter((m) => m.type !== PENDING_MARK)), raw.style);
     const chars: string[] = [];
     for (const c of n.content ?? []) {
       const s0 = styleFromMarks((c.marks ?? []).filter((m) => m.type !== PENDING_MARK));
@@ -276,7 +278,15 @@ export interface Scenario extends SyncCase {
   known?: string;
   /** The list labels Docs shows for this content, in order: the editor's must be these (the doc's then match them) */
   labels?: string[];
+  /** The sizes Docs draws this content's empty lines in, in order: the editor's must be these */
+  newlines?: number[];
 }
+
+/** The size each empty line is drawn in, in order: its newline's own, else its style's */
+export const newlineSizesOf = (nodes: EditorNode[]): number[] => nodes.filter((n) => n.type === "paragraph" && !n.content?.length).map((n) => {
+  const size = ((n.attrs?.nl as { type: string; attrs?: { fontSize?: unknown } }[] | undefined) ?? []).find((m) => m.type === "textStyle")?.attrs?.fontSize;
+  return typeof size === "number" ? size : NAMED_STYLES[(n.attrs?.styleName as keyof typeof NAMED_STYLES) ?? "normal"]?.size ?? 11;
+});
 
 /** The labels the editor draws for its list items, in order */
 export const labelsOf = (nodes: EditorNode[]): string[] =>
@@ -385,6 +395,17 @@ export const SCENARIOS: Scenario[] = [
       P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced one", BR, "its second line"),
       P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced two"),
     ]),
+  },
+  {
+    name: "empty-lines-after-formatted-text",
+    what: "empty lines after text in a size and weight of its own: each as tall as the editor draws it (Docs gives typed text the look of the text before it)",
+    target: () => asAdded([P({}, ["Big bold words", [ts(20), { type: "bold" }]]), EMPTY(), P({}, "Normal words"), EMPTY(), P({}, ["Small words", [ts(8)]]), EMPTY(), EMPTY()]),
+  },
+  {
+    name: "empty-lines-own-size",
+    what: "a copy from Docs with empty lines in sizes of their own (15pt, 6pt) between 11pt text: each as tall in the doc as in the copy",
+    target: (base) => asAdded(pasteSlice(docsCopy([{ text: "Some words" }, { text: "", size: 15 }, { text: "Big words", size: 15 }, { text: "", size: 6 }, { text: "More words" }, { text: "" }]), base)),
+    newlines: [15, 6, 11, 11],
   },
   {
     name: "list-across-paragraphs",

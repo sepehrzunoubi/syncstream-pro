@@ -326,6 +326,29 @@ test.describe("lines as Docs draws them", () => {
     for (const top of got) expect(Math.abs(top - got[0]), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
   });
 
+  test("an empty line is as tall as its newline's own size makes it, and text typed there takes that size, as in Docs", async ({ app, page }) => {
+    const box = { start: 0, first: 0, above: 0, below: 0 };
+    const text = (t: string, size?: number) => ({ type: "paragraph", attrs: { box }, content: [{ type: "text", text: t, ...(size ? { marks: [{ type: "textStyle", attrs: { fontSize: size } }] } : {}) }] });
+    const empty = (size?: number) => ({ type: "paragraph", attrs: { box, ...(size ? { nl: [{ type: "textStyle", attrs: { fontSize: size } }] } : {}) }, content: [] });
+    await app.open({ plain: [text("Big words", 15), empty(15), text("Normal words"), empty(), text("Small words", 6), empty(6)] });
+    await page.evaluate(() => document.fonts.ready);
+    const heights = await page.evaluate((sel) => Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).slice(0, 6).map((p) => Math.round(p.getBoundingClientRect().height * 100) / 100), DOC);
+    // Each empty line as tall as a line of text in its size
+    expect(Math.abs(heights[1] - heights[0]), JSON.stringify(heights)).toBeLessThanOrEqual(0.05);
+    expect(Math.abs(heights[3] - heights[2]), JSON.stringify(heights)).toBeLessThanOrEqual(0.05);
+    expect(Math.abs(heights[5] - heights[4]), JSON.stringify(heights)).toBeLessThanOrEqual(0.05);
+    expect(heights[1]).toBeGreaterThan(heights[3] + 5);
+    // Typing in the 15pt empty line
+    await page.evaluate(() => { const ed = window.ssEditor!; let at = 0; ed.state.doc.forEach((n, pos, i) => { if (i === 1) at = pos + 1; }); ed.chain().focus().setTextSelection(at).run(); });
+    await expect.poll(() => page.evaluate(() => { const ed = window.ssEditor!; return ed.isFocused && ed.state.selection.$from.parent.childCount === 0 && !!ed.state.storedMarks; })).toBe(true);
+    await page.keyboard.type("typed");
+    const typed = await page.evaluate(() => {
+      const n = window.ssEditor!.state.doc.child(1).firstChild;
+      return { text: n?.text, size: n?.marks.find((m) => m.type.name === "textStyle")?.attrs.fontSize };
+    });
+    expect(typed).toEqual({ text: "typed", size: 15 });
+  });
+
   test("lines are as tall as their text's font and size make them, not the paragraph style's", async ({ app, page }) => {
     const ts = (attrs: object) => [{ type: "textStyle", attrs }];
     const P = (marks: object[] | null, lineSpacing = 115) => ({ type: "paragraph", attrs: { lineSpacing, box: { start: 0, first: 0, above: 0, below: 0 } }, content: [{ type: "text", text: LONG_BODY, ...(marks ? { marks } : {}) }] });

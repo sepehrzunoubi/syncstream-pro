@@ -176,7 +176,17 @@ function pastedBox(el: HTMLElement): PastedBox | null {
  * size): Docs puts a line's spacing beyond single below its text, by the text's size (see docs.css,
  * --ss-shift), not the paragraph style's. Only paragraphs with text of a size of its own get one.
  */
+/** An empty paragraph's look: its newline's font and size (see the nl attribute) */
+function newlineLook(node: PMNode): { font?: string; size?: number } | null {
+  if (node.childCount || !Array.isArray(node.attrs.nl)) return null;
+  const ts = (node.attrs.nl as { type?: string; attrs?: { fontFamily?: unknown; fontSize?: unknown } }[]).find((m) => m?.type === "textStyle")?.attrs;
+  const font = typeof ts?.fontFamily === "string" && ts.fontFamily ? ts.fontFamily : undefined;
+  const size = typeof ts?.fontSize === "number" && ts.fontSize > 0 ? ts.fontSize : undefined;
+  return { ...(font ? { font } : {}), ...(size ? { size } : {}) };
+}
+
 export function lineSize(node: PMNode): string | null {
+  if (!node.childCount) { const nl = newlineLook(node)?.size; return nl ? `${nl}pt` : null; }
   const sizes = new Set<number>();
   let own = false;
   node.forEach((c) => {
@@ -196,6 +206,8 @@ export function lineSize(node: PMNode): string | null {
  * size, so a paragraph whose text is all another font or size takes that as its own.
  */
 export function textLook(node: PMNode): { font?: string; size?: number } {
+  const empty = newlineLook(node);
+  if (empty) return empty;
   const fonts = new Set<string | null>();
   const sizes = new Set<number | null>();
   node.forEach((c) => {
@@ -238,6 +250,15 @@ const DocParagraph = Paragraph.extend({
     return [new Plugin({
       state: { init: (_c, state) => lineSizes(state.doc), apply: (tr, old) => (tr.docChanged ? lineSizes(tr.doc) : old) },
       props: { decorations(state) { return this.getState(state); } },
+    }), new Plugin({
+      // The caret in an empty line with a look of its own (nl): text typed there takes it, as in Docs
+      appendTransaction: (trs, _old, state) => {
+        if (!trs.some((tr) => tr.selectionSet || tr.docChanged) || state.storedMarks || !state.selection.empty) return null;
+        const para = state.selection.$from.parent;
+        if (para.type.name !== "paragraph" || para.childCount || !Array.isArray(para.attrs.nl)) return null;
+        const marks = (para.attrs.nl as unknown[]).flatMap((m) => { try { return [state.schema.markFromJSON(m)]; } catch { return []; } });
+        return marks.length ? state.tr.setStoredMarks(marks) : null;
+      },
     })];
   },
   addKeyboardShortcuts() {
@@ -369,6 +390,20 @@ const DocParagraph = Paragraph.extend({
        * The line after a line break in the paragraph before (see breaksAsParagraphs): the editor's own
        * record, so typing treats it as the break it is drawn as and a copy gives other apps the break
        */
+      /**
+       * The look of an empty paragraph's newline (marks), from Docs: the line is as tall as its font and
+       * size make it, and text typed there takes that look, as in Docs
+       */
+      nl: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          try {
+            const v: unknown = JSON.parse(el.getAttribute("data-nl") ?? "null");
+            return Array.isArray(v) && v.every((m) => m && typeof m === "object" && typeof (m as { type?: unknown }).type === "string") ? v : null;
+          } catch { return null; }
+        },
+        renderHTML: (a: { nl?: unknown[] | null }) => (Array.isArray(a.nl) && a.nl.length ? { "data-nl": JSON.stringify(a.nl) } : {}),
+      },
       softBreak: {
         default: null,
         keepOnSplit: false,
