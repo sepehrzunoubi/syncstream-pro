@@ -16,6 +16,7 @@ import { namedStyleText, type DocDefaults } from "@/lib/doc-import";
 import { DOCS_SLICE_TYPE, mergeSliceWithHtml, readDocsSlice, readDocsSliceParts, sliceParagraphs, sliceText } from "@/lib/docs-slice";
 import { cssColorToHex, cssFontToFamily, DEFAULT_FONT, effectiveIndent, INDENT_PT, NAMED_STYLES, paragraphFromAttrs, type EditorNode, type NamedStyle } from "@/lib/rich-text";
 import { flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
+import { pastedImageSources } from "./pasted-images";
 
 export const imageFilesOf = (list: FileList | null | undefined) => Array.from(list ?? []).filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
 
@@ -48,7 +49,7 @@ function mapText(f: Fragment, fn: (t: string) => string): Fragment {
   return changed ? Fragment.from(out) : f;
 }
 
-export const transformPastedHTML = (html: string) => inlinePastedStyles(flattenPastedLists(pastedEmptyLines(docsSpaces(html))));
+export const transformPastedHTML = (html: string) => inlinePastedStyles(flattenPastedLists(pastedEmptyLines(docsSpaces(pastedImageSources(html)))));
 
 /**
  * Whether a copy from Docs ends with a whole paragraph (its newline copied), and whether that is known.

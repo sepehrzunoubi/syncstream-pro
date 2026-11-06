@@ -10,9 +10,11 @@ export function useSnack(): [string | null, Setter<string | null>] {
   useEffect(() => {
     const onHint = () => setSnack(`Use ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}V to paste, or ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}Shift+V to paste without formatting`);
     const onLocked = () => setSnack("That part of the document can't be changed here. Tables' shapes, chips and section breaks are edited in Google Docs.");
+    const onImageFailed = (e: Event) => setSnack(`Couldn't add a pasted image${(e as CustomEvent<string | null>).detail ? `: ${(e as CustomEvent<string | null>).detail}` : ""}. It was left out.`);
     window.addEventListener("ss-paste-hint", onHint);
     window.addEventListener("ss-locked-hint", onLocked);
-    return () => { window.removeEventListener("ss-paste-hint", onHint); window.removeEventListener("ss-locked-hint", onLocked); };
+    window.addEventListener("ss-image-failed", onImageFailed);
+    return () => { window.removeEventListener("ss-paste-hint", onHint); window.removeEventListener("ss-locked-hint", onLocked); window.removeEventListener("ss-image-failed", onImageFailed); };
   }, []);
   // Snackbar auto-hide
   useEffect(() => {

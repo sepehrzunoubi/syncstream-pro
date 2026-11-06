@@ -482,4 +482,25 @@ test.describe("Docs' HTML against Docs' own copy", () => {
       expect(diffs).toEqual([]);
     });
   }
+  test("an image the copy gives as data (Docs' copy of a document open for viewing) shows at once, is uploaded, and takes the address the sync can insert", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    await app.paste({ html: docs(para(span("Logo ") + `<span style="${RUN}"><span style="border:none;display:inline-block;overflow:hidden;width:24px;height:24px;"><img src="${png}" width="24" height="24"></span></span>`)), text: "Logo \n" });
+    const image = async () => ((await paragraphsOf(app))[0]?.content ?? []).find((c) => c.type === "image")?.attrs ?? null;
+    await expect.poll(async () => (await image())?.src).toBe("https://images.e2e.test/img/1.png");
+    expect(await image()).toMatchObject({ width: 24, height: 24 });
+    expect(api.uploads).toHaveLength(1);
+    expect(api.uploads[0]).toMatch(/^data:image\/(png|jpeg);base64,/);
+    // It is the sync's to insert: it glows with the text
+    expect((await paragraphsOf(app))[0].content?.every((c) => (c.marks ?? []).some((m) => m.type === PENDING_MARK))).toBe(true);
+  });
+
+  test("a pasted image that can't be uploaded is left out, with a message: the page doesn't show what the document won't have", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    api.imagesFail = true;
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    await app.paste({ html: docs(para(span("Logo ") + `<img src="${png}" width="24" height="24">`)), text: "Logo \n" });
+    await expect(page.getByText(/Couldn't add a pasted image: Image storage is unavailable/)).toBeVisible();
+    expect(((await paragraphsOf(app))[0]?.content ?? []).map((c) => [c.type, c.text])).toEqual([["text", "Logo "]]);
+  });
 });

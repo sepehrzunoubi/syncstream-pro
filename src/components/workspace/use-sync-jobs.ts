@@ -22,6 +22,7 @@ import { postJson } from "./api";
 import { markAllAdded } from "./doc-json";
 import { writeAdditions } from "./storage";
 import type { Doc, DocContent, DocRefs, Setter, Source } from "./doc-state";
+import { isUploadingImage } from "./pasted-images";
 
 function useNow(active: boolean, intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -156,6 +157,10 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     setStartError(null);
     try {
       if (docContent?.docId === selectedDocId && docContent.status === "loading") throw new Error("The document is still opening. Try again in a moment.");
+      // A pasted image the sync can't insert yet: it would be left out
+      let uploading = false;
+      editor.state.doc.descendants((n) => { if (n.type.name === "image" && isUploadingImage(n.attrs.src)) uploading = true; return !uploading; });
+      if (uploading) throw new Error("A pasted image is still uploading. Try again in a moment.");
       let payload: Record<string, unknown>;
       let source: Source;
       const inDoc = docContent?.docId === selectedDocId && docContent.status === "ready" && !!baseRef.current;

@@ -69,6 +69,24 @@ test.describe("workspace", () => {
 });
 
 test.describe("starting a sync", () => {
+  test("a sync doesn't start while a pasted image is uploading (it would be left out), and takes it once it is up", async ({ app, page, api }) => {
+    await app.open();
+    api.imageDelay = 2500;
+    await app.caretAtEnd(CLOSING_TEXT);
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    await app.paste({ html: `<meta charset="utf-8"><span>Logo </span><img src="${png}" width="24" height="24">`, text: "Logo " });
+    const start = page.getByRole("button", { name: "Start sync" });
+    await expect(start).toBeEnabled();
+    await start.click();
+    await expect(page.getByRole("alert").filter({ hasText: "A pasted image is still uploading" })).toBeVisible();
+    expect(api.starts).toHaveLength(0);
+    await expect.poll(() => api.uploads.length, { timeout: 8000 }).toBe(1);
+    await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("https://images.e2e.test/img/1.png"))).toBe(true);
+    await start.click();
+    await expect.poll(() => api.starts.length).toBe(1);
+    expect(JSON.stringify(api.starts[0].segments)).toContain("https://images.e2e.test/img/1.png");
+  });
+
   test("Start sync posts the pending additions with their Docs position and shows the running view", async ({ app, page, api }) => {
     await app.open();
     const start = page.getByRole("button", { name: "Start sync" });

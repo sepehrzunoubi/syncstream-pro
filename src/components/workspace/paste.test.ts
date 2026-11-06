@@ -249,3 +249,19 @@ test("line breaks outside what was pasted are left as they are", () => {
   const locked = schema.node("doc", null, [withBreaks({ locked: true }, "a", "b")]);
   assert.equal(breaksAsParagraphs(EditorState.create({ schema, doc: locked }).tr, 0, locked.content.size, ARIAL).docChanged, false);
 });
+
+test("pasted HTML's images given as data are shown from blob: addresses until they are uploaded; others stay as they are", async () => {
+  const { pastedImageSources, isUploadingImage } = await import("./pasted-images");
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const out = pastedImageSources(`<p>a<img width="24" src="${png}">b<img src='https://lh7-rt.googleusercontent.com/x'><img src="data:text/html;base64,PGI+"></p>`);
+  const srcs = Array.from(out.matchAll(/src=(["'])([^"']*)\1/g), (m) => m[2]);
+  assert.match(srcs[0], /^blob:/);
+  assert.equal(isUploadingImage(srcs[0]), true);
+  assert.equal(srcs[1], "https://lh7-rt.googleusercontent.com/x");
+  // Not an image: left for the editor to drop
+  assert.equal(srcs[2], "data:text/html;base64,PGI+");
+  assert.equal(isUploadingImage(srcs[1]), false);
+  // Nothing to do
+  const plain = "<p>no images</p>";
+  assert.equal(pastedImageSources(plain), plain);
+});
