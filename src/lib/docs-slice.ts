@@ -223,27 +223,44 @@ function listOf(entity: Style | undefined): docs_v1.Schema$List | undefined {
 /** Text as both copies should have it: line ends the same, spaces plain */
 const comparable = (s: string) => s.replace(/\r\n?/g, "\n").replace(/[\u000b\u2028]/g, "\n").replace(/\u00a0/g, " ").replace(/\n+$/, "");
 
+/** A page break: in a paragraph's text, read as Docs' pageBreak element */
+const PAGE_BREAK_CHAR = "\u000c";
+const TABLE_START = "\u0010";
+const TABLE_END = "\u0011";
+/** A section break, at the start of the paragraph after it (its columns are the column_sector slice's) */
+const SECTION_BREAK = "\ue905";
+/** Entities whose position says nothing about how the text looks */
+const INVISIBLE_ENTITIES = new Set(["bookmark", "named-range", "list"]);
+
 /**
- * Read Docs' clipboard copy. `plain` is the clipboard's text/plain: when it
- * says something else, the slice isn't trusted. Null when the copy has
- * content this can't read exactly.
+ * A block of the copy, in order: a paragraph, or a table. A paragraph is `exact` when this reads all
+ * of it (text, line and page breaks); one with an image, chip, footnote, rule, field or equation in it
+ * is read for its paragraph style only. `text` is its text as the page shows it (line breaks as "\n",
+ * without the newline), for finding its counterpart in the copy's HTML.
  */
-export function readDocsSlice(raw: unknown, plain?: string | null): DocsSlice | null {
-  const r = unwrap(raw);
-  if (!r) return null;
+export interface SliceBlock { kind: "paragraph" | "table"; text: string; exact: boolean }
+
+/** Docs' copy read block by block: every block of it, each paragraph as documents.get describes it (see readDocsSliceParts) */
+export interface DocsSliceParts extends DocsSlice { blocks: SliceBlock[] }
+
+/** The copy's blocks, and how to read each, or null when the copy can't be read at all */
+function readParts(r: Resolved): DocsSliceParts | null {
   const text = r.dsl_spacers;
-  if (!text || STRUCTURAL.test(text)) return null;
-  if (plain && comparable(plain) !== comparable(text)) return null;
-  // Images, chips and suggestions live outside the text
-  for (const v of Object.values(r.dsl_entitypositionmap ?? {})) if (Array.isArray(v) ? v.some((x) => x != null) : v != null) return null;
-  for (const t of Object.values(r.dsl_entitytypemap ?? {})) if (t !== "list") return null;
+  if (!text) return null;
   if (r.dsl_suggestedinsertions?.sgsl_sugg?.length || r.dsl_suggesteddeletions?.sgsl_sugg?.length) return null;
 
   const slices = new Map<string, StyleSlice>();
   for (const s of r.dsl_styleslices) if (s && typeof s.stsl_type === "string") slices.set(s.stsl_type, s);
-  for (const kind of UNREAD) if (slices.get(kind)?.stsl_styles?.some((x) => x != null)) return null;
-
   const len = text.length;
+  // Positions of what lives outside the text, or that this doesn't read, by kind
+  const marked = new Array<boolean>(len).fill(false);
+  for (const kind of UNREAD) slices.get(kind)?.stsl_styles?.forEach((x, i) => { if (x != null && i < len) marked[i] = true; });
+  for (const [kind, v] of Object.entries(r.dsl_entitypositionmap ?? {})) {
+    if (INVISIBLE_ENTITIES.has(kind)) continue;
+    if (Array.isArray(v)) v.forEach((x, i) => { if (x != null && i < len) marked[i] = true; });
+    else if (v != null) return null;
+  }
+
   const textAt = runs(slices.get("text")?.stsl_styles, len);
   const linkAt = runs(slices.get("link")?.stsl_styles, len);
   const paraAt = runs(slices.get("paragraph")?.stsl_styles, len);
@@ -251,22 +268,55 @@ export function readDocsSlice(raw: unknown, plain?: string | null): DocsSlice | 
 
   const lists: Record<string, docs_v1.Schema$List> = {};
   const content: docs_v1.Schema$StructuralElement[] = [];
+  const blocks: SliceBlock[] = [];
   let index = 1;
   let start = 0;
   const endsWithParagraph = text.endsWith("\n");
   while (start < len) {
+    if (text[start] === SECTION_BREAK) { start++; continue; }
+    if (text[start] === TABLE_START) {
+      // The whole table, nested ones in it too: its HTML is pasted for it
+      let depth = 0;
+      let end = start;
+      for (; end < len; end++) {
+        if (text[end] === TABLE_START) depth++;
+        else if (text[end] === TABLE_END && --depth === 0) break;
+      }
+      const cells = text.slice(start, end + 1).split(/[\u0010-\u0012\u001c]+/).map((c) => c.replace(/\n$/, ""));
+      blocks.push({ kind: "table", text: cells.filter(Boolean).join("\n"), exact: false });
+      // In its place an element of its own that nothing reads as text (a list doesn't go on across it)
+      content.push({ startIndex: index, endIndex: index + 1, paragraph: { elements: [{ startIndex: index, endIndex: index + 1, horizontalRule: {} }], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+      index += 1;
+      start = end + 1;
+      continue;
+    }
     const nl = text.indexOf("\n", start);
     const end = nl < 0 ? len : nl + 1;
     const ps = nl < 0 ? slices.get("paragraph")?.stsl_trailing ?? null : paraAt[nl];
     const ls = nl < 0 ? slices.get("list")?.stsl_trailing ?? null : listAt[nl];
-    // Runs: where the text style or the link changes
+    let exact = true;
+    for (let i = start; i < end && exact; i++) if (marked[i] || (STRUCTURAL.test(text[i]) && text[i] !== PAGE_BREAK_CHAR)) exact = false;
+    // Runs: where the text style or the link changes; a page break is an element of its own. What isn't
+    // text (a placeholder for an image or chip) is left out: such a paragraph's content comes from elsewhere
     const elements: docs_v1.Schema$ParagraphElement[] = [];
-    let runStart = start;
-    for (let i = start + 1; i <= end; i++) {
-      if (i < end && textAt[i] === textAt[runStart] && linkAt[i] === linkAt[runStart]) continue;
-      elements.push({ startIndex: index + runStart - start, endIndex: index + i - start, textRun: { content: text.slice(runStart, i), textStyle: textStyleOf(textAt[runStart], linkAt[runStart]) } });
-      runStart = i;
+    let at = index;
+    let run = "";
+    let runStyle: number | null = null;
+    const flush = () => {
+      if (!run || runStyle == null) return;
+      elements.push({ startIndex: at, endIndex: at + run.length, textRun: { content: run, textStyle: textStyleOf(textAt[runStyle], linkAt[runStyle]) } });
+      at += run.length;
+      run = "";
+    };
+    for (let i = start; i < end; i++) {
+      const c = text[i];
+      if (c === PAGE_BREAK_CHAR) { flush(); elements.push({ startIndex: at, endIndex: at + 1, pageBreak: {} }); at += 1; continue; }
+      if (marked[i] || STRUCTURAL.test(c)) continue;
+      if (runStyle != null && (textAt[i] !== textAt[runStyle] || linkAt[i] !== linkAt[runStyle])) flush();
+      if (!run) runStyle = i;
+      run += c;
     }
+    flush();
     const paragraph: docs_v1.Schema$Paragraph = { elements, paragraphStyle: paragraphStyleOf(ps) };
     const listId = typeof ls?.ls_id === "string" ? ls.ls_id : null;
     if (listId) {
@@ -276,11 +326,39 @@ export function readDocsSlice(raw: unknown, plain?: string | null): DocsSlice | 
         paragraph.bullet = { listId, nestingLevel: Math.max(0, Math.min(8, num(ls?.ls_nest) ?? 0)), textStyle: textStyleOf(ls?.ls_ts as Style | undefined) };
       }
     }
-    content.push({ startIndex: index, endIndex: index + end - start, paragraph });
-    index += end - start;
+    content.push({ startIndex: index, endIndex: at, paragraph });
+    blocks.push({ kind: "paragraph", text: comparable(text.slice(start, end).replace(/[\u0000-\u0008\u000c-\u001f\u007f\ue000-\uf8ff]/g, "")), exact });
+    index = at;
     start = end;
   }
-  return { doc: { body: { content }, lists }, endsWithParagraph, text };
+  return { doc: { body: { content }, lists }, endsWithParagraph, text, blocks };
+}
+
+/**
+ * Read Docs' clipboard copy. `plain` is the clipboard's text/plain: when it
+ * says something else, the slice isn't trusted. Null when the copy has
+ * content this can't read exactly.
+ */
+export function readDocsSlice(raw: unknown, plain?: string | null): DocsSlice | null {
+  const r = unwrap(raw);
+  if (!r || !r.dsl_spacers) return null;
+  // Docs' text/plain leaves out page and section breaks
+  if (plain && comparable(plain) !== comparable(r.dsl_spacers.replace(/[\u000c\ue905]/g, ""))) return null;
+  // Images, chips and the like live outside the text
+  for (const t of Object.values(r.dsl_entitytypemap ?? {})) if (t !== "list") return null;
+  const parts = readParts(r);
+  if (!parts || !parts.blocks.every((b) => b.kind === "paragraph" && b.exact)) return null;
+  return { doc: parts.doc, endsWithParagraph: parts.endsWithParagraph, text: parts.text };
+}
+
+/**
+ * Read Docs' clipboard copy block by block, whatever is in it: its paragraphs as readDocsSlice reads
+ * them, and where the HTML has to give a block (a table, or what's in a paragraph with an image or chip:
+ * see SliceBlock), that block. Null when it can't be read at all.
+ */
+export function readDocsSliceParts(raw: unknown): DocsSliceParts | null {
+  const r = unwrap(raw);
+  return r ? readParts(r) : null;
 }
 
 /**
@@ -320,4 +398,59 @@ export function sliceParagraphs(slice: DocsSlice, defaults: DocDefaults): Editor
     if (!id || !n.attrs) return n;
     return { ...n, attrs: { ...n.attrs, listId: null, glyph: null, preset: presets.get(key(n)) ?? null } };
   });
+}
+
+const nodeText = (n: EditorNode): string =>
+  n.type === "text" ? n.text ?? "" : n.type === "hardBreak" ? "\n" : (n.content ?? []).map(nodeText).join(n.type === "paragraph" ? "" : "\n");
+/** Text compared loosely: no spaces, and none of what stands in for an image, chip, footnote or rule */
+const squash = (s: string) => s.replace(/[\s*#\-]/g, "");
+/** Whether every character of `a` is in `b`, in order (`b` may have a chip's or footnote's text besides) */
+function within(a: string, b: string): boolean {
+  let k = 0;
+  for (let i = 0; i < b.length && k < a.length; i++) if (b[i] === a[k]) k++;
+  return k === a.length;
+}
+
+/**
+ * Docs' copy (read with readDocsSliceParts) with its HTML: the copy's blocks in order, each exact
+ * paragraph as Docs' copy has it, and where only the HTML can say, the HTML's block: a table, or what is
+ * in a paragraph with an image or chip (with the paragraph's format from Docs' copy). `sliceNodes` are
+ * sliceParagraphs' nodes for the copy (one per block); `html`, the HTML's top-level nodes as pasted.
+ * Each block's counterpart in the HTML is the next one of its kind, past only empty paragraphs (the HTML
+ * has a few the copy doesn't); null when a block that needs one has none.
+ */
+export function mergeSliceWithHtml(parts: DocsSliceParts, sliceNodes: EditorNode[], html: EditorNode[]): EditorNode[] | null {
+  if (sliceNodes.length !== parts.blocks.length) return null;
+  const out: EditorNode[] = [];
+  // A paragraph with nothing in it but spaces or line breaks (the HTML has some the copy doesn't, as around an image)
+  const emptyAt = (k: number) => html[k]?.type === "paragraph" && !squash(nodeText(html[k])) && (html[k].content ?? []).every((c) => c.type === "text" || c.type === "hardBreak");
+  let j = 0;
+  for (let i = 0; i < parts.blocks.length; i++) {
+    const b = parts.blocks[i];
+    const node = sliceNodes[i];
+    if (b.kind === "paragraph" && b.exact) {
+      // Its counterpart, if the HTML has it (it leaves out an empty paragraph before a table)
+      for (let k = j; k < html.length; k++) {
+        const h = html[k];
+        if (h.type === "paragraph" && (nodeText(h).replace(/\u00a0/g, " ") === b.text || (b.text && squash(nodeText(h)) === squash(b.text)))) { j = k + 1; break; }
+        if (!emptyAt(k) || !b.text) break;
+      }
+      out.push(node);
+      continue;
+    }
+    let found = -1;
+    for (let k = j; k < html.length; k++) {
+      const h = html[k];
+      if (b.kind === "table" ? h.type === "table" : h.type === "paragraph" && within(squash(b.text), squash(nodeText(h)))) { found = k; break; }
+      if (!emptyAt(k)) break;
+    }
+    if (found < 0) return null;
+    // Not the next block's own (as an image's paragraph the HTML left out would find): the copies differ
+    const next = parts.blocks[i + 1];
+    if (b.kind === "paragraph" && next?.kind === "paragraph" && next.exact && squash(next.text) && squash(next.text) !== squash(b.text) && squash(nodeText(html[found])) === squash(next.text)) return null;
+    const h = html[found];
+    j = found + 1;
+    out.push(b.kind === "table" ? h : { ...h, attrs: { ...(h.attrs ?? {}), ...(node.attrs ?? {}) } });
+  }
+  return out;
 }

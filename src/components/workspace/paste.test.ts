@@ -129,12 +129,16 @@ test("restyleText drops what the style gives and keeps what it doesn't", () => {
   assert.deepEqual(marksOf(restyleText(run([]), "subtitle", "normal", grey)), [{ type: "textStyle", fontFamily: null, fontSize: 15, color: "#666666", fontWeight: null }]);
 });
 
-test("a line break inside a pasted run is restyled with the run", () => {
-  // Docs' HTML puts a soft line break inside the run's span, so it carries every value the span spells out
+test("a line break or an image inside a pasted run is restyled with the run", () => {
+  // Docs' HTML puts a soft line break (and an image) inside the run's span, so it carries every value the span spells out
   const spelled = [{ type: "textStyle", attrs: { fontFamily: "Arial", fontSize: 11, color: "rgb(0, 0, 0)", fontWeight: null } }];
-  const p = schema.nodeFromJSON({ type: "paragraph", content: [{ type: "text", text: "a", marks: spelled }, { type: "hardBreak", marks: spelled }, { type: "text", text: "b", marks: spelled }] });
+  const red = [{ type: "textStyle", attrs: { fontFamily: "Arial", fontSize: 11, color: "rgb(255, 0, 0)", fontWeight: null } }];
+  const p = schema.nodeFromJSON({ type: "paragraph", content: [
+    { type: "text", text: "a", marks: spelled }, { type: "hardBreak", marks: spelled }, { type: "text", text: "b", marks: spelled },
+    { type: "image", attrs: { src: "https://lh7-rt.googleusercontent.com/x" }, marks: spelled }, { type: "image", attrs: { src: "https://lh7-rt.googleusercontent.com/y" }, marks: red },
+  ] });
   const out = restyleText(p.content, "normal", "normal", ARIAL);
-  assert.deepEqual(Array.from({ length: out.childCount }, (_, i) => out.child(i).marks.length), [0, 0, 0]);
+  assert.deepEqual(Array.from({ length: out.childCount }, (_, i) => out.child(i).marks.map((m) => m.attrs.color ?? m.type.name)), [[], [], [], [], ["#ff0000"]]);
 });
 
 test("text pasted over a selection from a heading into the next paragraph keeps its own look", () => {

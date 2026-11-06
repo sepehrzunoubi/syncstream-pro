@@ -13,8 +13,8 @@ import { Plugin, TextSelection, type Transaction } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { Extension } from "@tiptap/core";
 import { namedStyleText, type DocDefaults } from "@/lib/doc-import";
-import { DOCS_SLICE_TYPE, readDocsSlice, sliceParagraphs, sliceText } from "@/lib/docs-slice";
-import { cssColorToHex, cssFontToFamily, DEFAULT_FONT, effectiveIndent, INDENT_PT, NAMED_STYLES, paragraphFromAttrs, type NamedStyle } from "@/lib/rich-text";
+import { DOCS_SLICE_TYPE, mergeSliceWithHtml, readDocsSlice, readDocsSliceParts, sliceParagraphs, sliceText } from "@/lib/docs-slice";
+import { cssColorToHex, cssFontToFamily, DEFAULT_FONT, effectiveIndent, INDENT_PT, NAMED_STYLES, paragraphFromAttrs, type EditorNode, type NamedStyle } from "@/lib/rich-text";
 import { flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
 
 export const imageFilesOf = (list: FileList | null | undefined) => Array.from(list ?? []).filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
@@ -88,8 +88,8 @@ export function restyleText(content: Fragment, from: NamedStyle, to: NamedStyle,
   const now = namedStyleText(defaults, to);
   const nodes: PMNode[] = [];
   content.forEach((node) => {
-    // A line break inside a run carries the run's marks (pasted HTML spells them out), so it is restyled with it
-    if (!node.isText && node.type.name !== "hardBreak") { nodes.push(node); return; }
+    // A line break or an image inside a run carries the run's marks (pasted HTML spells them out), so it is restyled with it
+    if (!node.isInline) { nodes.push(node); return; }
     const schema = node.type.schema;
     const ts = node.marks.find((m) => m.type.name === "textStyle");
     const a = (ts?.attrs ?? {}) as Record<string, unknown>;
@@ -542,11 +542,37 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
   // Text from inside one paragraph: a paragraph that doesn't end, so it takes the destination's format
   const inline = slice.content.childCount > 0 && Array.from({ length: slice.content.childCount }, (_, i) => slice.content.child(i)).every((n) => n.isInline);
   const first = inline ? view.state.schema.nodes.paragraph.create(null, slice.content) : slice.content.firstChild;
+  // Values that repeat what each paragraph's style gives aren't formatting of their own
+  const defaults = destinationDefaults(view);
+  // Docs' copy that can't be read whole (a table, an image or chip in it): each block it has as it says,
+  // and from the HTML what only that has (see mergeSliceWithHtml)
+  if (docs && raw && first) {
+    try {
+      const parts = readDocsSliceParts(raw);
+      if (parts) {
+        const html: PMNode[] = [];
+        if (inline) html.push(first); else slice.content.forEach((n) => html.push(n));
+        const own = html.map((p) => (p.type.name === "paragraph" ? docsGlyph(p.copy(restyleText(p.content, styleOf(p), styleOf(p), defaults)), defaults) : p));
+        const merged = mergeSliceWithHtml(parts, sliceParagraphs(parts, defaults), own.map((n) => n.toJSON() as EditorNode));
+        const schema = view.state.schema;
+        const nodes = (merged ?? []).map((n) => schema.nodeFromJSON(n));
+        let ends = parts.endsWithParagraph;
+        // A copy that ends with a table (Ctrl+A of a document that does): what follows the table is the
+        // paragraph pasted into, with its own format, as in Docs
+        const into = view.state.selection.$to.parent;
+        if (nodes[nodes.length - 1]?.type.name === "table") { nodes.push(schema.nodes.paragraph.create(into.type === schema.nodes.paragraph ? into.attrs : null)); ends = false; }
+        if (merged && insertParagraphs(view, nodes, ends, defaults)) {
+          event.preventDefault();
+          return true;
+        }
+      }
+    } catch (err) {
+      console.error("Couldn't read the Google Docs copy with its HTML; pasting the HTML:", err);
+    }
+  }
   if (first?.type.name !== "paragraph") return pmPaste();
   const parsed: PMNode[] = [];
   if (inline) parsed.push(first); else slice.content.forEach((n) => parsed.push(n));
-  // Values that repeat what each paragraph's style gives aren't formatting of their own
-  const defaults = destinationDefaults(view);
   // Docs' HTML has its spaces right already (see docsSpaces); others' are put right from text/plain
   const spaced = docs ? parsed : plainSpaces(parsed, plain);
   const paragraphs = spaced.map((p) => (p.type.name === "paragraph" ? p.copy(restyleText(p.content, styleOf(p), styleOf(p), defaults)) : p)).map((p) => (docs ? docsGlyph(p, defaults) : p));

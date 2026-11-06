@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { readDocsSlice, sliceParagraphs } from "./docs-slice";
+import { mergeSliceWithHtml, readDocsSlice, readDocsSliceParts, sliceParagraphs } from "./docs-slice";
+import { clip, mixedCopy, ps, ts } from "./docs-slice.testing";
 import { listLabels, presetForLevels } from "./list-labels";
 import type { DocDefaults } from "./doc-import";
 import type { EditorNode } from "./rich-text";
@@ -10,38 +11,6 @@ import type { EditorNode } from "./rich-text";
 const FIXTURES = path.join(__dirname, "..", "..", "fixtures", "clipboard");
 const fixture = (name: string) => fs.readFileSync(path.join(FIXTURES, name), "utf8");
 const ARIAL: DocDefaults = { fontFamily: "Arial", fontSize: 11, lineSpacing: 115, styles: {} };
-
-/** A text style as Docs copies it: every value given, none inherited unless asked */
-const ts = (o: Record<string, unknown> = {}, inherited: string[] = []) => {
-  const base: Record<string, unknown> = { ts_bd: false, ts_fs: 11, ts_ff: "Arial", ts_it: false, ts_sc: false, ts_st: false, ts_tw: 400, ts_un: false, ts_va: "nor", ts_bgc2: { clr_type: 0, hclr_color: null }, ts_fgc2: { clr_type: 0, hclr_color: "#000000" }, ...o };
-  for (const k of ["ts_bd", "ts_fs", "ts_ff", "ts_it", "ts_sc", "ts_st", "ts_un", "ts_va", "ts_bgc2", "ts_fgc2"]) base[`${k}_i`] = inherited.includes(k) || inherited.includes("*");
-  return base;
-};
-const ps = (o: Record<string, unknown> = {}) => ({ ps_al: 0, ps_awao: true, ps_hd: 0, ps_ifl: 0, ps_il: 0, ps_ir: 0, ps_klt: false, ps_kwn: false, ps_ltr: true, ps_ls: 1.15, ps_lslm: 1, ps_pbb: false, ps_sm: 0, ps_sa: 0, ps_sb: 0, ...o });
-
-/** A clipboard copy: the text and the style entries at given positions */
-function clip(text: string, at: { text?: Record<number, object>; paragraph?: Record<number, object>; list?: Record<number, object>; link?: Record<number, object> } = {}, extra: Record<string, unknown> = {}) {
-  const arr = (m: Record<number, object> | undefined) => { const out: (object | null)[] = []; for (const [k, v] of Object.entries(m ?? {})) out[Number(k)] = v; return Array.from(out, (x) => x ?? null); };
-  // Every paragraph has a paragraph style and a list entry, as Docs writes them
-  const paragraph = { ...at.paragraph };
-  const list = { ...at.list };
-  for (let i = 0; i < text.length; i++) if (text[i] === "\n") { paragraph[i] ??= ps(); list[i] ??= { ls_nest: 0, ls_id: null }; }
-  const resolved = {
-    dsl_spacers: text,
-    dsl_styleslices: [
-      { stsl_type: "text", stsl_styles: arr({ 0: ts(), ...at.text }) },
-      { stsl_type: "paragraph", stsl_styles: arr(paragraph) },
-      { stsl_type: "list", stsl_styles: arr(list) },
-      { stsl_type: "link", stsl_styles: arr({ 0: { lnks_link: null }, ...at.link }) },
-      { stsl_type: "tbl", stsl_styles: [] },
-    ],
-    dsl_entitymap: {},
-    dsl_entitytypemap: {},
-    dsl_entitypositionmap: {},
-    ...extra,
-  };
-  return JSON.stringify({ dih: 0, data: JSON.stringify({ resolved, autotext_content: {} }), dct: "kix" });
-}
 
 const texts = (nodes: EditorNode[]) => nodes.map((n) => (n.content ?? []).map((c) => c.text ?? (c.type === "hardBreak" ? "\n" : "")).join(""));
 const mark = (n: EditorNode, type: string) => (n.content ?? []).flatMap((c) => c.marks ?? []).find((m) => m.type === type);
@@ -242,11 +211,86 @@ test("a weighted font is its family and its weight", () => {
 
 test("presetForLevels weighs the levels a list uses", () => {
   assert.equal(presetForLevels("bullet", [{ symbol: "●" }, { symbol: "○" }, { symbol: "■" }]), "BULLET_DISC_CIRCLE_SQUARE");
-  assert.equal(presetForLevels("bullet", [{ symbol: "❖" }, { symbol: "➢" }, { symbol: "■" }], [3, 1]), "BULLET_DIAMONDX_ARROW3D_SQUARE");
-  assert.equal(presetForLevels("bullet", [{ symbol: "❖" }, { symbol: "◇" }, { symbol: "■" }], [3, 1]), "BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE");
+  assert.equal(presetForLevels("bullet", [{ symbol: "\u2756" }, { symbol: "\u27a2" }, { symbol: "■" }], [3, 1]), "BULLET_DIAMONDX_ARROW3D_SQUARE");
+  assert.equal(presetForLevels("bullet", [{ symbol: "\u2756" }, { symbol: "\u25c7" }, { symbol: "■" }], [3, 1]), "BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE");
   assert.equal(presetForLevels("ordered", [{ type: "DECIMAL", format: "%0." }, { type: "DECIMAL", format: "%0.%1." }], [2, 2]), "NUMBERED_DECIMAL_NESTED");
   assert.equal(presetForLevels("ordered", [{ type: "UPPER_ROMAN", format: "%0." }]), "NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL");
   // Nothing alike: Docs' default for the kind
-  assert.equal(presetForLevels("bullet", [{ symbol: "✓" }]), "BULLET_DISC_CIRCLE_SQUARE");
+  assert.equal(presetForLevels("bullet", [{ symbol: "\u2713" }]), "BULLET_DISC_CIRCLE_SQUARE");
   assert.equal(presetForLevels("check", []), "BULLET_CHECKBOX");
+});
+
+/** The HTML path's nodes for mixedCopy's HTML (as the editor parses it), with what that path adds besides: an empty paragraph, a line of only a line break */
+function mixedHtmlNodes(): EditorNode[] {
+  const p = (content: EditorNode[], attrs: Record<string, unknown> = {}): EditorNode => ({ type: "paragraph", attrs, content });
+  const t = (text: string): EditorNode => ({ type: "text", text });
+  const cell = (text: string): EditorNode => ({ type: "tableCell", content: [p([t(text)])] });
+  return [
+    p([t("Report")], { styleName: "h1" }),
+    { type: "table", content: [{ type: "tableRow", content: [cell("Name"), cell("Score")] }, { type: "tableRow", content: [cell("Ada"), cell("90")] }] },
+    p([t("After")]),
+    p([]),
+    p([t("Logo "), { type: "image", attrs: { src: "https://lh7-rt.googleusercontent.com/docsz/mixed-copy-logo" } }], { textAlign: "center" }),
+    p([{ type: "hardBreak" }]),
+    p([t("Due Nov 6, 2026 soon")]),
+    p([t("Star item")], { list: "bullet", level: 0, preset: "BULLET_DISC_CIRCLE_SQUARE" }),
+    p([t("Last")]),
+  ];
+}
+
+test("a copy with a table, an image and a chip is read block by block: what the copy reads whole, and where it can't, the HTML's", () => {
+  const { slice, text } = mixedCopy();
+  assert.equal(readDocsSlice(slice, text), null, "not whole");
+  const parts = readDocsSliceParts(slice)!;
+  assert.deepEqual(parts.blocks.map((b) => [b.kind, b.exact, b.text]), [
+    ["paragraph", true, "Report"],
+    ["table", false, "Name\nScore\nAda\n90"],
+    ["paragraph", true, "After"],
+    ["paragraph", false, "Logo *"],
+    ["paragraph", false, "Due  soon"],
+    ["paragraph", true, "Star item"],
+    ["paragraph", true, "Last"],
+  ]);
+  const html = mixedHtmlNodes();
+  const merged = mergeSliceWithHtml(parts, sliceParagraphs(parts, ARIAL), html)!;
+  assert.ok(merged);
+  // One node per block of the copy: the HTML's extra empty lines aren't in it
+  assert.deepEqual(merged.map((n) => n.type), ["paragraph", "table", "paragraph", "paragraph", "paragraph", "paragraph", "paragraph"]);
+  assert.deepEqual(texts(merged.filter((n) => n.type === "paragraph")), ["Report", "After", "Logo ", "Due Nov 6, 2026 soon", "Star item", "Last"]);
+  // The copy's own: the heading, the 14pt, the star bullet
+  assert.equal(merged[0].attrs?.styleName, "h1");
+  assert.equal(mark(merged[2], "textStyle")?.attrs?.fontSize, 14);
+  assert.equal(merged[5].attrs?.preset, "BULLET_STAR_CIRCLE_SQUARE");
+  // The HTML's: the table, the image, the chip's text, each with the copy's paragraph format
+  assert.equal(merged[1], html[1]);
+  assert.deepEqual(merged[3].content?.map((c) => c.type), ["text", "image"]);
+  assert.equal(merged[3].attrs?.textAlign, "center");
+  assert.equal(merged[4].attrs?.styleName, "normal");
+});
+
+test("a copy whose HTML lacks a block, or has it out of order, isn't merged (the HTML is pasted as it is)", () => {
+  const { slice } = mixedCopy();
+  const parts = readDocsSliceParts(slice)!;
+  const nodes = sliceParagraphs(parts, ARIAL);
+  const html = mixedHtmlNodes();
+  // No table
+  assert.equal(mergeSliceWithHtml(parts, nodes, html.filter((n) => n.type !== "table")), null);
+  // No chip paragraph
+  assert.equal(mergeSliceWithHtml(parts, nodes, html.filter((n) => !texts([n])[0]?.startsWith("Due"))), null);
+  // An image on a paragraph of its own, then its credit, where the HTML has only the credit
+  const image: (object | null)[] = [null, null, null];
+  image[0] = { id: "kix.img" };
+  const credit = readDocsSliceParts(clip("*\nImage credit\n", {}, { dsl_entitypositionmap: { inline: image }, dsl_entitytypemap: { "kix.img": "inline" } }))!;
+  assert.deepEqual(credit.blocks.map((b) => b.exact), [false, true]);
+  const only = [{ type: "paragraph", content: [{ type: "text", text: "Image credit" }] }];
+  assert.equal(mergeSliceWithHtml(credit, sliceParagraphs(credit, ARIAL), only), null);
+  assert.ok(mergeSliceWithHtml(credit, sliceParagraphs(credit, ARIAL), [{ type: "paragraph", content: [{ type: "image", attrs: { src: "x" } }] }, ...only]));
+});
+
+test("a page break is read in its paragraph (Docs' text/plain leaves it out), and a section break is no paragraph", () => {
+  const slice = readDocsSlice(clip("One\u000ctwo\n\ue905Next\n"), "Onetwo\nNext\n")!;
+  assert.ok(slice);
+  const nodes = sliceParagraphs(slice, ARIAL);
+  assert.deepEqual(nodes[0].content?.map((c) => c.type), ["text", "pageBreak", "text"]);
+  assert.deepEqual(texts(nodes), ["Onetwo", "Next"]);
 });

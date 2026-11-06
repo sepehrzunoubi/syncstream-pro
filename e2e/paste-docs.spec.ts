@@ -4,6 +4,7 @@ import { test, expect, type App, type FakeGoogle } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { importDoc } from "../src/lib/doc-import";
 import { readDocsSlice, sliceParagraphs } from "../src/lib/docs-slice";
+import { mixedCopy } from "../src/lib/docs-slice.testing";
 import { PENDING_MARK } from "../src/lib/doc-model";
 import type { EditorNode } from "../src/lib/rich-text";
 import { EMPTY_DOC } from "./fixtures/empty-doc";
@@ -103,5 +104,64 @@ test.describe("pasting from Google Docs", () => {
     ]);
     // Only the pasted text is new: the document's own text doesn't glow
     expect(await app.pending()).toEqual(["Pasted heading", "Pasted body"]);
+  });
+  test("a copy with a table, an image and a chip takes each paragraph's format from Docs' own copy, and the table, image and chip from the HTML", async ({ app, api, page }) => {
+    const mixed = mixedCopy();
+    const outline = async () => ((await app.json()).content as EditorNode[]).map((n) => {
+      const text = (x: EditorNode): string => x.type === "text" ? x.text ?? "" : x.type === "image" ? "<image>" : (x.content ?? []).map(text).join(x.type === "paragraph" ? "" : "|");
+      const size = (n.content ?? []).flatMap((c) => c.marks ?? []).find((m) => m.type === "textStyle" && m.attrs?.fontSize)?.attrs?.fontSize ?? null;
+      return [n.type, text(n), n.attrs?.styleName ?? null, n.attrs?.textAlign ?? null, n.attrs?.preset ?? null, size];
+    });
+    await openEmpty(app, api, page);
+    await app.paste(mixed);
+    await expect.poll(outline).toEqual([
+      ["paragraph", "Report", "h1", null, null, null],
+      ["table", "Name|Score|Ada|90", null, null, null, null],
+      ["paragraph", "After", "normal", null, null, 14],
+      ["paragraph", "Logo <image>", "normal", "center", null, null],
+      ["paragraph", "Due Nov 6, 2026 soon", "normal", null, null, null],
+      // Docs' copy says its bullet is a star; the HTML says only "disc"
+      ["paragraph", "Star item", "normal", null, "BULLET_STAR_CIRCLE_SQUARE", null],
+      ["paragraph", "Last", "normal", null, null, null],
+      ["paragraph", "", "normal", null, null, null],
+    ]);
+    // The same copy without Docs' own (Safari): the HTML's bullet
+    await page.evaluate(() => window.ssEditor!.commands.setContent({ type: "doc", content: [{ type: "paragraph" }] }));
+    await page.evaluate(() => window.ssEditor!.chain().focus().setTextSelection(1).run());
+    await app.paste({ html: mixed.html, text: mixed.text });
+    await expect.poll(async () => (await outline()).find((r) => r[1] === "Star item")?.[4]).toBe("BULLET_DISC_CIRCLE_SQUARE");
+  });
+  test("a copy that ends with a table, pasted into a paragraph, leaves the paragraph's rest after the table with its own format", async ({ app, api, page }) => {
+    const mixed = mixedCopy({ tableLast: true });
+    await openEmpty(app, api, page);
+    await page.evaluate(() => {
+      const ed = window.ssEditor!;
+      ed.commands.setContent({ type: "doc", content: [{ type: "paragraph", attrs: { textAlign: "right" }, content: [{ type: "text", text: "Before after" }] }] });
+      ed.chain().focus().setTextSelection(8).run();
+    });
+    await app.paste(mixed);
+    const outline = async () => ((await app.json()).content as EditorNode[]).map((n) => {
+      const text = (x: EditorNode): string => x.type === "text" ? x.text ?? "" : x.type === "image" ? "<image>" : (x.content ?? []).map(text).join(x.type === "paragraph" ? "" : "|");
+      return [n.type, text(n), n.attrs?.styleName ?? null, n.attrs?.textAlign ?? null, n.attrs?.preset ?? null];
+    });
+    await expect.poll(outline).toEqual([
+      // The paragraph pasted into ends with the copy's first newline, and takes its format
+      ["paragraph", "Before Report", "h1", null, null],
+      ["table", "Name|Score|Ada|90", null, null, null],
+      ["paragraph", "After", "normal", null, null],
+      ["paragraph", "Logo <image>", "normal", "center", null],
+      ["paragraph", "Due Nov 6, 2026 soon", "normal", null, null],
+      ["paragraph", "Star item", "normal", null, "BULLET_STAR_CIRCLE_SQUARE"],
+      ["table", "Total|90", null, null, null],
+      ["paragraph", "after", "normal", "right", null],
+    ]);
+    // Into an empty paragraph: it is what follows the table, still with its own format
+    await page.evaluate(() => {
+      const ed = window.ssEditor!;
+      ed.commands.setContent({ type: "doc", content: [{ type: "paragraph", attrs: { textAlign: "right" } }] });
+      ed.chain().focus().setTextSelection(1).run();
+    });
+    await app.paste(mixed);
+    await expect.poll(async () => (await outline()).slice(-2)).toEqual([["table", "Total|90", null, null, null], ["paragraph", "", "normal", "right", null]]);
   });
 });
