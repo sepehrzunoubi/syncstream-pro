@@ -390,6 +390,15 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: "framed-then-plain",
+    what: "a paragraph with a right indent, borders and shading, then plain ones typed after it (each newline copies the paragraph it is typed in)",
+    target: () => [
+      P({ box: box0, indentEnd: 36, shading: "#fce5cd", borders: { top: { width: 1, color: "#000000", dash: "SOLID", padding: 1 }, bottom: { width: 1, color: "#000000", dash: "SOLID", padding: 1 } } }, "A framed note"),
+      P({ box: box0 }, "Plain after it"),
+      P({ box: box0 }, "And another"),
+    ],
+  },
+  {
     name: "highlighted-bullets",
     what: "list items whose whole text is highlighted, long and short",
     target: () => [LI(0, "bullet", ["Industry subsegment value proposition", [ts(11), hl("rgb(217, 234, 211)")]]), LI(0, "bullet", ["Market size", [ts(11), hl("rgb(217, 234, 211)")]]), LI(0, "bullet", ["Big text list item with many words", [ts(14)]]), LI(0, "bullet", ["Big two", [ts(14)]])],

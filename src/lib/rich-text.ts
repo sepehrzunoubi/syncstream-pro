@@ -1130,16 +1130,20 @@ export function paragraphRequest(p: ParagraphFormat, startIndex: number, endInde
     paragraphStyle.indentFirstLine = { magnitude: indent.first, unit: "PT" };
     fields.push("indentStart", "indentFirstLine");
   }
-  if (p.end) { paragraphStyle.indentEnd = { magnitude: p.end, unit: "PT" }; fields.push("indentEnd"); }
+  // What it doesn't set is unset in the mask: its named style's, not the paragraph's it was copied from
+  // (a newline typed in a paragraph with a right indent, borders or shading makes one with them)
+  if (p.end) paragraphStyle.indentEnd = { magnitude: p.end, unit: "PT" };
+  fields.push("indentEnd");
   if (p.space) {
     paragraphStyle.spaceAbove = { magnitude: p.space.above, unit: "PT" };
     paragraphStyle.spaceBelow = { magnitude: p.space.below, unit: "PT" };
   }
-  // Unset in the mask: the named style's spacing and keep options, not the copied paragraph's
   fields.push("spaceAbove", "spaceBelow");
   addKeep(paragraphStyle, fields, p.keep);
   if (p.borders) addBorders(paragraphStyle, fields, p.borders);
+  else fields.push(...BORDER_SIDES.map((side) => BORDER_FIELDS[side]));
   if (p.shading) addShading(paragraphStyle, fields, p.shading);
+  else fields.push("shading");
   // Its own spacing mode, else unset in the mask: the named style's, not the copied paragraph's
   if (p.spacingMode) paragraphStyle.spacingMode = p.spacingMode;
   fields.push("spacingMode");
