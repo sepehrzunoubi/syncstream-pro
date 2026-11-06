@@ -15,12 +15,12 @@
  * family's own stack (fontStack), so no copy names a face that exists only here.
  */
 
-import { fontStack } from "@/lib/rich-text";
+import { fontStack, SPACE_FACE_PREFIX } from "@/lib/rich-text";
 
 const SAFE = /^[\p{L}\p{N} ]{1,64}$/u;
 const GENERIC = new Set(["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui"]);
 
-export const spaceFamily = (family: string) => `SS Space ${family}`;
+export const spaceFamily = (family: string) => `${SPACE_FACE_PREFIX}${family}`;
 
 /** The stack the page draws a family in: its space face, then fontStack */
 export function screenStack(family: string): string {

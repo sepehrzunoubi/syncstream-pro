@@ -284,9 +284,16 @@ function countChar(s: string, ch: string): number {
 // ── CSS helpers shared with the editor ─────────────────────────────────────
 
 /** "\"Times New Roman\", serif" → "Times New Roman" */
+/**
+ * The page draws each family's spaces from a face of their own, named this and then the family (see
+ * space-faces.ts). It is never a document's font: a browser's own copy of the page, which writes the
+ * stack it drew text in, names it first.
+ */
+export const SPACE_FACE_PREFIX = "SS Space ";
+
 export function cssFontToFamily(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
-  const first = value.split(",")[0]?.trim().replace(/^["']|["']$/g, "").trim();
+  const first = value.split(",").map((f) => f.trim().replace(/^["']|["']$/g, "").trim()).find((f) => !f.startsWith(SPACE_FACE_PREFIX));
   if (!first) return undefined;
   const known = FONT_FAMILIES.find((f) => f.toLowerCase() === first.toLowerCase());
   return known ?? (isSafeFontName(first) ? first : undefined);

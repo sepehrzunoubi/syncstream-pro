@@ -51,6 +51,10 @@ test("css helpers", () => {
   assert.equal(cssFontToFamily("'times new roman', serif"), "Times New Roman");
   assert.equal(cssFontToFamily("Proxima Nova"), "Proxima Nova");
   assert.equal(cssFontToFamily("url(evil)"), undefined);
+  // A browser's own copy of the page writes the stack it drew in, its space face first: that is never the font
+  assert.equal(cssFontToFamily(`"SS Space Arial", Arial, Arimo, "Liberation Sans", sans-serif`), "Arial");
+  assert.equal(cssFontToFamily(`"SS Space Lexend", Lexend, sans-serif`), "Lexend");
+  assert.equal(cssFontToFamily(`"SS Space Arial"`), undefined);
   assert.equal(cssLengthToPt("12pt"), 12);
   assert.equal(cssLengthToPt("16px"), 12);
   assert.equal(cssLengthToPt("0.5in"), 36);
