@@ -2,6 +2,7 @@ import { google, type docs_v1 } from "googleapis";
 import { indexedText } from "./doc-import";
 import { log } from "./log";
 import { inTab, openTab, type OpenTab } from "./doc-tabs";
+import { exportGlyphs, nameLists, unnamedLists } from "./list-glyphs";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -123,7 +124,39 @@ export async function getDocument(accessToken: string, documentId: string, tabId
   const res = await withRetry(() => docs.documents.get({ documentId, includeTabsContent: true }));
   const open = openTab(res.data, tabId);
   if (!open) throw new TabGoneError();
+  await nameUnnamedLists(accessToken, documentId, open);
   return open;
+}
+
+/**
+ * Lists the API gives no glyph for (a checklist, or the bullets of an older preset) are told apart by
+ * the tab's own HTML export, which draws each level's glyph (list-glyphs.ts). Without the export they
+ * stay as the API gives them.
+ */
+async function nameUnnamedLists(accessToken: string, documentId: string, open: OpenTab) {
+  const ids = unnamedLists(open.doc);
+  if (!ids.length) return;
+  try {
+    const html = await exportHtml(accessToken, documentId, open.tabId);
+    const named = nameLists(open.doc, exportGlyphs(html), ids);
+    if (named.length) log.info("docs.lists_named", { lists: named.length, of: ids.length });
+  } catch (err) {
+    log.warn("docs.lists_unnamed", { lists: ids.length, err });
+  }
+}
+
+/** A tab's HTML as Docs exports it (the first tab's when there is none), at most 20 MB */
+export async function exportHtml(accessToken: string, documentId: string, tabId?: string | null): Promise<string> {
+  const url = `https://docs.google.com/document/d/${encodeURIComponent(documentId)}/export?format=html${tabId ? `&tab=${encodeURIComponent(tabId)}` : ""}`;
+  const res = await withRetry(async () => {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(20_000) });
+    if (!r.ok) throw Object.assign(new Error(`Docs export failed: HTTP ${r.status}`), { code: r.status });
+    if (!/html/i.test(r.headers.get("content-type") ?? "")) throw Object.assign(new Error("Docs export didn't give HTML"), { code: 415 });
+    return r;
+  });
+  const text = await res.text();
+  if (text.length > 20_000_000) throw Object.assign(new Error("Docs export is too large"), { code: 413 });
+  return text;
 }
 
 /** Just the document's revision id: a cheap way to notice changes made in Google Docs */

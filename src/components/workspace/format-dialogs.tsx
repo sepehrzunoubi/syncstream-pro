@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { Dialog, ColorSelect } from "./dialog";
-import { Icon } from "./icon";
+import { Icon, type IconName } from "./icon";
 import { BORDER_SIDES, BORDER_WIDTHS, type Border, type BorderSide, type Borders } from "@/lib/rich-text";
 
 const num = (s: string) => { const n = parseFloat(s); return Number.isFinite(n) ? n : NaN; };
@@ -52,7 +52,7 @@ export function CustomSpacingDialog({ editor, open, onClose }: { editor: Editor 
   );
 }
 
-const SIDE_ICONS: Record<BorderSide, string> = { top: "border_top", bottom: "border_bottom", left: "border_left", right: "border_right", between: "border_horizontal" };
+const SIDE_ICONS: Record<BorderSide, IconName> = { top: "border_top", bottom: "border_bottom", left: "border_left", right: "border_right", between: "border_horizontal" };
 const SIDE_LABELS: Record<BorderSide, string> = { top: "Top border", bottom: "Bottom border", left: "Left border", right: "Right border", between: "Between paragraphs" };
 
 /** Format > Paragraph styles > Borders and shading */
