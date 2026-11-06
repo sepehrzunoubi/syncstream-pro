@@ -82,6 +82,12 @@ function TopMenu({ label, children }: { label: string; children: React.ReactNode
 const Sep = () => <MB.Separator className="ss-menu-sep" />;
 /** Menus never take the editor's selection: a mousedown on them would collapse it before the command runs */
 const keepSelection = (e: React.MouseEvent) => e.preventDefault();
+/**
+ * A dialog opens once its menu has closed. Opened while the menu is closing, it takes focus from the
+ * menu's item and gives it back there when it closes, which wakes the menu again: the next click on
+ * the menubar then only closes that menu.
+ */
+const afterMenu = (open: () => void) => () => { setTimeout(open, 0); };
 
 interface DocsMenubarProps {
   editor: Editor | null;
@@ -158,7 +164,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
         {p.onOpenStyle && <Item onSelect={p.onOpenStyle}>Style engine</Item>}
         <Sep />
-        <Item onSelect={p.onPageSetup}>Page setup</Item>
+        <Item onSelect={afterMenu(p.onPageSetup)}>Page setup</Item>
         <Item shortcut={`${mod}P`} onSelect={() => window.print()}>Print</Item>
         <Sep />
         <Item onSelect={p.onSignOut}>Sign out</Item>
@@ -176,7 +182,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Sep />
         <Item disabled={off} shortcut={`${mod}A`} onSelect={() => run((c) => c.selectAll())}>Select all</Item>
         <Sep />
-        <Item disabled={off} shortcut={`${mod}H`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-find", { detail: "dialog" }))}>Find and replace</Item>
+        <Item disabled={off} shortcut={`${mod}H`} onSelect={afterMenu(() => window.dispatchEvent(new CustomEvent("ss-find", { detail: "dialog" })))}>Find and replace</Item>
       </TopMenu>
 
       <TopMenu label="View">
@@ -245,7 +251,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           </Sub>
         </Sub>
         <Sub label="Paragraph styles" disabled={off}>
-          <Item onSelect={p.onBorders}>Borders and shading</Item>
+          <Item onSelect={afterMenu(p.onBorders)}>Borders and shading</Item>
           <Sep />
           {NAMED_STYLE_ORDER.map((s) => (
             <Item key={s} checkable checked={st?.style === s} onSelect={() => run((c) => c.setNamedStyle(s))}>{NAMED_STYLES[s].label}</Item>
@@ -280,7 +286,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
             <Item key={n} checkable checked={st?.columns === n} onSelect={() => p.onColumns(n)}>{n === 1 ? "One column" : n === 2 ? "Two columns" : "Three columns"}</Item>
           ))}
           <Sep />
-          <Item onSelect={() => p.onColumns("options")}>More options</Item>
+          <Item onSelect={afterMenu(() => p.onColumns("options"))}>More options</Item>
         </Sub>
         <Sub label="Line & paragraph spacing" disabled={off}>
           {LINE_SPACINGS.map((ls) => (
@@ -289,7 +295,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Sep />
           <Item onSelect={() => run((c) => c.setParagraphSpace({ above: st?.above ? 0 : 10 }))}>{st?.above ? "Remove space before paragraph" : "Add space before paragraph"}</Item>
           <Item onSelect={() => run((c) => c.setParagraphSpace({ below: st?.below ? 0 : 10 }))}>{st?.below ? "Remove space after paragraph" : "Add space after paragraph"}</Item>
-          <Item onSelect={p.onCustomSpacing}>Custom spacing</Item>
+          <Item onSelect={afterMenu(p.onCustomSpacing)}>Custom spacing</Item>
           <Sep />
           <Item checkable checked={st?.keepNext} onSelect={() => run((c) => c.setKeep({ withNext: !st?.keepNext }))}>Keep with next</Item>
           <Item checkable checked={st?.keepLines} onSelect={() => run((c) => c.setKeep({ linesTogether: !st?.keepLines }))}>Keep lines together</Item>
@@ -300,7 +306,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
       </TopMenu>
 
       <TopMenu label="Help">
-        <Item shortcut={`${mod}/`} onSelect={p.onShortcuts}>Keyboard shortcuts</Item>
+        <Item shortcut={`${mod}/`} onSelect={afterMenu(p.onShortcuts)}>Keyboard shortcuts</Item>
         <Item onSelect={() => window.open("https://support.google.com/docs", "_blank", "noopener")}>Docs Help</Item>
       </TopMenu>
     </MB.Root>
