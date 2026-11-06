@@ -72,6 +72,9 @@ function write() {
   // Text in a font of its own, and a document whose default font it is (data-doc-font, see use-page-setup)
   const rules = [`.ss-doc { ${measure("Arial")} }`];
   for (const f of families) rules.push(`.ss-doc[data-doc-font=${name(f)}], .ss-doc [data-font=${name(f)}] { ${measure(f)} }`);
+  // Docs sizes a line by its text's fonts: text in a font of its own is as tall as that font's lines
+  // (not inside a superscript or subscript, which never make a line taller)
+  rules.push(`.ss-doc [data-font]:not(sup *, sub *, .ss-fn-ref *) { line-height: calc(var(--ss-spacing, 1.15) * var(--ss-nlh, 1.15)); }`);
   probe?.remove();
   setStyle(STYLE_ID, rules.join("\n"));
 }

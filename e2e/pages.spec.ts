@@ -326,6 +326,40 @@ test.describe("lines as Docs draws them", () => {
     for (const top of got) expect(Math.abs(top - got[0]), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
   });
 
+  test("lines are as tall as their text's font and size make them, not the paragraph style's", async ({ app, page }) => {
+    const ts = (attrs: object) => [{ type: "textStyle", attrs }];
+    const P = (marks: object[] | null, lineSpacing = 115) => ({ type: "paragraph", attrs: { lineSpacing, box: { start: 0, first: 0, above: 0, below: 0 } }, content: [{ type: "text", text: LONG_BODY, ...(marks ? { marks } : {}) }] });
+    // In an Arial 11 document: its own text, Calibri (taller lines), 8pt text, both, Calibri double spaced, and
+    // Calibri after a word in the paragraph's own font (lines of Calibri alone are Calibri's)
+    const mixed = { ...P(ts({ fontFamily: "Calibri" })), content: [{ type: "text", text: "Arial " }, { type: "text", text: LONG_BODY, marks: ts({ fontFamily: "Calibri" }) }] };
+    await app.open({ plain: [P(null), P(ts({ fontFamily: "Calibri" })), P(ts({ fontSize: 8 })), P(ts({ fontFamily: "Calibri", fontSize: 8 })), P(ts({ fontFamily: "Calibri" }), 200), mixed] });
+    await page.evaluate(() => document.fonts.ready);
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        // The paragraph's last run, from its second line (the first may hold other text)
+        const walk = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        let node = walk.nextNode() as Text;
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) node = n as Text;
+        const r = document.createRange();
+        r.selectNodeContents(node);
+        const tops = Array.from(r.getClientRects()).map((x) => x.top / zoom);
+        const lines = tops.filter((t, i) => i === 0 || Math.abs(t - tops[i - 1]) > 1).slice(1);
+        const cs = getComputedStyle(node.parentElement!);
+        // Docs' line: the spacing times the font's natural line height at the text's size
+        const want = Number(p.dataset.spacing ?? 115) / 100 * parseFloat(cs.getPropertyValue("--ss-nlh")) * parseFloat(cs.fontSize);
+        return { lines: lines.length, pitch: (lines[lines.length - 1] - lines[0]) / (lines.length - 1), want };
+      });
+    }, DOC);
+    for (const g of got) {
+      expect(g.lines, JSON.stringify(got)).toBeGreaterThanOrEqual(2);
+      expect(Math.abs(g.pitch - g.want), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
+    }
+    // Calibri's lines are taller than Arial's, 8pt text's shorter than 11pt's
+    expect(got[1].pitch / got[0].pitch).toBeCloseTo(1.2207 / 1.1499, 2);
+    expect(got[2].pitch / got[0].pitch).toBeCloseTo(8 / 11, 2);
+  });
+
   test("text kerns the pairs inside a word but not a pair with a space, as Docs does", async ({ app, page }) => {
     const text = "Tavily A round";
     const tnr = [{ type: "textStyle", attrs: { fontFamily: "Times New Roman" } }];

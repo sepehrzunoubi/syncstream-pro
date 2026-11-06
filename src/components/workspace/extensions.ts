@@ -189,12 +189,36 @@ export function lineSize(node: PMNode): string | null {
   return list.length > 1 ? `max(${list.join(", ")})` : list[0];
 }
 
+/**
+ * The font and size a paragraph's text all has, when it has one of its own. Docs sizes each line by
+ * the text on it; the browser makes every line at least as tall as the paragraph's own font at its
+ * size, so a paragraph whose text is all another font or size takes that as its own.
+ */
+export function textLook(node: PMNode): { font?: string; size?: number } {
+  const fonts = new Set<string | null>();
+  const sizes = new Set<number | null>();
+  node.forEach((c) => {
+    if (!c.isText) return;
+    const ts = c.marks.find((m) => m.type.name === "textStyle")?.attrs;
+    fonts.add(typeof ts?.fontFamily === "string" && ts.fontFamily ? ts.fontFamily : null);
+    sizes.add(typeof ts?.fontSize === "number" && ts.fontSize > 0 ? ts.fontSize : null);
+  });
+  const [font] = Array.from(fonts);
+  const [size] = Array.from(sizes);
+  return { ...(fonts.size === 1 && font ? { font } : {}), ...(sizes.size === 1 && size ? { size } : {}) };
+}
+
 function lineSizes(doc: PMNode): DecorationSet {
   const decorations: Decoration[] = [];
   doc.descendants((node, pos) => {
     if (node.type.name !== "paragraph") return true;
     const size = lineSize(node);
-    if (size) decorations.push(Decoration.node(pos, pos + node.nodeSize, { style: `--ss-line-size: ${size}` }));
+    const look = textLook(node);
+    const attrs: Record<string, string> = {};
+    const style = [size ? `--ss-line-size: ${size}` : "", look.size ? `font-size: ${look.size}pt` : ""].filter(Boolean).join("; ");
+    if (style) attrs.style = style;
+    if (look.font) attrs["data-font"] = look.font;
+    if (Object.keys(attrs).length) decorations.push(Decoration.node(pos, pos + node.nodeSize, attrs));
     return false;
   });
   return DecorationSet.create(doc, decorations);
