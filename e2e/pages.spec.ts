@@ -222,16 +222,19 @@ test.describe("lines as Docs draws them", () => {
     await page.evaluate(() => window.ssEditor!.chain().focus().insertContent("Text in the document's own font").run());
     const got = await page.evaluate((sel) => {
       const p = document.querySelector<HTMLElement>(`${sel} > p`)!;
+      // The font's natural line height, at a size where the browser's rounding to whole pixels costs nothing
       const probe = document.createElement("div");
-      probe.style.cssText = `position:absolute;font-size:100px;line-height:normal;white-space:nowrap;font-family:${getComputedStyle(p).fontFamily}`;
+      probe.style.cssText = `position:absolute;font-size:10000px;line-height:normal;white-space:nowrap;font-family:${getComputedStyle(p).fontFamily}`;
       probe.textContent = "Hg";
       document.body.appendChild(probe);
-      const natural = Math.round((probe.getBoundingClientRect().height / 100) * 1000) / 1000;
+      const natural = probe.getBoundingClientRect().height / 10000;
       probe.remove();
-      return { lineHeight: parseFloat(getComputedStyle(p).lineHeight), fontSize: parseFloat(getComputedStyle(p).fontSize), natural };
+      return { lineHeight: parseFloat(getComputedStyle(p).lineHeight), fontSize: parseFloat(getComputedStyle(p).fontSize), natural, nlh: parseFloat(getComputedStyle(p).getPropertyValue("--ss-nlh")) };
     }, DOC);
     expect(got.natural).toBeGreaterThan(1.2);
-    expect(Math.abs(got.lineHeight - 1.15 * got.natural * got.fontSize)).toBeLessThan(0.05);
+    // Measured to the fourth decimal (Calibri's is 1.2207: 1.22 would cost 0.05% a line)
+    expect(Math.abs(got.nlh - got.natural)).toBeLessThan(0.00006);
+    expect(Math.abs(got.lineHeight - 1.15 * got.natural * got.fontSize)).toBeLessThan(0.02);
   });
 
   test("items of a list leave out the space between them unless their spacing mode keeps it, as Docs does", async ({ app, page }) => {

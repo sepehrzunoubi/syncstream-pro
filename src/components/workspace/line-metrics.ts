@@ -21,28 +21,40 @@ const families = new Set<string>();
 let probe: HTMLDivElement | null = null;
 let installed = false;
 
+/**
+ * The browser rounds a font's ascent, descent and line gap to whole pixels each, so they are measured
+ * at a size where that costs nothing: at 10000px, Arial's natural line height is its own 1.1499, which
+ * Docs uses (at 100px it reads 1.15; Courier New's 1.1328 reads 1.13, 0.4% a line). Browsers cap font
+ * sizes (Chrome at 10000px): a probe that didn't get its size is measured at 100px instead.
+ */
+const SIZES = [10000, 100];
+
 function measure(family: string): string {
   if (!probe) {
     probe = document.createElement("div");
-    probe.style.cssText = "position:absolute;visibility:hidden;left:-9999px;top:0;font-size:100px;line-height:normal;white-space:nowrap";
+    probe.style.cssText = "position:absolute;visibility:hidden;left:-9999px;top:0;line-height:normal;white-space:nowrap";
   }
   if (!probe.isConnected) document.body.appendChild(probe);
   probe.style.fontFamily = screenStack(family);
-  probe.replaceChildren("Hg");
-  const nlh = Math.round((probe.getBoundingClientRect().height / 100) * 1000) / 1000;
-  // Ascent and descent at a large size, where the browser's rounding to whole pixels costs little; a
-  // zero-height inline block sits on the baseline
-  const text = document.createElement("span");
-  text.style.fontSize = "1000px";
-  text.textContent = "Hg";
-  const baseline = document.createElement("span");
-  baseline.style.cssText = "display:inline-block;width:0;height:0";
-  probe.replaceChildren(text, baseline);
-  const box = text.getBoundingClientRect();
-  const base = baseline.getBoundingClientRect().top;
-  const asc = Math.round(base - box.top) / 1000;
-  const desc = Math.round(box.bottom - base) / 1000;
-  return `--ss-nlh: ${nlh}; --ss-asc: ${asc}; --ss-desc: ${desc};`;
+  for (const size of SIZES) {
+    probe.style.fontSize = `${size}px`;
+    probe.replaceChildren("Hg");
+    if (parseFloat(getComputedStyle(probe).fontSize) !== size) continue;
+    const nlh = probe.getBoundingClientRect().height / size;
+    if (!(nlh > 0.5 && nlh < 3)) continue;
+    // Ascent and descent: a zero-height inline block sits on the baseline
+    const baseline = document.createElement("span");
+    baseline.style.cssText = "display:inline-block;width:0;height:0";
+    probe.append(baseline);
+    const text = document.createRange();
+    text.selectNodeContents(probe);
+    text.setEndBefore(baseline);
+    const box = text.getBoundingClientRect();
+    const base = baseline.getBoundingClientRect().top;
+    const round = (x: number) => Math.round((x / size) * 10000) / 10000;
+    return `--ss-nlh: ${round(nlh * size)}; --ss-asc: ${round(base - box.top)}; --ss-desc: ${round(box.bottom - base)};`;
+  }
+  return "";
 }
 
 /** Sets a style element's text, only when it changes: new @font-face rules load again, and a load writes again */
