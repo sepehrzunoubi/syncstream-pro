@@ -9,6 +9,7 @@ import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
 import { DocSync, SyncAdd } from "./doc-sync";
+import { DocsLineBreaks } from "./line-breaks";
 import { Find } from "./find";
 import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
 import TextAlign from "@tiptap/extension-text-align";
@@ -16,6 +17,7 @@ import {
   cssColorToHex,
   cssFontToFamily,
   cssLengthToPt,
+  cleanStyle,
   fontStack,
   fontWeightOf,
   FONT_SIZES,
@@ -217,6 +219,17 @@ const DocParagraph = Paragraph.extend({
         renderHTML: (a: { level?: number | null; list?: string | null }) => (a.list && a.level ? { "data-level": String(a.level) } : {}),
       },
       glyph: { default: null, parseHTML: () => null, rendered: false },
+      /**
+       * The text style Docs draws the item's glyph in (its bullet style), when the document or a copy
+       * from Docs gives one; without it the glyph takes the item's first character's (see doc-sync.ts).
+       * A new item made with Enter starts without one, as the sync makes it.
+       */
+      glyphStyle: {
+        default: null,
+        keepOnSplit: false,
+        parseHTML: (el: HTMLElement) => { try { const v = el.getAttribute("data-glyph-style"); return v ? cleanStyle(JSON.parse(v)) : null; } catch { return null; } },
+        renderHTML: (a: { glyphStyle?: Record<string, unknown> | null; list?: string | null }) => (a.list && a.glyphStyle ? { "data-glyph-style": JSON.stringify(a.glyphStyle) } : {}),
+      },
       /** Docs list style of a list made here */
       preset: {
         default: null,
@@ -1087,6 +1100,7 @@ export const editorExtensions = [
   DocSync,
   ClipboardHTML,
   Find,
+  DocsLineBreaks,
 ];
 
 type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; backgroundColor?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string; verticalAlign?: string };

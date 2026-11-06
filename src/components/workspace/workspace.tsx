@@ -36,6 +36,7 @@ import { useHeaderFooters } from "./use-header-footers";
 import { usePageSetup } from "./use-page-setup";
 import { useDraft } from "./use-draft";
 import { useDocLoader } from "./use-doc-loader";
+import { fontsIn, loadFonts } from "./web-fonts";
 import { useSyncJobs } from "./use-sync-jobs";
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
@@ -115,6 +116,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
   const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setSegments, setHfSetup, setFootnotes });
   useEditorDebugHook(editor);
+  // Any font the document or a paste uses is loaded, so the page draws it as Docs will
+  const defaultFonts = docContent?.status === "ready" ? docContent.defaults : undefined;
+  useEffect(() => {
+    const extra = defaultFonts ? [defaultFonts.fontFamily, ...Object.values(defaultFonts.styles).map((s) => s?.fontFamily ?? "")] : [];
+    loadFonts(fontsIn(docJSON as EditorNode | null, extra));
+  }, [docJSON, defaultFonts]);
 
   // Syncs
   const { now, busy, startError, hasText, preview, focusedSource, startSync, jobAction, dismissJob, editAsNew } = useSyncJobs({

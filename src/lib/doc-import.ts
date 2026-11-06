@@ -10,7 +10,7 @@
 
 import type { docs_v1 } from "googleapis";
 import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
-import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
+import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, styleFromMarks, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
 type Element = docs_v1.Schema$StructuralElement;
@@ -256,6 +256,12 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
       const info = listInfo(doc.lists, p.bullet);
       list = info.type;
       listAttrs = info.attrs;
+      // What Docs draws the glyph in: what differs from the paragraph's style (none given: its first character's)
+      if (p.bullet.textStyle) {
+        const glyph = styleFromMarks(textMarks({ ...baseText, ...stripNull(p.bullet.textStyle) }, style, defaults));
+        delete glyph.link;
+        listAttrs.glyphStyle = glyph;
+      }
       if (own.indentStart == null && info.level?.indentStart) start = pt(info.level.indentStart) ?? start;
       if (own.indentFirstLine == null && info.level?.indentFirstLine) first = pt(info.level.indentFirstLine) ?? first;
     }

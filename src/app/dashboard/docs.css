@@ -1,3 +1,22 @@
+/* Docs draws list glyphs (● ○ ■) in the bullet's font; Google Fonts' Arimo leaves them out, so the Arial
+   stack gets them from Arimo itself (public/fonts/README.md) rather than from whatever symbol font is around */
+@font-face {
+  font-family: "Arimo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("/fonts/arimo-list-glyphs.woff2") format("woff2");
+  unicode-range: U+25A0, U+25BA, U+25C4, U+25CB, U+25CF;
+}
+@font-face {
+  font-family: "Arimo";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("/fonts/arimo-list-glyphs.woff2") format("woff2");
+  unicode-range: U+25A0, U+25BA, U+25C4, U+25CB, U+25CF;
+}
+
 /*
  * Workspace styles, modelled on the Google Docs editor.
  * Colours are Docs' Material 3 values; sizes follow its 8px grid.
@@ -326,6 +345,12 @@
   caret-color: #000;
   min-height: 9in;
 }
+/* Spaces at the end of a line hang past the margin in Docs: the next word stays on the line if it fits.
+   TipTap's own stylesheet (added after this one) sets break-spaces, which wraps a word whose
+   trailing space doesn't fit, breaking lines earlier than Docs does. */
+.ss-doc.ProseMirror { white-space: pre-wrap; }
+/* Nor after the hyphen inside a word (see line-breaks.ts) */
+.ss-doc .ss-nobreak { white-space: nowrap; }
 .ss-doc p { margin: 0; }
 /* Named styles: the document's own sizes, fonts and colours when it sets them, else Docs' defaults */
 .ss-doc p[data-style="title"] { font-size: var(--ss-size-title, 26pt); font-family: var(--ss-font-title, inherit); color: var(--ss-color-title, inherit); margin-bottom: 3pt; }
@@ -344,7 +369,9 @@
 .ss-doc sup, .ss-doc sub { font-size: 0.6em; line-height: 0; }
 .ss-doc sup { vertical-align: super; }
 .ss-doc sub { vertical-align: sub; }
-.ss-doc p:first-child { margin-top: 0; }
+/* A document's first paragraph keeps its space above, as in Docs (a heading starts 20pt below the margin);
+   a table cell's or a header's first one starts at its top */
+.ss-doc :is(td, th) > p:first-child, .ss-segment-doc > p:first-child { margin-top: 0; }
 .ss-doc strong { font-weight: 700; }
 .ss-doc ::selection { background: #d3e3fd; }
 .ss-doc p.is-editor-empty:first-child::before {
@@ -357,11 +384,29 @@
 
 /* Lists: Docs puts the glyph at 18pt and the text at 36pt */
 .ss-doc { counter-reset: ss-ol; }
+/* The glyph is drawn at the item's first-line indent in the glyph's own text style (Docs' bullet style:
+   the item's first character's unless Docs says otherwise, see doc-sync.ts), full size, in its font,
+   and a highlight on it runs from the glyph to the text, as Docs draws it */
 .ss-doc p[data-list] { position: relative; margin-left: 36pt !important; text-indent: 0 !important; }
-.ss-doc p[data-list]::before { position: absolute; left: -18pt; width: 18pt; text-indent: 0; }
-.ss-doc p[data-list="bullet"]::before { content: "\25CF"; font-size: 0.72em; line-height: inherit; left: -16pt; top: 0.12em; }
+.ss-doc p[data-list]::before {
+  position: absolute;
+  top: 0;
+  left: -18pt;
+  width: 18pt;
+  text-indent: 0;
+  text-align: left;
+  white-space: pre;
+  font-family: var(--ss-g-font, inherit);
+  font-size: var(--ss-g-size, inherit);
+  font-weight: var(--ss-g-weight, inherit);
+  font-style: var(--ss-g-italic, inherit);
+  color: var(--ss-g-color, inherit);
+  line-height: inherit;
+  background: linear-gradient(var(--ss-g-bg, transparent), var(--ss-g-bg, transparent)) 0 50% / 100% calc(var(--ss-nlh, 1.15) * 1em) no-repeat;
+}
+.ss-doc p[data-list="bullet"]::before { content: "\25CF"; }
 .ss-doc p[data-list="ordered"] { counter-increment: ss-ol; }
-.ss-doc p[data-list="ordered"]::before { content: counter(ss-ol) "."; left: -22pt; width: 18pt; text-align: right; }
+.ss-doc p[data-list="ordered"]::before { content: counter(ss-ol) "."; }
 /* A list restarts after any other paragraph, but not across a page break */
 .ss-doc > p[data-list="ordered"]:first-child,
 .ss-doc > :not(p[data-list="ordered"]):not(.ss-page-gap) + p[data-list="ordered"],
@@ -387,17 +432,8 @@
 .ss-doc p[data-list][data-level="7"] { margin-left: 288pt !important; }
 .ss-doc p[data-list][data-level="8"] { margin-left: 324pt !important; }
 .ss-doc p[data-list][data-box] { margin-left: var(--ss-li-start, 36pt) !important; }
-.ss-doc p[data-list][data-box]::before { left: var(--ss-li-marker, -18pt); }
-.ss-doc p[data-list][data-label]::before {
-  content: attr(data-label);
-  width: auto;
-  top: 0;
-  font-size: inherit;
-  text-align: left;
-}
-.ss-doc p[data-list="bullet"][data-label]::before { font-size: 0.72em; top: 0.12em; }
-.ss-doc p[data-list][data-label]:not([data-box])::before { left: -22pt; }
-.ss-doc p[data-list="bullet"][data-label]:not([data-box])::before { left: -16pt; }
+.ss-doc p[data-list][data-box]::before { left: var(--ss-li-marker, -18pt); width: calc(-1 * var(--ss-li-marker, -18pt)); }
+.ss-doc p[data-list][data-label]::before { content: attr(data-label); }
 
 /* Parts of the document the editor can't change: tables, smart chips, section breaks */
 .ss-doc p[data-locked] { cursor: default; color: #3c4043; box-shadow: -10px 0 0 #fff, -12px 0 0 #dadce0; }
@@ -496,6 +532,8 @@
 /* The side margins belong to the editor, so a click or drag anywhere across the line reaches the text, as in Docs */
 .ss-sheet-content { position: relative; padding: var(--ss-m-top, 1in) 0 0; cursor: text; }
 .ss-sheet-content .ss-doc {
+  /* The first paragraph's space above stays inside the text area, so the page measures from the margin */
+  display: flow-root;
   min-height: calc(var(--ss-page-h, 11in) - var(--ss-m-top, 1in) - var(--ss-m-bottom, 1in));
   padding: 0 var(--ss-m-right, 1in) 0 var(--ss-m-left, 1in);
 }
