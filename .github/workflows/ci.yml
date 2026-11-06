@@ -81,6 +81,32 @@ jobs:
           for f in Arial "Liberation Sans" Arimo "Times New Roman" Lato; do fc-match -v "$f" | grep -E '^\s+(file|fullname|postscriptname|hinting|hintstyle|antialias|rgba|fontversion):'; done
           fc-list : family file | grep -iE 'liberation|arimo|arial' | sort
           ls /etc/fonts/conf.d/
+      - name: Font probe (temporary)
+        run: |
+          cat > /tmp/probe.cjs <<'JS'
+          const { chromium } = require(process.cwd() + '/node_modules/playwright');
+          (async () => {
+            const b = await chromium.launch();
+            const p = await b.newPage();
+            const names = ['Liberation Sans', 'Lato'];
+            await p.setContent(`<style>${names.map((n, i) => `@font-face{font-family:"F${i}";src:local("${n}");unicode-range:U+0020,U+00A0}`).join('')}</style>`);
+            const r = await p.evaluate(async (names) => {
+              const out = { ua: navigator.userAgent, dpr: devicePixelRatio };
+              const c = document.createElement('canvas').getContext('2d');
+              for (let i = 0; i < names.length; i++) {
+                const f = [...document.fonts].find((x) => x.family === `F${i}`);
+                try { await f.load(); } catch {}
+                for (const px of [100, 14.666667]) { c.font = `${px}px "F${i}", monospace`; out[`${names[i]} local ${px}`] = f.status + ' ' + c.measureText(' ').width; }
+                for (const px of [100, 14.666667]) { c.font = `${px}px "${names[i]}"`; out[`${names[i]} system ${px}`] = c.measureText(' ').width; }
+              }
+              return out;
+            }, names);
+            console.log(b.version(), JSON.stringify(r, null, 1));
+            await b.close();
+          })();
+          JS
+          node /tmp/probe.cjs
+          ls ~/.cache/ms-playwright
       - run: npm run e2e
         env:
           NEXT_PUBLIC_BASE_URL: http://localhost:3000
