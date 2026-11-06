@@ -81,7 +81,7 @@ class FakeDoc implements DocsApi {
     this.onBatch?.(this.text);
     if (this.failNextInsertAfterWrite) { this.failNextInsertAfterWrite = false; throw new Error("socket hang up"); }
   }
-  async deleteRange(_t: string, _d: string, start: number, end: number, _requiredRevisionId?: string) {
+  async deleteRange(_t: string, _d: string, start: number, end: number) {
     this.calls.delete++;
     this.text = this.text.slice(0, start - 1) + this.text.slice(end - 1);
   }

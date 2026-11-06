@@ -50,7 +50,9 @@ export function FindBar({ editor }: { editor: Editor | null }) {
     editor.commands.setFind({ query, matchCase, regex, ignoreDiacritics: diacritics });
   }, [editor, mode, query, matchCase, regex, diacritics]);
 
-  const close = () => { setMode("closed"); editor?.commands.focus(); };
+  // Back to the document right away: TipTap's focus command waits a frame, and a menu opened by then
+  // would lose focus to it and close
+  const close = () => { setMode("closed"); if (editor && !editor.isDestroyed) editor.view.focus(); };
   const next = () => editor?.commands.findNext();
   const prev = () => editor?.commands.findPrevious();
   const count = st?.matches.length ?? 0;
