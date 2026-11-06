@@ -104,6 +104,8 @@ const faceRule = (family: string, src: string, weight: string, style: string, st
 const offWidth = new Set<string>();
 
 let canvas: CanvasRenderingContext2D | null = null;
+/** Sizes a space is measured at: 11pt, 12pt, 13.37px (a size no em fraction is whole at) and 100px */
+const SIZES = [44 / 3, 16, 13.37, 100];
 
 /**
  * Checks each family's loaded space face against the family's own space, and leaves out (from the
@@ -117,11 +119,15 @@ export function checkSpaceFaces(families: Iterable<string>): boolean {
   let found = false;
   for (const family of families) {
     if (offWidth.has(family) || !SAFE.test(family) || !loaded.has(spaceFamily(family))) continue;
-    // At 100px, a space drawn at whole pixels is off by up to half a pixel
-    canvas.font = `100px ${css(spaceFamily(family))}, monospace`;
-    const face = canvas.measureText(" ").width;
-    canvas.font = `100px ${fontStack(family)}`;
-    if (Math.abs(face - canvas.measureText(" ").width) > 0.01) {
+    // A space drawn at whole pixels is off by up to half a pixel, at a size where its own width isn't
+    // whole: so at a few sizes (Times New Roman's space, a quarter of an em, is whole at 100px)
+    const off = SIZES.some((px) => {
+      canvas!.font = `${px}px ${css(spaceFamily(family))}, monospace`;
+      const face = canvas!.measureText(" ").width;
+      canvas!.font = `${px}px ${fontStack(family)}`;
+      return Math.abs(face - canvas!.measureText(" ").width) > 0.01;
+    });
+    if (off) {
       offWidth.add(family);
       found = true;
     }
