@@ -16,6 +16,7 @@
 
 import {
   bulletRequests,
+  contRequests,
   DEFAULT_PARAGRAPH,
   OBJ,
   PAGE_BREAK,
@@ -769,8 +770,10 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     const type = kindAt(j);
     const nlBefore = (q: number) => { for (let k = q - 1; k >= 0; k--) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
     const nlAfter = (q: number) => { for (let k = q + 1; k < saved.length; k++) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
-    for (let k = nlBefore(s); k >= 0 && kindAt(k) === type; k = nlBefore(k)) s = k;
-    for (let k = nlAfter(e); k >= 0 && kindAt(k) === type; k = nlAfter(k)) e = k;
+    // Across list items' next lines (ParagraphFormat.cont): the items around one are one list
+    const cont = (q: number) => { const t = saved[q]; return t.k === "nl" && !!paragraphFromAttrs(t.attrs).cont; };
+    for (let k = nlBefore(s); k >= 0 && (kindAt(k) === type || cont(k)); k = nlBefore(k)) if (kindAt(k) === type) s = k;
+    for (let k = nlAfter(e); k >= 0 && (kindAt(k) === type || cont(k)); k = nlAfter(k)) if (kindAt(k) === type) e = k;
     return [s, e];
   };
   const runs: [number, number][] = [];
@@ -781,18 +784,20 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   runs.sort((a, b) => b[0] - a[0]);
   for (const [s, e] of runs) {
     const items: { start: number; end: number; level: number }[] = [];
+    const lines: { range: { startIndex: number; endIndex: number }; para: ReturnType<typeof paragraphFromAttrs> }[] = [];
     let preset = "";
     for (let q = s; q <= e; q++) {
       const t = saved[q];
       if (t.k !== "nl") continue;
       const pb = paragraphFromAttrs(t.attrs);
-      if (!pb.list) continue;
+      if (!pb.list) { lines.push({ range: { startIndex: sIndex[sParaStart[q]], endIndex: sIndex[q] + 1 }, para: pb }); continue; }
       preset = presetOf(pb);
       items.push({ start: sIndex[sParaStart[q]], end: sIndex[q] + 1, level: pb.level ?? 0 });
     }
     if (!items.length) continue;
     listRequests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
     listRequests.push(...bulletRequests(items, preset));
+    for (const l of lines) listRequests.push(...contRequests(l.range, l.para));
   }
 
   const requests = [...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];

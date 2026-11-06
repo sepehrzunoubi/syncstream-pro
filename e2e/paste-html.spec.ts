@@ -181,6 +181,18 @@ test.describe("pasting Google Docs' HTML", () => {
       expect(Math.abs(pasted[k]![1] - broken[k]![1]), `${lines[k]}: y ${pasted[k]![1]} vs ${broken[k]![1]}`).toBeLessThan(0.05);
     }
   });
+
+  test("a numbered item's line break doesn't restart the numbering: the next item is 2., as in Docs", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const br = `<span style="${RUN}white-space:pre-wrap;"><br /></span>`;
+    const li = (inner: string) => `<li dir="ltr" style="list-style-type:decimal;${RUN}" aria-level="1"><p dir="ltr" style="line-height:1.38;margin-top:0pt;margin-bottom:0pt;" role="presentation">${inner}</p></li>`;
+    const ol = (inner: string) => `<ol style="margin-top:0;margin-bottom:0;padding-inline-start:48px;">${inner}</ol>`;
+    await app.paste({ html: docs(ol(li(span("First") + br + span("its next line")) + li(span("Second")) + li(span("Third") + br + span("more") + br + span("and more")) + li(span("Fourth")))), text: "First\u000bits next line\nSecond\nThird\u000bmore\u000band more\nFourth\n" });
+    await expect.poll(async () => (await paragraphsOf(app)).length).toBeGreaterThanOrEqual(7);
+    // The labels the page draws, item by item (a next line draws none)
+    const labels = () => app.doc.locator("p").evaluateAll((ps) => ps.map((p) => (p.textContent ? (p.hasAttribute("data-list") ? p.getAttribute("data-label") : "-") : null)).filter((l) => l !== null));
+    await expect.poll(labels).toEqual(["1.", "-", "2.", "3.", "-", "-", "4."]);
+  });
 });
 
 test.describe("pasting other HTML", () => {

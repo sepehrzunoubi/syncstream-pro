@@ -177,7 +177,8 @@ export function breaksAsParagraphs(tr: Transaction, from: number, to: number, de
     const next = tr.doc.resolve(pos + node.nodeSize).nodeAfter;
     const listed = !!a.list && !!next?.attrs.list && tr.doc.resolve(pos).depth === 0;
     const last = listed && collapses(a, defaults) ? 0 : below;
-    const line = (b: number): Attrs => ({ ...a, ...NOT_SPLIT, ...NOT_LISTED, indent: 0, firstLine: false, box: { start: textStart(a), first: 0, above: 0, below: b } });
+    // A list item's next line goes on with its list (ParagraphFormat.cont)
+    const line = (b: number): Attrs => ({ ...a, ...NOT_SPLIT, ...NOT_LISTED, ...(a.list ? { listCont: true } : {}), indent: 0, firstLine: false, box: { start: textStart(a), first: 0, above: 0, below: b } });
     breaks.slice().reverse().forEach((at, k) => {
       tr.delete(at, at + 1);
       tr.split(at, 1, [{ type: paragraph, attrs: line(k === 0 ? last : 0) }]);

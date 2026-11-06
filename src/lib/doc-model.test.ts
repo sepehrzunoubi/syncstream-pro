@@ -319,3 +319,17 @@ test("deleting across a table removes the text on both sides and keeps the table
   ]);
   assert.deepEqual(saved, target);
 });
+
+test("re-making a list keeps a list item's next line in it: the items around it stay one list, the line gets no bullet", () => {
+  const li = (text: string, level = 0) => ({ type: "paragraph", attrs: { list: "ordered", level }, content: [{ type: "text", text }] });
+  const line = { type: "paragraph", attrs: { listCont: true, box: { start: 36, first: 0 } }, content: [{ type: "text", text: "its line" }] };
+  // "one\n" 1–5, "its line\n" 5–14, "two\n" 14–18
+  const base = { type: "doc", content: [li("one"), line, li("two")] };
+  const target = { type: "doc", content: [li("one"), line, li("two", 1)] };
+  const { requests } = directEdits(base, target);
+  const create = requests.find((r) => r.createParagraphBullets) as { createParagraphBullets: { range: { startIndex: number; endIndex: number } } };
+  assert.deepEqual(create.createParagraphBullets.range.startIndex, 1, "from the list's first item, across the line");
+  const after = requests.slice(requests.indexOf(create));
+  assert.ok(after.some((r) => JSON.stringify(r) === JSON.stringify({ deleteParagraphBullets: { range: { startIndex: 5, endIndex: 14 } } })), "the line loses the bullet it got");
+  assert.ok(after.some((r) => (r as { updateParagraphStyle?: { range: { startIndex: number }; paragraphStyle: { indentStart?: { magnitude: number } } } }).updateParagraphStyle?.range.startIndex === 5), "and gets its indents back");
+});

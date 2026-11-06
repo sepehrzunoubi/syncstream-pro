@@ -355,6 +355,15 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => (isRtl(el) ? "rtl" : null),
         renderHTML: (a: { dir?: string | null }) => (a.dir === "rtl" ? { dir: "rtl" } : {}),
       },
+      /**
+       * The next line of a list item that had a line break (see ParagraphFormat.cont): no glyph, and the
+       * list goes on after it. A paragraph made from it with Enter sits in the list too, as in Docs
+       */
+      listCont: {
+        default: null,
+        parseHTML: (el: HTMLElement) => (el.hasAttribute("data-cont") && !el.hasAttribute("data-list") ? true : null),
+        renderHTML: (a: { listCont?: boolean | null; list?: string | null }) => (a.listCont && !a.list ? { "data-cont": "" } : {}),
+      },
       /** Exact indents and spacing of a paragraph read from Docs, in points */
       box: {
         default: null,
@@ -477,7 +486,7 @@ function paragraphsInSelection(editor: { state: Editor["state"] }, from: number,
 }
 
 /** Leaving a list, or starting a new one: Docs makes a new list, with default indents */
-const NO_LIST = { list: null, listId: null, level: null, glyph: null, preset: null, box: null };
+const NO_LIST = { list: null, listId: null, level: null, glyph: null, preset: null, box: null, listCont: null };
 
 /** A list item at a new level. An item read from a Docs list becomes one of our lists in the same style. */
 function localList(a: Record<string, unknown>, level: number): Record<string, unknown> {
@@ -553,14 +562,16 @@ const DocFormat = Extension.create({
         state.doc.forEach((node, pos) => paras.push({ pos, node }));
         const inSel = (p: { pos: number; node: typeof state.doc }) => p.pos < to && p.pos + p.node.nodeSize > from;
         const isList = (p: { pos: number; node: typeof state.doc }) => !!p.node.attrs.list;
+        // A list item's next line is part of the list: the items after it are restyled too
+        const inList = (p: { pos: number; node: typeof state.doc }) => isList(p) || !!p.node.attrs.listCont;
         const hit = new Set<number>();
         paras.forEach((p, i) => {
-          if (!inSel(p) || !isList(p)) return;
+          if (!inSel(p) || !inList(p)) return;
           let s = i;
           let e = i;
-          while (s > 0 && isList(paras[s - 1])) s--;
-          while (e < paras.length - 1 && isList(paras[e + 1])) e++;
-          for (let k = s; k <= e; k++) hit.add(k);
+          while (s > 0 && inList(paras[s - 1])) s--;
+          while (e < paras.length - 1 && inList(paras[e + 1])) e++;
+          for (let k = s; k <= e; k++) if (isList(paras[k])) hit.add(k);
         });
         for (const k of Array.from(hit)) {
           const p = paras[k];

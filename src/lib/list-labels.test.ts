@@ -24,3 +24,12 @@ test("new items right after a Docs list in the same style count on from it, as t
   // The Docs list goes on counting after them
   assert.deepEqual(listLabels([doc(1), mine(), doc(3)]), ["1.", "2.", "3."]);
 });
+
+test("a list item's next line (a pasted line break) keeps its list counting, as Docs numbers the items around it", () => {
+  const n = (level = 0) => ({ list: "ordered", level, preset: "NUMBERED_DECIMAL_ALPHA_ROMAN" });
+  const cont = { listCont: true };
+  assert.deepEqual(listLabels([n(), cont, n(), cont, cont, n(1), n()]), ["1.", null, "2.", null, null, "a.", "3."]);
+  // Any other paragraph ends the list
+  assert.deepEqual(listLabels([n(), {}, n()]), ["1.", null, "1."]);
+  assert.deepEqual(listLabels([n(), cont, {}, n()]), ["1.", null, null, "1."]);
+});

@@ -442,10 +442,10 @@
 .ss-doc p[data-list="bullet"]::before { content: "\25CF"; }
 .ss-doc p[data-list="ordered"] { counter-increment: ss-ol; }
 .ss-doc p[data-list="ordered"]::before { content: counter(ss-ol) "."; }
-/* A list restarts after any other paragraph, but not across a page break */
+/* A list restarts after any other paragraph, but not across a page break, nor a list item's next line */
 .ss-doc > p[data-list="ordered"]:first-child,
-.ss-doc > :not(p[data-list="ordered"]):not(.ss-page-gap) + p[data-list="ordered"],
-.ss-doc > :not(p[data-list="ordered"]) + .ss-page-gap + p[data-list="ordered"] { counter-increment: none; counter-set: ss-ol 1; }
+.ss-doc > :not(p[data-list="ordered"]):not(.ss-page-gap):not(p[data-cont]) + p[data-list="ordered"],
+.ss-doc > :not(p[data-list="ordered"]):not(p[data-cont]) + .ss-page-gap + p[data-list="ordered"] { counter-increment: none; counter-set: ss-ol 1; }
 .ss-doc p[data-list="check"]::before {
   content: "";
   inset-inline-start: -20pt;

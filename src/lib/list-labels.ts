@@ -18,6 +18,8 @@ export interface ListParagraph {
   glyph?: Glyph | null;
   /** Docs list style of a list made in the editor */
   preset?: string | null;
+  /** A paragraph the list goes on after (a list item's next line, see ParagraphFormat.cont) */
+  listCont?: boolean | null;
 }
 
 /** What each Docs list style draws at levels 0, 1 and 2 (then repeating); numbered styles give a glyph type and format */
@@ -91,7 +93,8 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
   let before: ListParagraph | null = null;
   let joined: string | null = null;
   return paragraphs.map((p) => {
-    if (!p.list) { runType = null; before = null; joined = null; return null; }
+    // Any other paragraph ends a list made here; a list item's next line doesn't
+    if (!p.list) { if (!p.listCont) { runType = null; before = null; joined = null; } return null; }
     if (p.listId) {
       runType = null;
       joined = null;

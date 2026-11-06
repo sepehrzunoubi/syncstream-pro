@@ -177,7 +177,7 @@ export function differences(target: EditorNode, out: docs_v1.Schema$Document): s
     const level = raw.level ?? 0;
     const exact = raw.list ? raw.exact ?? { start: 36 * (level + 1), first: 36 * (level + 1) - 18 } : raw.exact ?? { start: raw.indent * 36, first: raw.indent * 36 + (raw.firstLine ? 36 : 0) };
     // Keep options as the page lays the paragraph out: its own, else its named style's in the document
-    const p = { ...raw, keep: effectiveKeep(raw.keep, raw.style, after.defaults.keep), space: sp, glyph: undefined, preset: undefined, level: undefined, exact: exact && (exact.start || exact.first) ? exact : undefined, indent: undefined, firstLine: undefined } as Record<string, unknown>;
+    const p = { ...raw, keep: effectiveKeep(raw.keep, raw.style, after.defaults.keep), space: sp, glyph: undefined, preset: undefined, level: undefined, exact: exact && (exact.start || exact.first) ? exact : undefined, indent: undefined, firstLine: undefined, cont: undefined } as Record<string, unknown>;
     const chars: string[] = [];
     for (const c of n.content ?? []) {
       const s0 = styleFromMarks((c.marks ?? []).filter((m) => m.type !== PENDING_MARK));
