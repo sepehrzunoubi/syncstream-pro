@@ -89,7 +89,7 @@ jobs:
             const b = await chromium.launch();
             const p = await b.newPage();
             const names = ['Liberation Sans', 'Lato'];
-            await p.setContent(`<style>${names.map((n, i) => `@font-face{font-family:"F${i}";src:local("${n}");unicode-range:U+0020,U+00A0}`).join('')}</style>`);
+            await p.setContent(`<style>${names.map((n, i) => `@font-face{font-family:"F${i}";src:local("${n}");unicode-range:U+0020,U+00A0}`).join('')}@font-face{font-family:"W";src:url(data:font/ttf;base64,AAEAAAAOAIAAAwBgR0RFRgAQAAMAAAP4AAAAFkdQT1NEdkx1AAAEEAAAACBHU1VCwfXF3wAABDAAAABIT1MvMnrJXGMAAAGMAAAAYGNtYXABMf/9AAAB7AAAADxnYXNwABgACQAAA+gAAAAQZ2x5ZgAAEAYAAADsAAAAEGhlYWQLAIuwAAABJAAAADZoaGVhDZQDfwAAAWgAAAAkaG10eAg5AM0AAAFcAAAACmxvY2EAAAAIAAABHAAAAAhtYXhwAGIBsAAAAPwAAAAgbmFtZSEuOb8AAAIoAAABnnBvc3T/wACWAAADyAAAACD//wAAAAAAAAAAEAYAAQAAAAEAAAADAVIAVABcAAYAAQAAAAAAAAAAAAAAAAAEAAEAAAAAAAAACAABAAAAAhmZ3vCWCl8PPPUAHwgAAAAAAMhA+ZoAAAAA3XsuFvum/ZMKagfXAAAACAACAAAAAAAABgAAzQI5AAAAAAAAAAEAAAc+/k4AQwq0+6b6egpqAAEAAAAAAAAAAAAAAAAAAAACAAMEowGQAAUAAAWaBTMAAAEbBZoFMwAAA9EAZgISCAUCCwYEAgICAgIEAAAAAwAAAAAAAAAAAAAAADFBU0MAQAAgAKAF0/5RATMHPgGyAAAAAQAAAAAEOgWBAAAAIAAsAAAAAgAAAAMAAAAUAAMAAQAAABQABAAoAAAABgAEAAEAAgAgAKD//wAAACAAoP///+H/YgABAAAAAAAAAAAABwBaAAMAAQQJAAAArgAAAAMAAQQJAAEAHgCuAAMAAQQJAAIADgDMAAMAAQQJAAMANADaAAMAAQQJAAQAHgCuAAMAAQQJAAUAGgEOAAMAAQQJAAYAHAEoAEQAaQBnAGkAdABpAHoAZQBkACAAZABhAHQAYQAgAGMAbwBwAHkAcgBpAGcAaAB0ACAAKABjACkAIAAyADAAMQAwACAARwBvAG8AZwBsAGUAIABDAG8AcgBwAG8AcgBhAHQAaQBvAG4ALgAgAAoAQwBvAHAAeQByAGkAZwBoAHQAIAAoAGMAKQAgADIAMAAxADIAIABSAGUAZAAgAEgAYQB0ACwAIABJAG4AYwAuAEwAaQBiAGUAcgBhAHQAaQBvAG4AIABTAGEAbgBzAFIAZQBnAHUAbABhAHIAQQBzAGMAZQBuAGQAZQByACAALQAgAEwAaQBiAGUAcgBhAHQAaQBvAG4AIABTAGEAbgBzAFYAZQByAHMAaQBvAG4AIAAyAC4AMQAuADUATABpAGIAZQByAGEAdABpAG8AbgBTAGEAbgBzAAAAAwAAAAAAAP+9AJYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMACAACABEAAf//AAMAAQAAAAwAAAAAAAAAAgABAAAAAgABAAAAAQAAAAoAHAAeAAFERkxUAAgABAAAAAD//wAAAAAAAAABAAAACgBEAEYAB0RGTFQALGJvcG8ANmNvcHQANmN5cmwANmdyZWsANmhlYnIANmxhdG4ANgAEAAAAAP//AAAAAAAAAAAAAA==);unicode-range:U+0020,U+00A0}</style>`);
             const r = await p.evaluate(async (names) => {
               const out = { ua: navigator.userAgent, dpr: devicePixelRatio };
               const c = document.createElement('canvas').getContext('2d');
@@ -99,6 +99,9 @@ jobs:
                 for (const px of [100, 14.666667]) { c.font = `${px}px "F${i}", monospace`; out[`${names[i]} local ${px}`] = f.status + ' ' + c.measureText(' ').width; }
                 for (const px of [100, 14.666667]) { c.font = `${px}px "${names[i]}"`; out[`${names[i]} system ${px}`] = c.measureText(' ').width; }
               }
+              const w = [...document.fonts].find((x) => x.family === 'W');
+              try { await w.load(); } catch {}
+              for (const px of [100, 14.666667]) { c.font = `${px}px "W", monospace`; out[`web ${px}`] = w.status + ' ' + c.measureText(' ').width; }
               return out;
             }, names);
             console.log(b.version(), JSON.stringify(r, null, 1));
