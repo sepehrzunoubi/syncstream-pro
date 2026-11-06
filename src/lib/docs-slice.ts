@@ -173,7 +173,7 @@ export function paragraphStyleOf(ps: Style | null | undefined): docs_v1.Schema$P
   if (own("ps_klt")) out.keepLinesTogether = ps.ps_klt === true;
   if (own("ps_awao")) out.avoidWidowAndOrphan = ps.ps_awao === true;
   if (own("ps_pbb")) out.pageBreakBefore = ps.ps_pbb === true;
-  if (ps.ps_ltr === false) out.direction = "RIGHT_TO_LEFT";
+  if (own("ps_ltr")) out.direction = ps.ps_ltr === false ? "RIGHT_TO_LEFT" : "LEFT_TO_RIGHT";
   // Spacing between items of a list: 0 leaves it out (COLLAPSE_LISTS), 1 keeps it
   if (own("ps_sm")) out.spacingMode = num(ps.ps_sm) === 1 ? "NEVER_COLLAPSE" : "COLLAPSE_LISTS";
   const sides: [string, keyof docs_v1.Schema$ParagraphStyle][] = [["ps_bt", "borderTop"], ["ps_bb", "borderBottom"], ["ps_bl", "borderLeft"], ["ps_br", "borderRight"], ["ps_bbtw", "borderBetween"]];

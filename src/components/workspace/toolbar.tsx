@@ -9,7 +9,7 @@ import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
 import {
   BULLET_PRESETS, DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, MAX_LIST_LEVEL, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS,
-  effectiveKeep, fontStack, type KeepOptions, type NamedStyle,
+  effectiveKeep, fontStack, startAlign, type KeepOptions, type NamedStyle,
 } from "@/lib/rich-text";
 import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
@@ -136,7 +136,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         font: (ts.fontFamily as string) ?? ((e.view.dom as HTMLElement).dataset.docFont || DEFAULT_FONT),
         size: (ts.fontSize as number) ?? NAMED_STYLES[style]?.size ?? 11,
         style,
-        align: ((para.textAlign as string) ?? "left") as keyof typeof ALIGN_ICONS,
+        align: ((para.textAlign as string) ?? startAlign(para.dir)) as keyof typeof ALIGN_ICONS,
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
         indent: (para.indent as number) ?? 0,

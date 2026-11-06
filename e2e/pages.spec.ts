@@ -307,6 +307,43 @@ test.describe("lines as Docs draws them", () => {
     expect(await page.evaluate(() => window.ssEditor!.getHTML())).not.toContain("SS Space");
   });
 
+  test("a right-to-left paragraph starts at the right margin, is indented from it, and has its glyph on its right", async ({ app, page }) => {
+    const rtl = (text: string, attrs: Record<string, unknown> = {}) => ({ type: "paragraph", attrs: { dir: "rtl", ...attrs }, content: [{ type: "text", text }] });
+    await app.open({ plain: [
+      rtl("مرحبا بالعالم"),
+      rtl("مزاح", { box: { start: 36, first: 0, above: 0, below: 0 } }),
+      rtl("بند", { list: "bullet", level: 0 }),
+      rtl("إلى اليسار", { textAlign: "left" }),
+      { type: "paragraph", content: [{ type: "text", text: "Left to right" }] },
+    ] });
+    const got = await page.evaluate((sel) => {
+      const doc = document.querySelector<HTMLElement>(sel)!;
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      // The text column: the sheet without its margins
+      const sheet = doc.getBoundingClientRect();
+      const cs = getComputedStyle(doc);
+      const box = { left: sheet.left + parseFloat(cs.paddingLeft) * zoom, right: sheet.right - parseFloat(cs.paddingRight) * zoom };
+      const pt = (px: number) => Math.round((px / zoom) * 0.75 * 10) / 10;
+      return Array.from(doc.querySelectorAll(":scope > p")).map((p) => {
+        const r = document.createRange();
+        r.selectNodeContents(p);
+        const t = r.getBoundingClientRect();
+        const glyph = getComputedStyle(p, "::before");
+        return { dir: p.getAttribute("dir"), fromLeft: pt(t.left - box.left), fromRight: pt(box.right - t.right), glyphRight: glyph.content !== "none" ? glyph.right : null };
+      });
+    }, DOC);
+    expect(got.map((g) => g.dir)).toEqual(["rtl", "rtl", "rtl", "rtl", null]);
+    // Its start is the right margin: the text ends there, an indent from its start comes in from the right
+    expect(got[0].fromRight).toBeLessThan(0.5);
+    expect(Math.abs(got[1].fromRight - 36)).toBeLessThan(0.5);
+    // A list item's text at 36pt from its start, its glyph 18pt before the text, on the text's right
+    expect(Math.abs(got[2].fromRight - 36)).toBeLessThan(0.5);
+    expect(got[2].glyphRight).toBe("-24px");
+    // Aligned to its end, which is the left; and text left to right starts at the left again
+    expect(got[3].fromLeft).toBeLessThan(0.5);
+    expect(got[4].fromLeft).toBeLessThan(0.5);
+  });
+
   test("a list glyph's highlight is the height of its text's and level with it", async ({ app, page }) => {
     const text = { type: "text", text: "Highlighted item", marks: [{ type: "highlight", attrs: { color: "#fff2cc" } }] };
     await app.open({ plain: [{ type: "paragraph", attrs: { list: "bullet", level: 0 }, content: [text] }, { type: "paragraph", attrs: { list: "bullet", level: 0, lineSpacing: 200 }, content: [{ ...text, text: "Double spaced" }] }] });

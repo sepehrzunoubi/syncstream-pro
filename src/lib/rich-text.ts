@@ -101,6 +101,16 @@ export const sameKeep = (a: KeepOptions, b: KeepOptions) => JSON.stringify(canon
 export const keepFlags = (k: KeepOptions) => [k.withNext ? "next" : "", k.linesTogether ? "lines" : "", k.singleLines === false ? "single" : ""].filter(Boolean);
 
 export const DOCS_ALIGN: Record<Align, string> = { left: "START", center: "CENTER", right: "END", justify: "JUSTIFIED" };
+/**
+ * Docs' alignment for a paragraph aligned this way on the page. Docs' START and END are the sides its
+ * text starts and ends on, so in a right-to-left paragraph START is the right.
+ */
+export function docsAlign(align: Align, dir?: "rtl"): string {
+  if (dir === "rtl" && (align === "left" || align === "right")) return align === "left" ? "END" : "START";
+  return DOCS_ALIGN[align];
+}
+/** The side a paragraph's text starts on, which is its alignment when it sets none */
+export const startAlign = (dir?: unknown): Align => (dir === "rtl" ? "right" : "left");
 
 export const DEFAULT_FONT = "Arial";
 
@@ -181,6 +191,11 @@ export interface ParagraphFormat {
    * its list (COLLAPSE_LISTS, Docs' default) or kept (NEVER_COLLAPSE). Absent: its named style's
    */
   spacingMode?: SpacingMode;
+  /**
+   * A right-to-left paragraph; absent: left to right. Its align is where it sits on the page; its indents
+   * are on its own sides (indent at the start, end at the end), as Docs has them
+   */
+  dir?: "rtl";
 }
 export type SpacingMode = "COLLAPSE_LISTS" | "NEVER_COLLAPSE";
 const SPACING_MODES = new Set(["COLLAPSE_LISTS", "NEVER_COLLAPSE"]);
@@ -336,7 +351,8 @@ export type RunStyle = Omit<RunFormat, "len">;
 export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): ParagraphFormat {
   const a = attrs ?? {};
   const style = typeof a.styleName === "string" && a.styleName in NAMED_STYLES ? (a.styleName as NamedStyle) : "normal";
-  const align = a.textAlign === "center" || a.textAlign === "right" || a.textAlign === "justify" ? a.textAlign : "left";
+  const dir = a.dir === "rtl" ? "rtl" : undefined;
+  const align = a.textAlign === "left" || a.textAlign === "center" || a.textAlign === "right" || a.textAlign === "justify" ? a.textAlign : startAlign(dir);
   const indent = typeof a.indent === "number" ? Math.max(0, Math.min(MAX_INDENT, Math.round(a.indent))) : 0;
   const spacing = typeof a.lineSpacing === "number" && Number.isFinite(a.lineSpacing) ? Math.max(50, Math.min(500, Math.round(a.lineSpacing))) : 115;
   const list = typeof a.list === "string" && LIST_TYPES.has(a.list) ? (a.list as ListType) : undefined;
@@ -357,6 +373,7 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   const shading = typeof a.shading === "string" && /^#[0-9a-f]{6}$/i.test(a.shading) ? a.shading.toLowerCase() : undefined;
   if (shading) extras.shading = shading;
   if (typeof a.spacingMode === "string" && SPACING_MODES.has(a.spacingMode)) extras.spacingMode = a.spacingMode as SpacingMode;
+  if (dir) extras.dir = dir;
   const end = typeof a.indentEnd === "number" && Number.isFinite(a.indentEnd) && a.indentEnd > 0 ? Math.min(1000, Math.round(a.indentEnd * 100) / 100) : undefined;
   if (end) extras.end = end;
   if (list) {
@@ -609,6 +626,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
           borders: (p as ParagraphFormat).borders,
           shading: (p as ParagraphFormat).shading,
           spacingMode: (p as ParagraphFormat).spacingMode,
+          dir: (p as ParagraphFormat).dir,
         }
       : undefined
   ));
@@ -652,7 +670,7 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   if (images.length) format.images = images;
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
-    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, glyph: rawBase.glyph, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading, spacingMode: rawBase.spacingMode });
+    format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, glyph: rawBase.glyph, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading, spacingMode: rawBase.spacingMode, dir: rawBase.dir });
   }
   return { ok: true, format };
 }
@@ -880,7 +898,9 @@ export function paragraphDelta(a: ParagraphFormat, b: ParagraphFormat, fresh = f
   const style: DocsRequest = {};
   const fields: string[] = [];
   if (a.style !== b.style) { style.namedStyleType = NAMED_STYLES[b.style].docs; fields.push("namedStyleType"); }
-  if (a.align !== b.align) { style.alignment = DOCS_ALIGN[b.align]; fields.push("alignment"); }
+  // Docs' alignment is by the paragraph's own sides: a new direction needs it again
+  if (a.align !== b.align || a.dir !== b.dir) { style.alignment = docsAlign(b.align, b.dir); fields.push("alignment"); }
+  if (a.dir !== b.dir) { style.direction = b.dir === "rtl" ? "RIGHT_TO_LEFT" : "LEFT_TO_RIGHT"; fields.push("direction"); }
   if (a.spacing !== b.spacing) { style.lineSpacing = b.spacing; fields.push("lineSpacing"); }
   if (!b.list) {
     const ia = effectiveIndent(a);
@@ -1121,8 +1141,9 @@ export function textRequest(textStyle: DocsRequest, startIndex: number, endIndex
 }
 
 export function paragraphRequest(p: ParagraphFormat, startIndex: number, endIndex: number): DocsRequest {
-  const paragraphStyle: Record<string, unknown> = { namedStyleType: NAMED_STYLES[p.style].docs, alignment: DOCS_ALIGN[p.align], lineSpacing: p.spacing };
-  const fields = ["namedStyleType", "alignment", "lineSpacing"];
+  // Its direction always: a paragraph made by a newline inside another takes that one's
+  const paragraphStyle: Record<string, unknown> = { namedStyleType: NAMED_STYLES[p.style].docs, alignment: docsAlign(p.align, p.dir), lineSpacing: p.spacing, direction: p.dir === "rtl" ? "RIGHT_TO_LEFT" : "LEFT_TO_RIGHT" };
+  const fields = ["namedStyleType", "alignment", "lineSpacing", "direction"];
   if (!p.list) {
     // Bullets own the indentation of list items
     const indent = effectiveIndent(p);
@@ -1168,7 +1189,7 @@ export function richToEditorJSON(text: string, format: RichFormat | null): Edito
       : null;
     const node: EditorNode = {
       type: "paragraph",
-      attrs: { styleName: p.style, textAlign: p.align === "left" ? null : p.align, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, glyphStyle: p.list ? p.glyph ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null, spacingMode: p.spacingMode ?? null },
+      attrs: { styleName: p.style, textAlign: p.align === startAlign(p.dir) ? null : p.align, dir: p.dir ?? null, indent: p.indent, firstLine: p.firstLine, lineSpacing: p.spacing, list: p.list ?? null, level: p.list ? p.level ?? 0 : null, preset: p.list ? p.preset ?? null : null, glyphStyle: p.list ? p.glyph ?? null : null, indentEnd: p.end ?? null, box, keep: p.keep ?? null, borders: p.borders ?? null, shading: p.shading ?? null, spacingMode: p.spacingMode ?? null },
       content: [],
     };
     const end = pos + line.length;

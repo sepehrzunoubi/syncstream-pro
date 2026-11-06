@@ -399,6 +399,18 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: "right-to-left",
+    what: "right-to-left paragraphs aligned to their start, their end and the center, one indented from its start and a bulleted one, then left-to-right text after them",
+    target: () => [
+      P({ dir: "rtl", box: box0 }, "\u0645\u0631\u062d\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645"),
+      P({ dir: "rtl", textAlign: "left", box: box0 }, "\u0646\u0635 \u0641\u064a \u0627\u0644\u064a\u0633\u0627\u0631"),
+      P({ dir: "rtl", textAlign: "center", box: box0 }, "\u0641\u064a \u0627\u0644\u0648\u0633\u0637"),
+      P({ dir: "rtl", box: { start: 36, first: 0, above: 0, below: 0 }, indentEnd: 18 }, "\u0645\u0632\u0627\u062d \u0645\u0646 \u0627\u0644\u064a\u0645\u064a\u0646"),
+      P({ dir: "rtl", list: "bullet", level: 0 }, "\u0628\u0646\u062f"),
+      P({ box: box0 }, "Left to right again"),
+    ],
+  },
+  {
     name: "highlighted-bullets",
     what: "list items whose whole text is highlighted, long and short",
     target: () => [LI(0, "bullet", ["Industry subsegment value proposition", [ts(11), hl("rgb(217, 234, 211)")]]), LI(0, "bullet", ["Market size", [ts(11), hl("rgb(217, 234, 211)")]]), LI(0, "bullet", ["Big text list item with many words", [ts(14)]]), LI(0, "bullet", ["Big two", [ts(14)]])],

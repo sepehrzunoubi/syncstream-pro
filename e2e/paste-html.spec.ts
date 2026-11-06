@@ -104,6 +104,22 @@ test.describe("pasting Google Docs' HTML", () => {
     expect(done.attrs?.preset).toBe("BULLET_CHECKBOX");
   });
 
+  test("right-to-left paragraphs keep their direction, their place on the page and their indents from the right", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const rtl = (inner: string, style: string) => `<p dir="rtl" style="${style}">${inner}</p>`;
+    await app.paste({
+      // As Docs copies them: START is the right in a right-to-left paragraph, END the left; indents on its own sides
+      html: docs(rtl(span("\u0645\u0631\u062d\u0628\u0627"), "line-height:1.38;text-align: right;margin-top:0pt;margin-bottom:0pt;") + rtl(span("\u064a\u0633\u0627\u0631"), "line-height:1.38;text-align: left;margin-right: 36pt;margin-left: 18pt;margin-top:0pt;margin-bottom:0pt;") + para(span("Left to right"))),
+      text: "\u0645\u0631\u062d\u0628\u0627\n\u064a\u0633\u0627\u0631\nLeft to right\n",
+    });
+    await expect.poll(async () => (await paragraphsOf(app)).length).toBeGreaterThanOrEqual(3);
+    const [a, b, c] = await paragraphsOf(app);
+    expect([a.attrs?.dir, b.attrs?.dir, c.attrs?.dir ?? null]).toEqual(["rtl", "rtl", null]);
+    expect([a.attrs?.textAlign, b.attrs?.textAlign]).toEqual(["right", "left"]);
+    expect((b.attrs?.box as { start: number }).start).toBe(36);
+    expect(b.attrs?.indentEnd).toBe(18);
+  });
+
   test("text copied from inside a paragraph has no formatting its new paragraph's style gives", async ({ app, api, page }) => {
     await openEmpty(app, api, page);
     await app.paste({ html: docs(span("plain words")), text: "plain words" });

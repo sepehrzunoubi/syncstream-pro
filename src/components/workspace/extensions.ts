@@ -57,6 +57,11 @@ declare module "@tiptap/core" {
       outdent: () => ReturnType;
       setFirstLine: (on: boolean) => ReturnType;
       setLineSpacing: (spacing: number) => ReturnType;
+      /**
+       * Docs' left-to-right and right-to-left text: the paragraph's direction. Like Docs it keeps the
+       * alignment by the paragraph's sides, so text aligned to its start moves with it to the other side
+       */
+      setDirection: (dir: "ltr" | "rtl") => ReturnType;
       /** Space above and below the paragraph, in points */
       setParagraphSpace: (space: { above?: number; below?: number }) => ReturnType;
       setKeep: (keep: Partial<KeepOptions>) => ReturnType;
@@ -86,6 +91,12 @@ const TAG_STYLE: Record<string, NamedStyle> = { H1: "h1", H2: "h2", H3: "h3", H4
 
 /** Docs' line height: the spacing times the font's natural line height (measured per font, see lineMetrics) */
 const lineHeightCss = (spacing: number) => `--ss-spacing: ${Math.round((spacing / 100) * 1000) / 1000}; line-height: calc(var(--ss-spacing) * var(--ss-nlh, 1.15))`;
+
+/** Whether an element's paragraph runs right to left, as its HTML says */
+const isRtl = (el: HTMLElement | null | undefined) => !!el && (el.getAttribute("dir") ?? el.style.direction).toLowerCase() === "rtl";
+/** The page side a paragraph's text starts on, and the one it ends on */
+const startSide = (dir: unknown) => (dir === "rtl" ? "right" : "left");
+const endSide = (dir: unknown) => (dir === "rtl" ? "left" : "right");
 
 /** Borders and shading of a pasted paragraph, from its CSS */
 function pastedBorders(el: HTMLElement): Borders | null {
@@ -139,12 +150,16 @@ function pastedBox(el: HTMLElement): PastedBox | null {
     return { start: exact ?? INDENT_PT * (level + 1), marker: pt(s.getPropertyValue("--ss-li-marker")) ?? -18, above, below };
   }
   if (el.hasAttribute("data-indent") || el.hasAttribute("data-first-line")) return null;
-  if (!s.marginLeft && !s.paddingLeft && !s.textIndent && !s.marginTop && !s.marginBottom) return null;
+  // The indent is on the side the text starts on: the right, in a right-to-left paragraph
+  const rtl = isRtl(el);
+  const marginStart = rtl ? s.marginRight : s.marginLeft;
+  const paddingStart = rtl ? s.paddingRight : s.paddingLeft;
+  if (!marginStart && !paddingStart && !s.textIndent && !s.marginTop && !s.marginBottom) return null;
   // Padding is an indent only on a plain paragraph: on a shaded or bordered one it is the shading's or the
   // border's (Docs writes a border's padding even for an invisible border, and the space of a shaded
   // paragraph next to another as padding, so the shading covers it)
   const framed = !!cssColorToHex(el.getAttribute("data-shading") ?? s.backgroundColor) || !!s.borderLeftStyle || !!s.borderTopStyle || !!s.borderBottomStyle;
-  const start = pt(s.marginLeft) ?? (framed ? null : pt(s.paddingLeft)) ?? 0;
+  const start = pt(marginStart) ?? (framed ? null : pt(paddingStart)) ?? 0;
   const first = pt(s.textIndent) ?? 0;
   let above = pt(s.marginTop), below = pt(s.marginBottom);
   if (framed && !(pt(s.paddingLeft) ?? 0) && !(pt(s.paddingRight) ?? 0)) {
@@ -186,8 +201,8 @@ const DocParagraph = Paragraph.extend({
           // Pasted indents are kept exactly, in `box`
           return 0;
         },
-        renderHTML: (a: { indent?: number }) =>
-          a.indent ? { "data-indent": String(a.indent), style: `margin-left: ${(a.indent * INDENT_PT) / 72}in` } : {},
+        renderHTML: (a: { indent?: number; dir?: string | null }) =>
+          a.indent ? { "data-indent": String(a.indent), style: `margin-${startSide(a.dir)}: ${(a.indent * INDENT_PT) / 72}in` } : {},
       },
       firstLine: {
         default: false,
@@ -257,17 +272,26 @@ const DocParagraph = Paragraph.extend({
         parseHTML: (el: HTMLElement) => el.getAttribute("data-preset"),
         renderHTML: (a: { preset?: string | null; list?: string | null }) => (a.list && a.preset ? { "data-preset": a.preset } : {}),
       },
-      /** Right indent in points */
+      /** Indent at the end of the line (the right, left to right), in points */
       indentEnd: {
         default: null,
-        parseHTML: (el: HTMLElement) => { const v = cssLengthToPt(el.style.marginRight); return v && v > 0 ? Math.round(v * 100) / 100 : null; },
-        renderHTML: (a: { indentEnd?: number | null }) => (a.indentEnd ? { style: `margin-right: ${a.indentEnd}pt` } : {}),
+        parseHTML: (el: HTMLElement) => { const v = cssLengthToPt(isRtl(el) ? el.style.marginLeft : el.style.marginRight); return v && v > 0 ? Math.round(v * 100) / 100 : null; },
+        renderHTML: (a: { indentEnd?: number | null; dir?: string | null }) => (a.indentEnd ? { style: `margin-${endSide(a.dir)}: ${a.indentEnd}pt` } : {}),
+      },
+      /**
+       * Docs' paragraph direction: "rtl" for a right-to-left paragraph. Its alignment (textAlign) is where it
+       * sits on the page, its indents are on its own sides, and a paragraph split from it keeps it, as in Docs
+       */
+      dir: {
+        default: null,
+        parseHTML: (el: HTMLElement) => (isRtl(el) ? "rtl" : null),
+        renderHTML: (a: { dir?: string | null }) => (a.dir === "rtl" ? { dir: "rtl" } : {}),
       },
       /** Exact indents and spacing of a paragraph read from Docs, in points */
       box: {
         default: null,
         parseHTML: (el: HTMLElement) => pastedBox(el),
-        renderHTML: (a: { box?: { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null; list?: string | null }) => {
+        renderHTML: (a: { box?: { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null; list?: string | null; dir?: string | null }) => {
           const b = a.box;
           if (!b) return {};
           const css: string[] = [];
@@ -275,7 +299,7 @@ const DocParagraph = Paragraph.extend({
             css.push(`--ss-li-start: ${b.start ?? 36}pt`, `--ss-li-marker: ${b.marker ?? -18}pt`);
             return { style: css.concat(b.above != null ? [`margin-top: ${b.above}pt`] : [], b.below != null ? [`margin-bottom: ${b.below}pt`] : []).join("; "), "data-box": "" };
           } else {
-            if (b.start) css.push(`margin-left: ${b.start}pt`);
+            if (b.start) css.push(`margin-${startSide(a.dir)}: ${b.start}pt`);
             if (b.first) css.push(`text-indent: ${b.first}pt`);
           }
           if (b.above != null) css.push(`margin-top: ${b.above}pt`);
@@ -507,6 +531,12 @@ const DocFormat = Extension.create({
         return true;
       },
       setLineSpacing: (spacing) => updateParagraphs(() => ({ lineSpacing: spacing })),
+      setDirection: (dir) => updateParagraphs((a) => {
+        const next = dir === "rtl" ? "rtl" : null;
+        if ((a.dir ?? null) === next) return {};
+        const flip: Record<string, string> = { left: "right", right: "left" };
+        return { dir: next, textAlign: typeof a.textAlign === "string" ? flip[a.textAlign] ?? a.textAlign : null };
+      }),
       setParagraphSpace: (space) => updateParagraphs((a) => {
         // Exact spacing lives in the box; keep the paragraph's indents as they are
         const box = (a.box as { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null } | null) ?? (a.list
@@ -756,12 +786,15 @@ export function flattenPastedLists(html: string): string {
       for (const a of Array.from(inner?.attributes ?? [])) if (a.name !== "role" && a.name !== "style") p.setAttribute(a.name, a.value);
       const style = [li.getAttribute("style"), inner?.getAttribute("style")].filter(Boolean).join("; ");
       if (style) p.setAttribute("style", style);
+      // A right-to-left item: its insets are on the right
+      const rtl = isRtl(li) || isRtl(inner);
+      if (rtl) p.setAttribute("dir", "rtl");
       if (li.hasAttribute("aria-level") && !p.hasAttribute("data-box")) {
         // Docs' copy: the lists inset the item (48px a level) and the item's margin moves its glyph,
         // its padding the text: glyph at inset + margin - 18pt, text at inset + margin + padding
         if (inset != null) {
-          const ml = lengthPt(li.style.marginLeft) ?? 0;
-          const pl = lengthPt(li.style.paddingLeft) ?? 0;
+          const ml = lengthPt(rtl ? li.style.marginRight : li.style.marginLeft) ?? 0;
+          const pl = lengthPt(rtl ? li.style.paddingRight : li.style.paddingLeft) ?? 0;
           // A checklist's box is drawn as an image before the text (17.6px + 3px), not as a marker
           const start = inset + ml + pl + (checkbox ? 15 : 0);
           const glyph = checkbox ? start - 18 : inset + ml - 18;

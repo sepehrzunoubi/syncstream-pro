@@ -5,7 +5,7 @@ import * as MB from "@radix-ui/react-menubar";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
-import { BULLET_PRESETS, effectiveKeep, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, type KeepOptions, type NamedStyle } from "@/lib/rich-text";
+import { BULLET_PRESETS, effectiveKeep, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, startAlign, type KeepOptions, type NamedStyle } from "@/lib/rich-text";
 import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
 
@@ -140,7 +140,8 @@ export function DocsMenubar(p: DocsMenubarProps) {
         keepLines: !!keep.linesTogether,
         singleLines: keep.singleLines !== false,
         style: (para.styleName as NamedStyle) ?? "normal",
-        align: (para.textAlign as string) ?? "left",
+        align: (para.textAlign as string) ?? startAlign(para.dir),
+        rtl: para.dir === "rtl",
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
         list: (para.list as string | null) ?? null,
@@ -267,6 +268,9 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item shortcut={`${mod}]`} onSelect={() => run((c) => c.indent())}>Increase indent</Item>
           <Item shortcut={`${mod}[`} onSelect={() => run((c) => c.outdent())}>Decrease indent</Item>
           <Item checkable checked={st?.firstLine} shortcut="Tab" onSelect={() => run((c) => c.setFirstLine(!st?.firstLine))}>Indent first line</Item>
+          <Sep />
+          <Item checkable checked={!!st && !st.rtl} onSelect={() => run((c) => c.setDirection("ltr"))}>Left-to-right text</Item>
+          <Item checkable checked={!!st?.rtl} onSelect={() => run((c) => c.setDirection("rtl"))}>Right-to-left text</Item>
         </Sub>
         <Sub label="Bullets & numbering" disabled={off}>
           <Sub label="Numbered list">

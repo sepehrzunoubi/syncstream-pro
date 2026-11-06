@@ -388,19 +388,20 @@
   pointer-events: none;
 }
 
-/* Lists: Docs puts the glyph at 18pt and the text at 36pt */
+/* Lists: Docs puts the glyph at 18pt and the text at 36pt, from the side the text starts on (the right,
+   in a right-to-left paragraph), so the insets here are by the paragraph's own sides */
 .ss-doc { counter-reset: ss-ol; }
 /* The glyph is drawn at the item's first-line indent in the glyph's own text style (Docs' bullet style:
    the item's first character's unless Docs says otherwise, see doc-sync.ts), full size, in its font,
    and a highlight on it runs from the glyph to the text, as Docs draws it */
-.ss-doc p[data-list] { position: relative; margin-left: 36pt !important; text-indent: 0 !important; }
+.ss-doc p[data-list] { position: relative; margin-inline-start: 36pt !important; text-indent: 0 !important; }
 .ss-doc p[data-list]::before {
   position: absolute;
   top: 0;
-  left: -18pt;
+  inset-inline-start: -18pt;
   width: 18pt;
   text-indent: 0;
-  text-align: left;
+  text-align: start;
   white-space: pre;
   font-family: var(--ss-g-font, inherit);
   font-size: var(--ss-g-size, inherit);
@@ -430,7 +431,7 @@
 .ss-doc > :not(p[data-list="ordered"]) + .ss-page-gap + p[data-list="ordered"] { counter-increment: none; counter-set: ss-ol 1; }
 .ss-doc p[data-list="check"]::before {
   content: "";
-  left: -20pt;
+  inset-inline-start: -20pt;
   top: 0.22em;
   width: 0.78em;
   height: 0.78em;
@@ -440,16 +441,16 @@
 
 /* List labels are computed like Docs numbers them (see list-labels.ts) */
 /* Nesting levels of lists made here: Docs indents each level another half inch */
-.ss-doc p[data-list][data-level="1"] { margin-left: 72pt !important; }
-.ss-doc p[data-list][data-level="2"] { margin-left: 108pt !important; }
-.ss-doc p[data-list][data-level="3"] { margin-left: 144pt !important; }
-.ss-doc p[data-list][data-level="4"] { margin-left: 180pt !important; }
-.ss-doc p[data-list][data-level="5"] { margin-left: 216pt !important; }
-.ss-doc p[data-list][data-level="6"] { margin-left: 252pt !important; }
-.ss-doc p[data-list][data-level="7"] { margin-left: 288pt !important; }
-.ss-doc p[data-list][data-level="8"] { margin-left: 324pt !important; }
-.ss-doc p[data-list][data-box] { margin-left: var(--ss-li-start, 36pt) !important; }
-.ss-doc p[data-list][data-box]::before { left: var(--ss-li-marker, -18pt); width: calc(-1 * var(--ss-li-marker, -18pt)); }
+.ss-doc p[data-list][data-level="1"] { margin-inline-start: 72pt !important; }
+.ss-doc p[data-list][data-level="2"] { margin-inline-start: 108pt !important; }
+.ss-doc p[data-list][data-level="3"] { margin-inline-start: 144pt !important; }
+.ss-doc p[data-list][data-level="4"] { margin-inline-start: 180pt !important; }
+.ss-doc p[data-list][data-level="5"] { margin-inline-start: 216pt !important; }
+.ss-doc p[data-list][data-level="6"] { margin-inline-start: 252pt !important; }
+.ss-doc p[data-list][data-level="7"] { margin-inline-start: 288pt !important; }
+.ss-doc p[data-list][data-level="8"] { margin-inline-start: 324pt !important; }
+.ss-doc p[data-list][data-box] { margin-inline-start: var(--ss-li-start, 36pt) !important; }
+.ss-doc p[data-list][data-box]::before { inset-inline-start: var(--ss-li-marker, -18pt); width: calc(-1 * var(--ss-li-marker, -18pt)); }
 .ss-doc p[data-list][data-label]::before { content: attr(data-label); }
 /* Docs' spacing mode: next to another item of its list, an item has no space above or below there (COLLAPSE_LISTS,
    Docs' default), unless it keeps it (NEVER_COLLAPSE: its own data-sm, or the document's Normal text, data-doc-sm) */

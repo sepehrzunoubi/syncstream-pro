@@ -117,7 +117,9 @@ test("headings, title and subtitle, alignment, spacing and direction", () => {
   } }))!;
   const nodes = sliceParagraphs(slice, ARIAL);
   assert.deepEqual(nodes.map((n) => n.attrs?.styleName), ["title", "subtitle", "h3", "normal", "normal", "normal"]);
-  assert.deepEqual(nodes.map((n) => n.attrs?.textAlign), [null, null, null, "center", "right", "justify"]);
+  // A right-to-left paragraph's END is its left side (Docs' HTML of the same copy says text-align: left)
+  assert.deepEqual(nodes.map((n) => n.attrs?.textAlign), [null, null, null, "center", "left", "justify"]);
+  assert.deepEqual(nodes.map((n) => n.attrs?.dir ?? null), [null, null, null, null, "rtl", null]);
   assert.equal(nodes[3].attrs?.lineSpacing, 200);
   assert.deepEqual(nodes[2].attrs?.box, { start: 0, first: 0, above: 16, below: 4 });
   assert.equal(nodes[4].attrs?.indentEnd, 18);

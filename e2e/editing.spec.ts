@@ -46,6 +46,27 @@ test.describe("direct edits save to Google Docs", () => {
     await expect(app.subtitle()).toHaveText("Edits save to Google Docs. Type anywhere to add text.");
   });
 
+  test("Format > Align & indent > Right-to-left text turns the paragraph around and saves its direction", async ({ app, api, page }) => {
+    await app.open();
+    await app.caretAfter("Closing");
+    const closing = app.doc.locator("p", { hasText: CLOSING_TEXT });
+    const choose = async (item: string) => {
+      await page.locator(".ss-menubar-trigger", { hasText: "Format" }).click();
+      await page.getByRole("menuitem").filter({ has: page.getByText("Align & indent", { exact: true }) }).hover();
+      await page.getByRole("menuitem").filter({ has: page.getByText(item, { exact: true }) }).click();
+    };
+    await choose("Right-to-left text");
+    await expect(closing).toHaveAttribute("dir", "rtl");
+    await app.waitForSave(1);
+    const range = { startIndex: api.fixture.at.closing, endIndex: api.fixture.at.closing + CLOSING_TEXT.length + 1 };
+    // Aligned to its start, which is now the right: the same alignment in Docs, sent with the direction
+    expect(api.edits[0].requests).toEqual([{ updateParagraphStyle: { range, paragraphStyle: { alignment: "START", direction: "RIGHT_TO_LEFT" }, fields: "alignment,direction" } }]);
+    await choose("Left-to-right text");
+    await expect(closing).not.toHaveAttribute("dir", /./);
+    await app.waitForSave(2);
+    expect(api.edits[1].requests).toEqual([{ updateParagraphStyle: { range, paragraphStyle: { alignment: "START", direction: "LEFT_TO_RIGHT" }, fields: "alignment,direction" } }]);
+  });
+
   test("Heading 1 via Ctrl+Alt+1 restyles the paragraph and saves its named style", async ({ app, api, page }) => {
     await app.open();
     await app.caretAfter("Closing");

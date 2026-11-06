@@ -120,7 +120,15 @@ const NAMED: Record<string, NamedStyle> = {
   HEADING_5: "h5",
   HEADING_6: "h6",
 };
-const ALIGN: Record<string, Align | null> = { START: null, CENTER: "center", END: "right", JUSTIFIED: "justify" };
+/** Where a paragraph sits on the page. Docs' START and END are its own direction's sides; null is where its text starts */
+function alignOf(alignment: string | null | undefined, rtl: boolean): Align | null {
+  switch (alignment) {
+    case "CENTER": return "center";
+    case "JUSTIFIED": return "justify";
+    case "END": return rtl ? "left" : "right";
+    default: return null;
+  }
+}
 const ORDERED = new Set(["DECIMAL", "ZERO_DECIMAL", "UPPER_ALPHA", "ALPHA", "UPPER_ROMAN", "ROMAN"]);
 
 function pt(d: docs_v1.Schema$Dimension | undefined | null): number | undefined {
@@ -361,11 +369,14 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
       borders[side] = border;
     }
     const shading = hex(ps.shading?.backgroundColor);
+    // Its direction as Docs resolves it, its own or its named style's
+    const rtl = ps.direction === "RIGHT_TO_LEFT";
     return {
       type: "paragraph",
       attrs: {
         styleName: style,
-        textAlign: ALIGN[ps.alignment ?? "START"] ?? null,
+        textAlign: alignOf(ps.alignment, rtl),
+        ...(rtl ? { dir: "rtl" } : {}),
         ...(rule ? { kind: "rule" } : {}),
         indent: 0,
         firstLine: false,
