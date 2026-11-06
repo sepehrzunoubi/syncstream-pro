@@ -1,4 +1,7 @@
 import { test, expect, CLOSING_TEXT, FIXTURE_DOC_ID } from "./fixtures";
+import type { Page } from "@playwright/test";
+import { importDoc } from "../src/lib/doc-import";
+import { EMPTY_DOC } from "./fixtures/empty-doc";
 
 /**
  * Direct edits (formatting and deleting text the document already has) save
@@ -234,5 +237,75 @@ test.describe("direct edits save to Google Docs", () => {
     expect(inserts.map((i) => [i.location.index, i.text]).sort((a, b) => (a[0] as number) - (b[0] as number))).toEqual([[first, "work"], [second, "work"]]);
     await dialog.getByRole("button", { name: "Done" }).click();
     await expect(dialog).toBeHidden();
+  });
+});
+
+test.describe("headers and footers", () => {
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex)], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  /** The empty document with a header of these elements */
+  const withHeader = (content: object[]) => ({ ...EMPTY_DOC, documentStyle: { ...EMPTY_DOC.documentStyle, defaultHeaderId: "kix.header" }, headers: { "kix.header": { headerId: "kix.header", content } } });
+  type HeaderEditor = { commands: { focus(at: string): void; setTextSelection(at: number): void }; state: { doc: { descendants(f: (n: { type: { name: string }; attrs: Record<string, unknown> }) => void): void } } };
+  /** The caret in the header being edited: at its end, or at a position */
+  const caretInHeader = (page: Page, at: number | "end") => page.evaluate((pos) => {
+    const ed = (document.querySelector(".ss-hf-editing .ProseMirror") as HTMLElement & { editor?: HeaderEditor }).editor!;
+    if (pos === "end") ed.commands.focus("end");
+    else ed.commands.setTextSelection(pos);
+  }, at);
+  /** The images in the header being edited */
+  const headerImages = (page: Page) => page.evaluate(() => {
+    const ed = (document.querySelector(".ss-hf-editing .ProseMirror") as HTMLElement & { editor?: HeaderEditor }).editor!;
+    const out: unknown[] = [];
+    ed.state.doc.descendants((n) => { if (n.type.name === "image") out.push(n.attrs.src); });
+    return out;
+  });
+
+  test("a header with a table shows the table's text, and typing in the header saves only what is typed", async ({ app, api, page }) => {
+    // "Logo co.", a table of one row (Address | Phone), and the paragraph Docs keeps after a table
+    const table = { startIndex: 9, endIndex: 28, table: { rows: 1, columns: 2, tableRows: [{ startIndex: 10, endIndex: 27, tableCells: [
+      { startIndex: 11, endIndex: 20, content: [para("Address\n", 12)] },
+      { startIndex: 20, endIndex: 27, content: [para("Phone\n", 21)] },
+    ] }] } };
+    api.content = importDoc(withHeader([para("Logo co.\n", 0), table, para("\n", 28)]) as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    await expect(page.locator(".ss-hf-header").first()).toContainText("Address");
+    await page.locator(".ss-hf-header").first().dblclick();
+    await expect(page.locator(".ss-hf-editing")).toHaveCount(1);
+    await caretInHeader(page, "end");
+    await page.keyboard.type("Hi");
+    await app.waitForSave(1);
+    expect(api.requests("deleteContentRange")).toEqual([]);
+    expect(api.requests("insertText")).toEqual([{ location: { index: 28, segmentId: "kix.header" }, text: "Hi" }]);
+    // The table's text can't be changed here
+    await caretInHeader(page, 14);
+    await page.keyboard.type("x");
+    await expect(page.locator(".ss-hf-editing")).toContainText("Address");
+    await expect(page.locator(".ss-hf-editing")).not.toContainText("Adxdress");
+  });
+
+  test("an image pasted into a header is kept only when the save can put it there", async ({ app, api, page }) => {
+    api.content = importDoc(withHeader([para("Head\n", 0)]) as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    await page.locator(".ss-hf-header").first().dblclick();
+    await expect(page.locator(".ss-hf-editing")).toHaveCount(1);
+    await caretInHeader(page, "end");
+    const paste = (html: string) => page.evaluate((h) => {
+      const dt = new DataTransfer();
+      dt.setData("text/html", h);
+      dt.setData("text/plain", "Logo ");
+      document.querySelector(".ss-hf-editing .ProseMirror")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, html);
+    const images = () => headerImages(page);
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    // Given as data (Docs' copy of a document open for viewing), or a word processor's file
+    await paste(`<meta charset="utf-8"><span>Logo </span><img src="${png}" width="24" height="24"><img src="file:///C:/clip_image001.png">`);
+    await expect(page.getByText("Couldn't add a pasted image: a header or footer takes an image only from a web address. It was left out.")).toBeVisible();
+    await expect(page.locator(".ss-hf-editing")).toContainText("Logo");
+    expect(await images()).toEqual([]);
+    // On the web: kept
+    await paste('<meta charset="utf-8"><img src="https://images.e2e.test/logo.png" width="24" height="24">');
+    await expect.poll(images).toEqual(["https://images.e2e.test/logo.png"]);
   });
 });

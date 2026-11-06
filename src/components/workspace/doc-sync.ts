@@ -128,6 +128,24 @@ let draggingInside = false;
 
 let lastLockedHint = 0;
 
+/** Whether a transaction leaves locked paragraphs as they are (a document's load may replace them) */
+function keepsLocked(tr: Transaction): boolean {
+  if (!tr.docChanged || tr.getMeta(LOAD_META)) return true;
+  if (!touchesLocked(tr)) return true;
+  // Say why nothing happened instead of swallowing the edit silently
+  if (typeof window !== "undefined" && Date.now() - lastLockedHint > 1500) {
+    lastLockedHint = Date.now();
+    window.dispatchEvent(new CustomEvent("ss-locked-hint"));
+  }
+  return false;
+}
+
+/** Locked paragraphs (a header's table, shown cell by cell) can't be changed here: for the header, footer and footnote editors */
+export const LockedParagraphs = Extension.create({
+  name: "lockedParagraphs",
+  addProseMirrorPlugins: () => [new Plugin({ filterTransaction: keepsLocked })],
+});
+
 /**
  * Delete, Backspace and their variants on a selection that spans locked
  * content: the editable parts go, the locked blocks stay. False when the
@@ -194,16 +212,7 @@ export const DocSync = Extension.create({
           init: () => ({ glow: false }),
           apply: (tr, value) => (tr.getMeta(docSyncKey) as { glow: boolean } | undefined) ?? value,
         },
-        filterTransaction(tr) {
-          if (!tr.docChanged || tr.getMeta(LOAD_META)) return true;
-          if (!touchesLocked(tr)) return true;
-          // Say why nothing happened instead of swallowing the edit silently
-          if (typeof window !== "undefined" && Date.now() - lastLockedHint > 1500) {
-            lastLockedHint = Date.now();
-            window.dispatchEvent(new CustomEvent("ss-locked-hint"));
-          }
-          return false;
-        },
+        filterTransaction: keepsLocked,
         // Whatever is typed or pasted becomes an addition; text dragged within the document keeps what it was
         appendTransaction(transactions, _old, newState) {
           // A column layout change regroups the document's blocks into column sections
