@@ -15,13 +15,14 @@ import type { BreaksMode } from "./sync-panel";
 import { loadDocument } from "./doc-sync";
 import { markAllAdded, plainToDoc } from "./doc-json";
 import { loadDraft, readPageDefault, saveDraft, writeAdditions, type Draft } from "./storage";
-import type { DocContent, DocRefs, Setter } from "./doc-state";
+import { shownTab, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
-export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, zoom, setZoom, pageless, setPageless, pageSetup, setPageSetup, docContent, docJSON, setDocJSON, setSnack }: {
+export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless, pageSetup, setPageSetup, docContent, docJSON, setDocJSON, setSnack }: {
   editor: Editor | null;
   refs: DocRefs;
   selectedDocId: string;
-  setSelectedDocId: Setter<string>;
+  setSelectedDocId: (id: string | ((cur: string) => string), tabId?: string) => void;
+  selectedTabId: string;
   zoom: number | "fit";
   setZoom: Setter<number | "fit">;
   pageless: boolean;
@@ -52,7 +53,7 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, zoom, 
       else loadDocument(editor, text, false);
     }
     setDocJSON(editor.getJSON());
-    if (d.selectedDocId) setSelectedDocId(d.selectedDocId);
+    if (d.selectedDocId) setSelectedDocId(d.selectedDocId, typeof d.selectedTabId === "string" ? d.selectedTabId : "");
     if (d.durationMinutes !== undefined) setDurationMinutes(d.durationMinutes);
     if (d.breaksMode) setBreaksMode(d.breaksMode);
     if (Array.isArray(d.customBreaks)) setCustomBreaks(d.customBreaks);
@@ -85,16 +86,17 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, zoom, 
           // Text typed with no document stays here; additions to a document are kept per document
           doc: !selectedDocId && json ? (json as JSONContent) : undefined,
           selectedDocId,
+          ...(selectedDocId && selectedTabId ? { selectedTabId } : {}),
           durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless,
           pageSetup: selectedDocId ? undefined : pageSetup,
         } satisfies Draft);
         if (json && docContent?.status === "ready" && docContent.docId === selectedDocId) {
-          writeAdditions(selectedDocId, hasPending(json) ? { revisionId: revisionRef.current, doc: json } : null);
+          writeAdditions(selectedDocId, hasPending(json) ? { revisionId: revisionRef.current, doc: json } : null, shownTab(docContent));
         }
       } catch { /* storage full or blocked */ }
     }, 400);
     return () => clearTimeout(id);
-  }, [draftLoaded, docJSON, selectedDocId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, pageSetup, docContent, revisionRef]);
+  }, [draftLoaded, docJSON, selectedDocId, selectedTabId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, pageSetup, docContent, revisionRef]);
 
   return { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded };
 }

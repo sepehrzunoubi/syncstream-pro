@@ -72,6 +72,15 @@ jobs:
           name: next-build
           path: .next
       - run: npx playwright install --with-deps chromium
+      # The page tests measure text as Docs draws it: Arial and Times New Roman in their metric
+      # twins (Liberation), Calibri and Cambria in theirs (Carlito, Caladea), as users' machines have them
+      - run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea
+      # What the text is drawn with, for a page test that fails here and not elsewhere
+      - name: Fonts
+        run: |
+          for f in Arial "Liberation Sans" Arimo "Times New Roman" Lato; do fc-match -v "$f" | grep -E '^\s+(file|fullname|postscriptname|hinting|hintstyle|antialias|rgba|fontversion):'; done
+          fc-list : family file | grep -iE 'liberation|arimo|arial' | sort
+          ls /etc/fonts/conf.d/
       - run: npm run e2e
         env:
           NEXT_PUBLIC_BASE_URL: http://localhost:3000

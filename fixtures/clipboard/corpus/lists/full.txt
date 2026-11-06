@@ -1,0 +1,27 @@
+This is a test of lists.
+
+A bulleted list:
+This is
+A bulleted
+List of stuff.
+With
+Subitems
+And
+Sub-subitems
+But numbered not bulleted!
+This item has line breaks.
+Here is a second line.
+And a numbered list:
+This is
+A numbered
+List of stuff.
+With
+Subitems
+And
+Sub-subitems
+But bulleted not numbered!
+This item has line breaks.
+Here is a second line.
+And a checklist:
+This is
+A checklist.

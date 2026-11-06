@@ -5,7 +5,8 @@ import * as MB from "@radix-ui/react-menubar";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
-import { BULLET_PRESETS, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, type NamedStyle } from "@/lib/rich-text";
+import { BULLET_PRESETS, effectiveKeep, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, startAlign, type KeepOptions, type NamedStyle } from "@/lib/rich-text";
+import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
 
 /** Docs' table picker: hover to size the table, click to insert */
@@ -82,6 +83,12 @@ function TopMenu({ label, children }: { label: string; children: React.ReactNode
 const Sep = () => <MB.Separator className="ss-menu-sep" />;
 /** Menus never take the editor's selection: a mousedown on them would collapse it before the command runs */
 const keepSelection = (e: React.MouseEvent) => e.preventDefault();
+/**
+ * A dialog opens once its menu has closed. Opened while the menu is closing, it takes focus from the
+ * menu's item and gives it back there when it closes, which wakes the menu again: the next click on
+ * the menubar then only closes that menu.
+ */
+const afterMenu = (open: () => void) => () => { setTimeout(open, 0); };
 
 interface DocsMenubarProps {
   editor: Editor | null;
@@ -117,7 +124,8 @@ export function DocsMenubar(p: DocsMenubarProps) {
       if (!e) return null;
       const para = e.getAttributes("paragraph");
       const box = para.box as { above?: number | null; below?: number | null } | null;
-      const keep = (para.keep as { withNext?: boolean; linesTogether?: boolean; singleLines?: boolean } | null) ?? {};
+      // Its own keep options, else its style's, as the page lays it out and Docs has it
+      const keep = effectiveKeep(para.keep as KeepOptions | null, (para.styleName as NamedStyle) ?? "normal", docKeeps(e.view.dom));
       return {
         bold: e.isActive("bold"),
         italic: e.isActive("italic"),
@@ -132,7 +140,8 @@ export function DocsMenubar(p: DocsMenubarProps) {
         keepLines: !!keep.linesTogether,
         singleLines: keep.singleLines !== false,
         style: (para.styleName as NamedStyle) ?? "normal",
-        align: (para.textAlign as string) ?? "left",
+        align: (para.textAlign as string) ?? startAlign(para.dir),
+        rtl: para.dir === "rtl",
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
         list: (para.list as string | null) ?? null,
@@ -158,7 +167,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
         {p.onOpenStyle && <Item onSelect={p.onOpenStyle}>Style engine</Item>}
         <Sep />
-        <Item onSelect={p.onPageSetup}>Page setup</Item>
+        <Item onSelect={afterMenu(p.onPageSetup)}>Page setup</Item>
         <Item shortcut={`${mod}P`} onSelect={() => window.print()}>Print</Item>
         <Sep />
         <Item onSelect={p.onSignOut}>Sign out</Item>
@@ -176,7 +185,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Sep />
         <Item disabled={off} shortcut={`${mod}A`} onSelect={() => run((c) => c.selectAll())}>Select all</Item>
         <Sep />
-        <Item disabled={off} shortcut={`${mod}H`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-find", { detail: "dialog" }))}>Find and replace</Item>
+        <Item disabled={off} shortcut={`${mod}H`} onSelect={afterMenu(() => window.dispatchEvent(new CustomEvent("ss-find", { detail: "dialog" })))}>Find and replace</Item>
       </TopMenu>
 
       <TopMenu label="View">
@@ -245,7 +254,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           </Sub>
         </Sub>
         <Sub label="Paragraph styles" disabled={off}>
-          <Item onSelect={p.onBorders}>Borders and shading</Item>
+          <Item onSelect={afterMenu(p.onBorders)}>Borders and shading</Item>
           <Sep />
           {NAMED_STYLE_ORDER.map((s) => (
             <Item key={s} checkable checked={st?.style === s} onSelect={() => run((c) => c.setNamedStyle(s))}>{NAMED_STYLES[s].label}</Item>
@@ -259,6 +268,9 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Item shortcut={`${mod}]`} onSelect={() => run((c) => c.indent())}>Increase indent</Item>
           <Item shortcut={`${mod}[`} onSelect={() => run((c) => c.outdent())}>Decrease indent</Item>
           <Item checkable checked={st?.firstLine} shortcut="Tab" onSelect={() => run((c) => c.setFirstLine(!st?.firstLine))}>Indent first line</Item>
+          <Sep />
+          <Item checkable checked={!!st && !st.rtl} onSelect={() => run((c) => c.setDirection("ltr"))}>Left-to-right text</Item>
+          <Item checkable checked={!!st?.rtl} onSelect={() => run((c) => c.setDirection("rtl"))}>Right-to-left text</Item>
         </Sub>
         <Sub label="Bullets & numbering" disabled={off}>
           <Sub label="Numbered list">
@@ -280,7 +292,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
             <Item key={n} checkable checked={st?.columns === n} onSelect={() => p.onColumns(n)}>{n === 1 ? "One column" : n === 2 ? "Two columns" : "Three columns"}</Item>
           ))}
           <Sep />
-          <Item onSelect={() => p.onColumns("options")}>More options</Item>
+          <Item onSelect={afterMenu(() => p.onColumns("options"))}>More options</Item>
         </Sub>
         <Sub label="Line & paragraph spacing" disabled={off}>
           {LINE_SPACINGS.map((ls) => (
@@ -289,7 +301,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Sep />
           <Item onSelect={() => run((c) => c.setParagraphSpace({ above: st?.above ? 0 : 10 }))}>{st?.above ? "Remove space before paragraph" : "Add space before paragraph"}</Item>
           <Item onSelect={() => run((c) => c.setParagraphSpace({ below: st?.below ? 0 : 10 }))}>{st?.below ? "Remove space after paragraph" : "Add space after paragraph"}</Item>
-          <Item onSelect={p.onCustomSpacing}>Custom spacing</Item>
+          <Item onSelect={afterMenu(p.onCustomSpacing)}>Custom spacing</Item>
           <Sep />
           <Item checkable checked={st?.keepNext} onSelect={() => run((c) => c.setKeep({ withNext: !st?.keepNext }))}>Keep with next</Item>
           <Item checkable checked={st?.keepLines} onSelect={() => run((c) => c.setKeep({ linesTogether: !st?.keepLines }))}>Keep lines together</Item>
@@ -300,7 +312,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
       </TopMenu>
 
       <TopMenu label="Help">
-        <Item shortcut={`${mod}/`} onSelect={p.onShortcuts}>Keyboard shortcuts</Item>
+        <Item shortcut={`${mod}/`} onSelect={afterMenu(p.onShortcuts)}>Keyboard shortcuts</Item>
         <Item onSelect={() => window.open("https://support.google.com/docs", "_blank", "noopener")}>Docs Help</Item>
       </TopMenu>
     </MB.Root>

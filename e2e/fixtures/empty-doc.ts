@@ -1,0 +1,21 @@
+/** A new, empty Google Doc with Docs' default named styles, as documents.get returns it */
+const PT = (m: number) => ({ magnitude: m, unit: "PT" });
+const rgb = (r: number, g: number, b: number) => ({ color: { rgbColor: { red: r, green: g, blue: b } } });
+export const EMPTY_DOC = {
+  documentId: "1FixtureDocument0000000000000000000000000",
+  title: "Field Notes on Transformation",
+  revisionId: "rev-empty",
+  body: { content: [{ endIndex: 1, sectionBreak: { sectionStyle: { columnSeparatorStyle: "NONE", contentDirection: "LEFT_TO_RIGHT", sectionType: "CONTINUOUS" } } }, { startIndex: 1, endIndex: 2, paragraph: { elements: [{ startIndex: 1, endIndex: 2, textRun: { content: "\n", textStyle: {} } }], paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT" } } }] },
+  documentStyle: { background: { color: {} }, pageNumberStart: 1, marginTop: PT(72), marginBottom: PT(72), marginRight: PT(72), marginLeft: PT(72), pageSize: { height: PT(792), width: PT(612) }, marginHeader: PT(36), marginFooter: PT(36), useCustomHeaderFooterMargins: true },
+  namedStyles: { styles: [
+    { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false, italic: false, underline: false, strikethrough: false, smallCaps: false, backgroundColor: {}, foregroundColor: rgb(0, 0, 0), fontSize: PT(11), weightedFontFamily: { fontFamily: "Arial", weight: 400 }, baselineOffset: "NONE" }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", alignment: "START", lineSpacing: 115, direction: "LEFT_TO_RIGHT", spacingMode: "COLLAPSE_LISTS", spaceAbove: { unit: "PT" }, spaceBelow: { unit: "PT" }, indentFirstLine: { unit: "PT" }, indentStart: { unit: "PT" }, indentEnd: { unit: "PT" }, keepLinesTogether: false, keepWithNext: false, avoidWidowAndOrphan: true, shading: { backgroundColor: {} }, pageBreakBefore: false } },
+    { namedStyleType: "HEADING_1", textStyle: { fontSize: PT(20) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: PT(20), spaceBelow: PT(6), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "HEADING_2", textStyle: { bold: false, fontSize: PT(16) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: PT(18), spaceBelow: PT(6), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "HEADING_3", textStyle: { bold: false, foregroundColor: rgb(0.2627451, 0.2627451, 0.2627451), fontSize: PT(14) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: PT(16), spaceBelow: PT(4), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "HEADING_4", textStyle: { foregroundColor: rgb(0.4, 0.4, 0.4), fontSize: PT(12) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: PT(14), spaceBelow: PT(4), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "HEADING_5", textStyle: { foregroundColor: rgb(0.4, 0.4, 0.4), fontSize: PT(11) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: PT(12), spaceBelow: PT(4), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "HEADING_6", textStyle: { italic: true, foregroundColor: rgb(0.4, 0.4, 0.4), fontSize: PT(11) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: PT(12), spaceBelow: PT(4), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "TITLE", textStyle: { fontSize: PT(26) }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: { unit: "PT" }, spaceBelow: PT(3), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+    { namedStyleType: "SUBTITLE", textStyle: { italic: false, foregroundColor: rgb(0.4, 0.4, 0.4), fontSize: PT(15), weightedFontFamily: { fontFamily: "Arial", weight: 400 } }, paragraphStyle: { namedStyleType: "NORMAL_TEXT", direction: "LEFT_TO_RIGHT", spaceAbove: { unit: "PT" }, spaceBelow: PT(16), keepLinesTogether: true, keepWithNext: true, pageBreakBefore: false } },
+  ] },
+};

@@ -9,8 +9,9 @@ import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
 import {
   BULLET_PRESETS, DEFAULT_FONT, FONT_FAMILIES, FONT_SIZES, LINE_SPACINGS, MAX_INDENT, MAX_LIST_LEVEL, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS,
-  fontStack, type NamedStyle,
+  effectiveKeep, fontStack, startAlign, type KeepOptions, type NamedStyle,
 } from "@/lib/rich-text";
+import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
 
 /** A small preview of a list style: its first three levels, as Docs' menus show them */
@@ -78,6 +79,13 @@ interface ToolbarProps {
 
 type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para: Record<string, unknown> } | null;
 
+/**
+ * The paragraph's format that paint format copies: all of it, as Docs does. Its direction goes with its
+ * alignment (start, end), so a right-to-left paragraph paints the same however it came to be one; a list
+ * item paints its list style and its level, not the list it is in.
+ */
+const PAINTED = ["styleName", "textAlign", "dir", "lineSpacing", "indent", "firstLine", "indentEnd", "list", "level", "preset", "box", "keep", "borders", "shading", "spacingMode"];
+
 export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl, onCustomSpacing }: ToolbarProps) {
   const mod = useModKey();
   const [spellcheck, setSpellcheck] = useState(true);
@@ -96,8 +104,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       if (editor.state.selection.empty) return;
       let chain = editor.chain().focus().unsetFormattingMarks();
       for (const m of painter.marks) chain = chain.setMark(m.type, m.attrs);
-      const { styleName, textAlign, lineSpacing, indent, firstLine, list, box, keep, borders, shading } = painter.para;
-      chain.updateAttributes("paragraph", { styleName, textAlign, lineSpacing, indent, firstLine, list, box, keep, borders, shading }).run();
+      chain.updateAttributes("paragraph", Object.fromEntries(PAINTED.map((k) => [k, painter.para[k] ?? null]))).run();
       setPainter(null);
     }, 0);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPainter(null); };
@@ -125,6 +132,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       const ts = e.getAttributes("textStyle");
       const para = e.getAttributes("paragraph");
       const style = (para.styleName as NamedStyle) ?? "normal";
+      // Its own keep options, else its style's, as the page lays it out and Docs has it
+      const keep = effectiveKeep(para.keep as KeepOptions | null, style, docKeeps(e.view.dom));
       return {
         bold: e.isActive("bold"),
         italic: e.isActive("italic"),
@@ -133,15 +142,15 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         font: (ts.fontFamily as string) ?? ((e.view.dom as HTMLElement).dataset.docFont || DEFAULT_FONT),
         size: (ts.fontSize as number) ?? NAMED_STYLES[style]?.size ?? 11,
         style,
-        align: ((para.textAlign as string) ?? "left") as keyof typeof ALIGN_ICONS,
+        align: ((para.textAlign as string) ?? startAlign(para.dir)) as keyof typeof ALIGN_ICONS,
         spacing: (para.lineSpacing as number) ?? 115,
         firstLine: !!para.firstLine,
         indent: (para.indent as number) ?? 0,
         above: ((para.box as { above?: number | null } | null)?.above ?? 0) > 0,
         below: ((para.box as { below?: number | null } | null)?.below ?? 0) > 0,
-        keepNext: !!(para.keep as { withNext?: boolean } | null)?.withNext,
-        keepLines: !!(para.keep as { linesTogether?: boolean } | null)?.linesTogether,
-        singleLines: (para.keep as { singleLines?: boolean } | null)?.singleLines !== false,
+        keepNext: !!keep.withNext,
+        keepLines: !!keep.linesTogether,
+        singleLines: keep.singleLines !== false,
         canUndo: e.can().undo(),
         canRedo: e.can().redo(),
         color: (ts.color as string | undefined) ?? null,

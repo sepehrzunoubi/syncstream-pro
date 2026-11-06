@@ -18,6 +18,8 @@ export interface ListParagraph {
   glyph?: Glyph | null;
   /** Docs list style of a list made in the editor */
   preset?: string | null;
+  /** A paragraph the list goes on after (a list item's next line, see ParagraphFormat.cont) */
+  listCont?: boolean | null;
 }
 
 /** What each Docs list style draws at levels 0, 1 and 2 (then repeating); numbered styles give a glyph type and format */
@@ -73,14 +75,43 @@ export function glyphNumber(n: number, type: string | null | undefined): string 
   }
 }
 
+/**
+ * Whether Docs adds new items in `preset` to the list of the item right before them: it does when
+ * that list draws the preset's glyph (createParagraphBullets joins a preceding list with a matching preset)
+ */
+function joins(preset: string, before: ListParagraph): boolean {
+  if (!before.listId || !before.glyph || presetKind(preset) !== before.list) return false;
+  const g = presetGlyph(preset, Math.max(0, Math.min(8, before.level ?? 0)));
+  return typeof g === "string" ? before.glyph.symbol === g : before.glyph.type === g.type && before.glyph.format === g.format;
+}
+
 /** The label of each paragraph ("3.", "a.", "●"), or null (not a list, or a checklist box) */
 export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
+  return listRuns(paragraphs).labels;
+}
+
+/**
+ * The labels, and the list each item is counted in (null for other paragraphs): its Docs list's id, the
+ * Docs list a run of items made here joins, or that run's own key. A sync puts each item in that list.
+ */
+export function listRuns(paragraphs: ListParagraph[]): { labels: (string | null)[]; lists: (string | null)[] } {
+  const lists: (string | null)[] = [];
+  let runs = 0;
   const byList = new Map<string, number[]>();
   let runType: string | null = null;
-  return paragraphs.map((p) => {
-    if (!p.list) { runType = null; return null; }
+  // The paragraph before, when it is an item of a Docs list, and the Docs list a run of new items joined
+  let before: ListParagraph | null = null;
+  let joined: string | null = null;
+  const labels = paragraphs.map((p) => {
+    lists.push(null);
+    // Any other paragraph ends a list made here; a list item's next line doesn't. Either way new items
+    // after it make a list of their own in Docs (createParagraphBullets joins the paragraph right before)
+    if (!p.list) { if (!p.listCont) { runType = null; joined = null; } before = null; return null; }
     if (p.listId) {
+      lists[lists.length - 1] = p.listId;
       runType = null;
+      joined = null;
+      before = p;
       const level = Math.max(0, Math.min(8, p.level ?? 0));
       const counts = byList.get(p.listId) ?? [];
       counts[level] = (counts[level] ?? (p.glyph?.start ?? 1) - 1) + 1;
@@ -94,18 +125,56 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
       const format = g.format || `%${level}.`;
       return format.replace(/%(\d)/g, (_, d: string) => glyphNumber(counts[Number(d)] ?? 1, Number(d) === level ? g.type : "DECIMAL"));
     }
-    // A list made in the editor: consecutive items of one kind, counted per level
+    // A list made in the editor: consecutive items of one kind, counted per level. Right after an item
+    // of a Docs list in the same style, the sync adds them to that list, so they count on from it.
     const preset = p.preset ?? DEFAULT_PRESET[p.list] ?? DEFAULT_PRESET.bullet;
     const level = Math.max(0, Math.min(8, p.level ?? 0));
     const key = `local:${preset}`;
-    if (runType !== key) { runType = key; byList.delete(key); }
-    const counts = byList.get(key) ?? [];
+    if (runType !== key) {
+      runType = key;
+      runs++;
+      byList.delete(key);
+      joined = before && joins(preset, before) ? before.listId! : null;
+    }
+    before = null;
+    const countKey = joined ?? key;
+    lists[lists.length - 1] = joined ?? `${key}#${runs}`;
+    const counts = byList.get(countKey) ?? [];
     counts[level] = (counts[level] ?? 0) + 1;
     counts.length = level + 1;
-    byList.set(key, counts);
+    byList.set(countKey, counts);
     if (p.list === "check") return null;
     const g = presetGlyph(preset, level);
     if (typeof g === "string") return g;
     return g.format.replace(/%(\d)/g, (_, d: string) => glyphNumber(counts[Number(d)] ?? 1, Number(d) === level ? g.type : "DECIMAL"));
   });
+  return { labels, lists };
+}
+
+const presetKind = (preset: string) => (preset === "BULLET_CHECKBOX" ? "check" : preset.startsWith("BULLET") ? "bullet" : "ordered");
+
+/**
+ * The Docs list style that draws a list's levels most like its own glyphs.
+ * Docs can only make new lists in its list styles, so a list pasted from
+ * another document is shown (and synced) in the closest one. `weights`
+ * counts the list's items at each level: the levels it uses decide.
+ */
+export function presetForLevels(kind: string, levels: (Glyph | null | undefined)[], weights: number[] = [1]): string {
+  let best = DEFAULT_PRESET[kind] ?? DEFAULT_PRESET.bullet;
+  let bestScore = -1;
+  for (const preset of Object.keys(PRESET_LEVELS)) {
+    if (presetKind(preset) !== kind) continue;
+    let score = 0;
+    for (let level = 0; level < 9; level++) {
+      const w = weights[level] ?? 0;
+      const own = levels[level];
+      if (!w || !own) continue;
+      const g = presetGlyph(preset, level);
+      if (typeof g === "string") score += own.symbol === g ? w : 0;
+      else if (own.type === g.type) score += own.format === g.format ? w : w / 2;
+    }
+    // Ties go to the first style listed, Docs' default for the kind
+    if (score > bestScore) { best = preset; bestScore = score; }
+  }
+  return best;
 }

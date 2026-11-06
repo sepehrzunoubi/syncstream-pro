@@ -176,7 +176,21 @@ test("page breaks and section breaks are saved as Docs inserts them", async () =
   // A section break after the first paragraph
   const withSection = { type: "doc", content: [p([t("one two")]), p([], { locked: true, kind: "section", sectionType: "continuous" }), p([t("three")])] };
   const r2 = directEdits(base, withSection);
-  assert.deepEqual(r2.requests, [{ insertSectionBreak: { location: { index: 9 }, sectionType: "CONTINUOUS" } }]);
+  // Then its columns over it (the section from just after the break to the end), whatever Docs gave it
+  const single = { columnProperties: [], columnSeparatorStyle: "NONE" };
+  assert.deepEqual(r2.requests, [
+    { insertSectionBreak: { location: { index: 9 }, sectionType: "CONTINUOUS" } },
+    { updateSectionStyle: { range: { startIndex: 11, endIndex: 17 }, sectionStyle: single, fields: "columnProperties,columnSeparatorStyle" } },
+  ]);
+  // In two columns, before a section that follows: up to that one
+  const twoThenOne = { type: "doc", content: [p([t("one two")]), p([], { locked: true, kind: "section", sectionType: "continuous", columns: 2, spacing: 18, line: true }), p([t("three")]), p([], { locked: true, kind: "section", sectionType: "continuous" }), p([t("four")])] };
+  const r3 = directEdits({ type: "doc", content: [p([t("one two")]), p([t("three")]), p([t("four")])] }, twoThenOne);
+  // "one two\n" 1..9, newline and break 9..11, "three\n" 11..17, newline and break 17..19, "four\n" 19..24
+  type SectionStyle = { range: { startIndex: number; endIndex: number }; sectionStyle: { columnProperties: unknown[]; columnSeparatorStyle: string } };
+  assert.deepEqual(r3.requests.filter((r) => r.updateSectionStyle).map((r) => r.updateSectionStyle as SectionStyle).map((u) => [u.range, u.sectionStyle.columnProperties.length, u.sectionStyle.columnSeparatorStyle]), [
+    [{ startIndex: 11, endIndex: 18 }, 2, "BETWEEN_EACH_COLUMN"],
+    [{ startIndex: 19, endIndex: 24 }, 0, "NONE"],
+  ]);
   // Docs puts a newline before the break: an empty paragraph, then the break covering one index
   assert.equal(r2.saved.content?.[1].type, "paragraph");
   assert.equal((r2.saved.content?.[1].content ?? []).length, 0);
@@ -224,6 +238,15 @@ test("tables: cells are editable paragraphs between structure tokens that keep D
   assert.deepEqual(directEdits(base, fresh).requests, [{ insertTable: { rows: 1, columns: 1, location: { index: 22 } } }]);
   const gone = { type: "doc", content: [p("Intro"), p("After")] };
   assert.deepEqual(directEdits(base, gone).requests, [{ deleteContentRange: { range: { startIndex: 7, endIndex: 22 } } }]);
+  // A removed column
+  const narrow = { type: "doc", content: [p("Intro"), table("t1", row("r0", cell("c0", p("A"))), row("r1", cell("c0", p("C")))), p("After")] };
+  const r4 = directEdits(base, narrow);
+  assert.deepEqual(r4.requests, [{ deleteTableColumn: { tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex: 0, columnIndex: 1 } } }]);
+  // The edit route takes every one of these (it refused table structure before)
+  const { EDIT_REQUESTS } = await import("./docs-requests");
+  for (const r of [r1, r2, r3, r4, directEdits(base, fresh), directEdits(base, gone)]) {
+    for (const q of r.requests) assert.ok(EDIT_REQUESTS.has(Object.keys(q)[0]), `${Object.keys(q)[0]} is not an edit the route takes`);
+  }
 });
 
 test("a header's edits are saved in its own segment, from index 0, never as additions", async () => {
@@ -295,6 +318,57 @@ test("deleting across a section break removes the text on both sides and keeps t
   assert.deepEqual(directEdits(base2, target2).saved, target2);
 });
 
+test("a cell's background is one updateTableCellStyle at its table, row and column; white is none", async () => {
+  const { directEdits, adoptStructure } = await import("./doc-model");
+  const p = (text: string) => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] });
+  const cell = (cid: string, text: string, background: string | null = null) => ({ type: "tableCell", attrs: { cid, span: 1, background }, content: [p(text)] });
+  const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  const doc = (bg: (string | null)[]) => ({ type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t1", span: 1 }, content: [row("r0", cell("c0", "A", bg[0]), cell("c1", "B", bg[1])), row("r1", cell("c0", "C", bg[2]), cell("c1", "D", bg[3]))] }, p("After")] });
+  const base = doc([null, null, "#ffffff", "#ff0000"]);
+  const { requests } = directEdits(base, doc(["#FFF2CC", null, null, null]));
+  const at = (rowIndex: number, columnIndex: number) => ({ tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex, columnIndex }, rowSpan: 1, columnSpan: 1 });
+  assert.deepEqual(requests, [
+    { updateTableCellStyle: { tableRange: at(0, 0), tableCellStyle: { backgroundColor: { color: { rgbColor: { red: 1, green: 242 / 255, blue: 204 / 255 } } } }, fields: "backgroundColor" } },
+    // Taken off: the field with no value
+    { updateTableCellStyle: { tableRange: at(1, 1), tableCellStyle: {}, fields: "backgroundColor" } },
+  ]);
+  // A table the editor made, adopted once the document has it: the document's ids and spans, the editor's backgrounds
+  const mine = { type: "doc", content: [p("Intro"), { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: { background: "#d9ead3" }, content: [p("")] }] }] }, p("After")] };
+  const theirs = { type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t9", span: 1, endSpan: 1 }, content: [{ type: "tableRow", attrs: { rid: "t9r0", span: 1 }, content: [{ type: "tableCell", attrs: { cid: "t9c0", span: 2, background: null, colwidth: [624] }, content: [p("")] }] }] }, p("After")] };
+  const adopted = adoptStructure(theirs, mine) as { content: { content?: { content?: { attrs: Record<string, unknown> }[] }[]; attrs?: Record<string, unknown> }[] };
+  assert.equal(adopted.content[1].attrs?.tid, "t9");
+  // (no width of its own: the document's)
+  assert.deepEqual(adopted.content[1].content?.[0].content?.[0].attrs, { background: "#d9ead3", colwidth: [624], cid: "t9c0", span: 2 });
+});
+
+test("a column's width the editor has and the document doesn't is one updateTableColumnProperties, fixed at it", async () => {
+  const { directEdits, adoptStructure } = await import("./doc-model");
+  const p = (text: string) => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] });
+  const cell = (cid: string, colwidth: number[] | null, colspan = 1) => ({ type: "tableCell", attrs: { cid, span: 1, colspan, colwidth }, content: [p(cid)] });
+  const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  // Two rows: a cell across both columns, then one per column
+  const doc = (top: number[] | null, left: number[] | null, right: number[] | null) => ({ type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t1", span: 1 }, content: [row("r0", cell("c0", top, 2)), row("r1", cell("c0", left), cell("c1", right))] }, p("After")] });
+  const base = doc([312, 312], [312], [312]);
+  const width = (column: number, magnitude: number) => ({ updateTableColumnProperties: { tableStartLocation: { index: 7 }, columnIndices: [column], tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude, unit: "PT" } }, fields: "widthType,width" } });
+  assert.deepEqual(directEdits(base, doc([120, 504], [120], [504])).requests, [width(0, 90), width(1, 378)]);
+  // From whichever cell gives it: the one across both columns
+  assert.deepEqual(directEdits(base, doc([120, 504], null, null)).requests, [width(0, 90), width(1, 378)]);
+  // The same width, or none in the editor: nothing; under Docs' least, its least
+  assert.deepEqual(directEdits(base, doc([312, 312], [312], [312])).requests, []);
+  assert.deepEqual(directEdits(base, doc(null, null, null)).requests, []);
+  assert.deepEqual(directEdits(base, doc([3, 621], null, null)).requests, [width(0, 5), width(1, 465.75)]);
+  // which, read back, is the document's width from then on; and after a save that doesn't read it back
+  // (the base is then what the editor had), still nothing
+  assert.deepEqual(directEdits(doc([7, 621], [7], [621]), doc([3, 621], null, null)).requests, []);
+  assert.deepEqual(directEdits(doc([3, 621], null, null), doc([3, 621], null, null)).requests, []);
+  assert.deepEqual(directEdits(doc([1, 621], [1], [621]), doc([6, 621], [6], [621])).requests, []);
+  // Kept through adoption, for the next save to write
+  const mine = { type: "doc", content: [p("Intro"), { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: { colwidth: [120] }, content: [p("")] }] }] }, p("After")] };
+  const theirs = { type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t9", span: 1, endSpan: 1 }, content: [{ type: "tableRow", attrs: { rid: "t9r0", span: 1 }, content: [{ type: "tableCell", attrs: { cid: "t9c0", span: 2, colwidth: [624] }, content: [p("")] }] }] }, p("After")] };
+  const adopted = adoptStructure(theirs, mine) as { content: { content?: { content?: { attrs: Record<string, unknown> }[] }[] }[] };
+  assert.deepEqual(adopted.content[1].content?.[0].content?.[0].attrs.colwidth, [120]);
+});
+
 test("deleting across a table removes the text on both sides and keeps the table as it is", () => {
   const cell = (cid: string, text: string) => ({ type: "tableCell", attrs: { cid, span: 1 }, content: [p(text)] });
   const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
@@ -309,4 +383,18 @@ test("deleting across a table removes the text on both sides and keeps the table
     { deleteContentRange: { range: { startIndex: 6, endIndex: 10 } } },
   ]);
   assert.deepEqual(saved, target);
+});
+
+test("re-making a list keeps a list item's next line in it: the items around it stay one list, the line gets no bullet", () => {
+  const li = (text: string, level = 0) => ({ type: "paragraph", attrs: { list: "ordered", level }, content: [{ type: "text", text }] });
+  const line = { type: "paragraph", attrs: { listCont: true, box: { start: 36, first: 0 } }, content: [{ type: "text", text: "its line" }] };
+  // "one\n" 1–5, "its line\n" 5–14, "two\n" 14–18
+  const base = { type: "doc", content: [li("one"), line, li("two")] };
+  const target = { type: "doc", content: [li("one"), line, li("two", 1)] };
+  const { requests } = directEdits(base, target);
+  const create = requests.find((r) => r.createParagraphBullets) as { createParagraphBullets: { range: { startIndex: number; endIndex: number } } };
+  assert.deepEqual(create.createParagraphBullets.range.startIndex, 1, "from the list's first item, across the line");
+  const after = requests.slice(requests.indexOf(create));
+  assert.ok(after.some((r) => JSON.stringify(r) === JSON.stringify({ deleteParagraphBullets: { range: { startIndex: 5, endIndex: 14 } } })), "the line loses the bullet it got");
+  assert.ok(after.some((r) => (r as { updateParagraphStyle?: { range: { startIndex: number }; paragraphStyle: { indentStart?: { magnitude: number } } } }).updateParagraphStyle?.range.startIndex === 5), "and gets its indents back");
 });

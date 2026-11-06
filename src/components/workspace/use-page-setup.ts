@@ -8,13 +8,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import type { EditorNode } from "@/lib/rich-text";
 import { NAMED_STYLE_ORDER } from "@/lib/rich-text";
-import { DEFAULT_PAGE_SETUP, documentStyleRequest, pageGeometry, pageSize, samePageSetup, type PageSetup } from "@/lib/page-setup";
+import { DEFAULT_PAGE_SETUP, documentModeRequest, documentStyleRequest, pageGeometry, pageSize, samePageSetup, type PageSetup } from "@/lib/page-setup";
 import { pageStartOffsets } from "@/lib/page-offsets";
 import { tokenize } from "@/lib/doc-model";
 import { tokenPositions } from "./pagination";
 import { postJson } from "./api";
 import { writePageDefault } from "./storage";
-import type { DocContent, DocRefs, Setter } from "./doc-state";
+import { screenStack } from "./space-faces";
+import { shownTab, tabFields, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
 export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent }: {
   editor: Editor | null;
@@ -69,13 +70,14 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
   // the preview pins its page breaks there and only measures what comes after
   const pagesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pagesRevision = useRef("");
-  const pinGooglePages = useCallback(async (docId: string) => {
+  const pinGooglePages = useCallback(async (docId: string, tab: { id: string | null; first: boolean }) => {
     if (!editor) return;
     let res: Response;
-    try { res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}`); } catch { return; } // pins are optional
+    const which = tab.id ? `&tab=${encodeURIComponent(tab.id)}${tab.first ? "&first=1" : ""}` : "";
+    try { res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}${which}`); } catch { return; } // pins are optional
     if (!res.ok) return;
     const data = (await res.json().catch(() => ({}))) as { pages?: string[] };
-    if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId) return;
+    if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId || (docContentRef.current.tabId ?? null) !== tab.id) return;
     // The saved text, token by token, so each offset maps to a document position
     const positions = tokenPositions(editor.state.doc);
     const all = tokenize(editor.getJSON() as EditorNode);
@@ -92,10 +94,12 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
   }, [editor, docContentRef]);
   useEffect(() => {
     const content = docContent;
-    if (content?.status !== "ready" || !content.revisionId || content.revisionId === pagesRevision.current) return;
-    pagesRevision.current = content.revisionId;
+    // Each tab is paginated on its own
+    const key = `${content?.revisionId}#${content?.tabId ?? ""}`;
+    if (content?.status !== "ready" || !content.revisionId || key === pagesRevision.current) return;
+    pagesRevision.current = key;
     if (pagesTimer.current) clearTimeout(pagesTimer.current);
-    pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId); }, 1500);
+    pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId, shownTab(content)); }, 1500);
   }, [docContent, pinGooglePages]);
   useEffect(() => () => { if (pagesTimer.current) clearTimeout(pagesTimer.current); }, []);
   useEffect(() => { if (docContent?.status !== "ready") editor?.commands.setPinnedBreaks([]); }, [docContent?.status, editor]);
@@ -106,37 +110,57 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
     for (const e of [editor, viewer]) {
       const dom = e?.view.dom as HTMLElement | undefined;
       if (!dom) continue;
-      dom.style.setProperty("--ss-doc-font", docDefaults ? `"${docDefaults.fontFamily}", Arimo, sans-serif` : "");
+      dom.style.setProperty("--ss-doc-font", docDefaults ? screenStack(docDefaults.fontFamily) : "");
       dom.style.setProperty("--ss-doc-size", docDefaults ? `${docDefaults.fontSize}pt` : "");
       for (const name of NAMED_STYLE_ORDER) {
         const s = docDefaults?.styles[name];
         dom.style.setProperty(`--ss-size-${name}`, s?.fontSize ? `${s.fontSize}pt` : "");
-        dom.style.setProperty(`--ss-font-${name}`, s?.fontFamily ? `"${s.fontFamily}", Arimo, sans-serif` : "");
+        dom.style.setProperty(`--ss-font-${name}`, s?.fontFamily ? screenStack(s.fontFamily) : "");
         dom.style.setProperty(`--ss-color-${name}`, s?.color ?? "");
       }
       dom.dataset.docFont = docDefaults?.fontFamily ?? "";
+      // Whether the document's lists keep the space between their items (docs.css)
+      if (docDefaults?.spacingMode === "NEVER_COLLAPSE") dom.dataset.docSm = "never";
+      else delete dom.dataset.docSm;
+      // What a paste from another document is read against (see paste.ts)
+      if (docDefaults) dom.dataset.docDefaults = JSON.stringify(docDefaults);
+      else delete dom.dataset.docDefaults;
     }
   }, [editor, viewer, docDefaults]);
 
   /** Page setup from the dialog: shown here, and written to the open Google Doc */
   const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {
-    setPageless(nextPageless);
     const prev = pageSetup;
-    if (samePageSetup(prev, next)) return;
-    setPageSetup(next);
+    const prevPageless = pageless;
+    const setupChanged = !samePageSetup(prev, next);
+    const modeChanged = prevPageless !== nextPageless;
+    setPageless(nextPageless);
+    if (setupChanged) setPageSetup(next);
+    if (!setupChanged && !modeChanged) return;
     const content = docContentRef.current;
     if (content?.status !== "ready") return;
     await saveNow();
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", {
-      documentId: content.docId,
-      revisionId: revisionRef.current,
-      requests: [documentStyleRequest(next)],
-    });
-    if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
-    setPageSetup(prev);
-    if (status === 401) setScopeError(true);
-    setSnack(data.error || "Couldn't change the page setup in Google Docs");
-  }, [pageSetup, saveNow, docContentRef, revisionRef, setScopeError, setSnack]);
+    const send = (requests: Record<string, unknown>[]) => postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
+    if (setupChanged) {
+      const { ok, status, data } = await send([documentStyleRequest(next)]);
+      if (!ok) {
+        setPageSetup(prev);
+        setPageless(prevPageless);
+        if (status === 401) setScopeError(true);
+        setSnack(data.error || "Couldn't change the page setup in Google Docs");
+        return;
+      }
+      if (data.revisionId) revisionRef.current = data.revisionId;
+    }
+    // Pages or pageless on its own, so the rest of the setup goes in even if this doesn't
+    if (modeChanged) {
+      const { ok, status, data } = await send([documentModeRequest(nextPageless)]);
+      if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
+      setPageless(prevPageless);
+      if (status === 401) setScopeError(true);
+      setSnack(data.error || `Couldn't make the Google Doc ${nextPageless ? "pageless" : "paged"}`);
+    }
+  }, [pageSetup, pageless, saveNow, docContentRef, revisionRef, setScopeError, setSnack]);
   const setPageDefault = useCallback((setup: PageSetup, nextPageless: boolean) => {
     writePageDefault(setup, nextPageless);
     setSnack("New documents will use this page setup");

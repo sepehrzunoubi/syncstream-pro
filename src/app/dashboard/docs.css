@@ -1,3 +1,22 @@
+/* Docs draws list glyphs (● ○ ■) in the bullet's font; Google Fonts' Arimo leaves them out, so the Arial
+   stack gets them from Arimo itself (public/fonts/README.md) rather than from whatever symbol font is around */
+@font-face {
+  font-family: "Arimo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("/fonts/arimo-list-glyphs.woff2") format("woff2");
+  unicode-range: U+25A0, U+25BA, U+25C4, U+25CB, U+25CF;
+}
+@font-face {
+  font-family: "Arimo";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("/fonts/arimo-list-glyphs.woff2") format("woff2");
+  unicode-range: U+25A0, U+25BA, U+25C4, U+25CB, U+25CF;
+}
+
 /*
  * Workspace styles, modelled on the Google Docs editor.
  * Colours are Docs' Material 3 values; sizes follow its 8px grid.
@@ -186,11 +205,11 @@
   color: var(--ss-text);
 }
 .ss-menu[data-state="open"] { animation: ss-menu-in 140ms cubic-bezier(0.2, 0, 0, 1); }
-.ss-menu[data-state="closed"] { animation: ss-menu-out 90ms cubic-bezier(0.3, 0, 1, 1); }
+/* Menus close at once, as in Docs: a menu fading out stays mounted, and its unmounting would take focus
+   from the next menu opened during the fade, closing it */
 @keyframes ss-menu-in { from { opacity: 0; transform: scale(0.96) translateY(-2px); } }
-@keyframes ss-menu-out { to { opacity: 0; transform: scale(0.98); } }
 @media (prefers-reduced-motion: reduce) {
-  .ss-menu[data-state="open"], .ss-menu[data-state="closed"] { animation-duration: 1ms; }
+  .ss-menu[data-state="open"] { animation-duration: 1ms; }
 }
 
 .ss-menu-item {
@@ -309,10 +328,12 @@
 
 /* Document typography: what Google Docs renders for the same formatting */
 .ss-doc {
-  /* Docs lays text out without kerning or ligatures */
+  /* Docs kerns the pairs inside a word, never a pair with a space, and draws no ligatures. Kerning
+     turns on once every family has a face of its own for spaces (space-faces.ts), which keeps it
+     inside words; until then it stays off, which is nearer Docs than kerning across spaces */
   font-kerning: none;
   font-variant-ligatures: none;
-  font-family: var(--ss-doc-font, Arial, Arimo, "Liberation Sans", sans-serif);
+  font-family: var(--ss-doc-font, "SS Space Arial", Arial, Arimo, "Liberation Sans", sans-serif);
   font-size: var(--ss-doc-size, 11pt);
   --ss-spacing: 1.15;
   line-height: calc(var(--ss-spacing) * var(--ss-nlh, 1.15));
@@ -326,7 +347,32 @@
   caret-color: #000;
   min-height: 9in;
 }
+/* Spaces at the end of a line hang past the margin in Docs: the next word stays on the line if it fits.
+   TipTap's own stylesheet (added after this one) sets break-spaces, which wraps a word whose
+   trailing space doesn't fit, breaking lines earlier than Docs does. */
+.ss-doc.ProseMirror { white-space: pre-wrap; }
+/* Nor after the hyphen inside a word (see line-breaks.ts) */
+.ss-doc .ss-nobreak { white-space: nowrap; }
 .ss-doc p { margin: 0; }
+/* Docs puts a line's spacing beyond single (1.15 here) below its text, where CSS splits it above and below:
+   the text of a paragraph spaced wider is drawn that much higher, where a 1.15-spaced line's would sit in
+   the same line, by the size of its largest text (--ss-line-size, see extensions.ts). Only the text moves
+   (its span, and a list item's glyph): the paragraph's box, its shading and borders and where a click
+   lands stay where it is laid out (pagination reads the shift back, see pagination.ts). Registered as a
+   length so the glyph, in a size of its own, moves as far as the text. */
+@property --ss-shift { syntax: "<length>"; inherits: true; initial-value: 0px; }
+.ss-doc p { position: relative; --ss-shift: calc((1.15 - var(--ss-spacing, 1.15)) * var(--ss-nlh, 1.15) * 0.5 * var(--ss-line-size, 1em)); }
+/* Exactly: the browser puts text below its line's top by half the leading rounded down to a pixel (of the
+   zoomed page), over the font's ascent and descent each rounded to one; the shift is the 1.15-spaced
+   line's offset less this line's, so the text sits where a 1.15-spaced line's does to the pixel */
+@supports (width: round(1.5px, 1px)) {
+  .ss-doc p {
+    --ss-px: calc(1px / (var(--ss-zoom, 1) * var(--ss-dpr, 1)));
+    --ss-ad: calc(round(calc(var(--ss-asc, 0.9053) * var(--ss-line-size, 1em)), var(--ss-px)) + round(calc(var(--ss-desc, 0.2119) * var(--ss-line-size, 1em)), var(--ss-px)));
+    --ss-shift: calc(round(down, calc((1.15 * var(--ss-nlh, 1.15) * var(--ss-line-size, 1em) - var(--ss-ad)) / 2), var(--ss-px)) - round(down, calc((var(--ss-spacing, 1.15) * var(--ss-nlh, 1.15) * var(--ss-line-size, 1em) - var(--ss-ad)) / 2), var(--ss-px)));
+  }
+}
+.ss-doc p > .ss-text { position: relative; top: var(--ss-shift); }
 /* Named styles: the document's own sizes, fonts and colours when it sets them, else Docs' defaults */
 .ss-doc p[data-style="title"] { font-size: var(--ss-size-title, 26pt); font-family: var(--ss-font-title, inherit); color: var(--ss-color-title, inherit); margin-bottom: 3pt; }
 .ss-doc p[data-style="subtitle"] { font-size: var(--ss-size-subtitle, 15pt); font-family: var(--ss-font-subtitle, inherit); color: var(--ss-color-subtitle, #666); margin-bottom: 16pt; }
@@ -344,32 +390,66 @@
 .ss-doc sup, .ss-doc sub { font-size: 0.6em; line-height: 0; }
 .ss-doc sup { vertical-align: super; }
 .ss-doc sub { vertical-align: sub; }
-.ss-doc p:first-child { margin-top: 0; }
+/* A document's first paragraph keeps its space above, as in Docs (a heading starts 20pt below the margin);
+   a table cell's or a header's first one starts at its top */
+.ss-doc :is(td, th) > p:first-child, .ss-segment-doc > p:first-child { margin-top: 0; }
 .ss-doc strong { font-weight: 700; }
 .ss-doc ::selection { background: #d3e3fd; }
 .ss-doc p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
+  position: relative;
+  top: var(--ss-shift);
   height: 0;
   color: #80868b;
   pointer-events: none;
 }
 
-/* Lists: Docs puts the glyph at 18pt and the text at 36pt */
+/* Lists: Docs puts the glyph at 18pt and the text at 36pt, from the side the text starts on (the right,
+   in a right-to-left paragraph), so the insets here are by the paragraph's own sides */
 .ss-doc { counter-reset: ss-ol; }
-.ss-doc p[data-list] { position: relative; margin-left: 36pt !important; text-indent: 0 !important; }
-.ss-doc p[data-list]::before { position: absolute; left: -18pt; width: 18pt; text-indent: 0; }
-.ss-doc p[data-list="bullet"]::before { content: "\25CF"; font-size: 0.72em; line-height: inherit; left: -16pt; top: 0.12em; }
+/* The glyph is drawn at the item's first-line indent in the glyph's own text style (Docs' bullet style:
+   the item's first character's unless Docs says otherwise, see doc-sync.ts), full size, in its font,
+   and a highlight on it runs from the glyph to the text, as Docs draws it */
+.ss-doc p[data-list] { position: relative; margin-inline-start: 36pt !important; text-indent: 0 !important; }
+.ss-doc p[data-list]::before {
+  position: absolute;
+  top: var(--ss-shift);
+  inset-inline-start: -18pt;
+  width: 18pt;
+  text-indent: 0;
+  text-align: start;
+  white-space: pre;
+  font-family: var(--ss-g-font, inherit);
+  font-size: var(--ss-g-size, inherit);
+  font-weight: var(--ss-g-weight, inherit);
+  font-style: var(--ss-g-italic, inherit);
+  color: var(--ss-g-color, inherit);
+  line-height: inherit;
+  background: linear-gradient(var(--ss-g-bg, transparent), var(--ss-g-bg, transparent)) 0 50% / 100% calc(var(--ss-nlh, 1.15) * 1em) no-repeat;
+}
+/* A highlight on the glyph covers what one on the text does: the font's ascent and descent (line-metrics.ts),
+   each rounded to a pixel as the browser draws text (a pixel of the zoomed page), in the middle of the line,
+   rounded down */
+@supports (width: round(1.5px, 1px)) {
+  .ss-doc p[data-list]::before {
+    --ss-px: calc(1px / (var(--ss-zoom, 1) * var(--ss-dpr, 1)));
+    --ss-g-c: calc(round(calc(var(--ss-asc, 0.9053) * 1em), var(--ss-px)) + round(calc(var(--ss-desc, 0.2119) * 1em), var(--ss-px)));
+    background-size: 100% var(--ss-g-c);
+    background-position: 0 round(down, calc((var(--ss-spacing, 1.15) * var(--ss-nlh, 1.15) * 1em - var(--ss-g-c)) / 2), var(--ss-px));
+  }
+}
+.ss-doc p[data-list="bullet"]::before { content: "\25CF"; }
 .ss-doc p[data-list="ordered"] { counter-increment: ss-ol; }
-.ss-doc p[data-list="ordered"]::before { content: counter(ss-ol) "."; left: -22pt; width: 18pt; text-align: right; }
-/* A list restarts after any other paragraph, but not across a page break */
+.ss-doc p[data-list="ordered"]::before { content: counter(ss-ol) "."; }
+/* A list restarts after any other paragraph, but not across a page break, nor a list item's next line */
 .ss-doc > p[data-list="ordered"]:first-child,
-.ss-doc > :not(p[data-list="ordered"]):not(.ss-page-gap) + p[data-list="ordered"],
-.ss-doc > :not(p[data-list="ordered"]) + .ss-page-gap + p[data-list="ordered"] { counter-increment: none; counter-set: ss-ol 1; }
+.ss-doc > :not(p[data-list="ordered"]):not(.ss-page-gap):not(p[data-cont]) + p[data-list="ordered"],
+.ss-doc > :not(p[data-list="ordered"]):not(p[data-cont]) + .ss-page-gap + p[data-list="ordered"] { counter-increment: none; counter-set: ss-ol 1; }
 .ss-doc p[data-list="check"]::before {
   content: "";
-  left: -20pt;
-  top: 0.22em;
+  inset-inline-start: -20pt;
+  top: calc(0.22em + var(--ss-shift));
   width: 0.78em;
   height: 0.78em;
   border: 1.5px solid #5f6368;
@@ -378,26 +458,23 @@
 
 /* List labels are computed like Docs numbers them (see list-labels.ts) */
 /* Nesting levels of lists made here: Docs indents each level another half inch */
-.ss-doc p[data-list][data-level="1"] { margin-left: 72pt !important; }
-.ss-doc p[data-list][data-level="2"] { margin-left: 108pt !important; }
-.ss-doc p[data-list][data-level="3"] { margin-left: 144pt !important; }
-.ss-doc p[data-list][data-level="4"] { margin-left: 180pt !important; }
-.ss-doc p[data-list][data-level="5"] { margin-left: 216pt !important; }
-.ss-doc p[data-list][data-level="6"] { margin-left: 252pt !important; }
-.ss-doc p[data-list][data-level="7"] { margin-left: 288pt !important; }
-.ss-doc p[data-list][data-level="8"] { margin-left: 324pt !important; }
-.ss-doc p[data-list][data-box] { margin-left: var(--ss-li-start, 36pt) !important; }
-.ss-doc p[data-list][data-box]::before { left: var(--ss-li-marker, -18pt); }
-.ss-doc p[data-list][data-label]::before {
-  content: attr(data-label);
-  width: auto;
-  top: 0;
-  font-size: inherit;
-  text-align: left;
-}
-.ss-doc p[data-list="bullet"][data-label]::before { font-size: 0.72em; top: 0.12em; }
-.ss-doc p[data-list][data-label]:not([data-box])::before { left: -22pt; }
-.ss-doc p[data-list="bullet"][data-label]:not([data-box])::before { left: -16pt; }
+.ss-doc p[data-list][data-level="1"] { margin-inline-start: 72pt !important; }
+.ss-doc p[data-list][data-level="2"] { margin-inline-start: 108pt !important; }
+.ss-doc p[data-list][data-level="3"] { margin-inline-start: 144pt !important; }
+.ss-doc p[data-list][data-level="4"] { margin-inline-start: 180pt !important; }
+.ss-doc p[data-list][data-level="5"] { margin-inline-start: 216pt !important; }
+.ss-doc p[data-list][data-level="6"] { margin-inline-start: 252pt !important; }
+.ss-doc p[data-list][data-level="7"] { margin-inline-start: 288pt !important; }
+.ss-doc p[data-list][data-level="8"] { margin-inline-start: 324pt !important; }
+.ss-doc p[data-list][data-box] { margin-inline-start: var(--ss-li-start, 36pt) !important; }
+.ss-doc p[data-list][data-box]::before { inset-inline-start: var(--ss-li-marker, -18pt); width: calc(-1 * var(--ss-li-marker, -18pt)); }
+.ss-doc p[data-list][data-label]::before { content: attr(data-label); }
+/* Docs' spacing mode: next to another item of its list, an item has no space above or below there (COLLAPSE_LISTS,
+   Docs' default), unless it keeps it (NEVER_COLLAPSE: its own data-sm, or the document's Normal text, data-doc-sm) */
+.ss-doc:not([data-doc-sm="never"]) > p[data-list]:not([data-sm="never"]):is(:has(+ p[data-list]), :has(+ .ss-page-gap + p[data-list])),
+.ss-doc > p[data-list][data-sm="collapse"]:is(:has(+ p[data-list]), :has(+ .ss-page-gap + p[data-list])) { margin-bottom: 0 !important; }
+.ss-doc:not([data-doc-sm="never"]) > p[data-list]:not([data-sm="never"]):is(p[data-list] + *, p[data-list] + .ss-page-gap + *),
+.ss-doc > p[data-list][data-sm="collapse"]:is(p[data-list] + *, p[data-list] + .ss-page-gap + *) { margin-top: 0 !important; }
 
 /* Parts of the document the editor can't change: tables, smart chips, section breaks */
 .ss-doc p[data-locked] { cursor: default; color: #3c4043; box-shadow: -10px 0 0 #fff, -12px 0 0 #dadce0; }
@@ -421,6 +498,8 @@
 .ss-hf-zone { position: absolute; left: 0; right: 0; z-index: 1; pointer-events: auto; }
 .ss-hf { position: absolute; z-index: 2; pointer-events: auto; min-height: 20px; cursor: text; }
 .ss-hf-body .ss-segment-doc { min-height: 0; padding: 0; }
+/* The header and footer drawn on the other pages: a picture of the live one, not text to select (as in Docs, and a copy of it would name the page's own font faces, see page-copy.ts) */
+.ss-static-copy, .ss-static-copy .ss-doc { user-select: none; -webkit-user-select: none; }
 .ss-hf-editing { outline: 1px dashed #c4c7c5; outline-offset: 4px; }
 .ss-hf:not(.ss-hf-editing) .ss-segment-doc { color: #5f6368; }
 .ss-hf .ProseMirror { outline: none; }
@@ -452,7 +531,10 @@
 @media (prefers-reduced-motion: reduce) { .ss-doc.ss-glow .ss-add { animation: none; } }
 
 /* Links and images */
-.ss-doc a { color: #1155cc; text-decoration: underline; cursor: text; }
+/* A link looks as its text is styled (Docs gives a new link its blue and underline as marks) */
+.ss-doc a { color: inherit; text-decoration: none; cursor: text; }
+/* Docs draws underlines and strikethroughs straight through descenders */
+.ss-doc :is(u, s) { text-decoration-skip-ink: none; -webkit-text-decoration-skip: none; }
 /* Tables, as Docs draws them: 1pt black borders, 5pt cell padding, full text width */
 .ss-doc .tableWrapper { margin: 0; overflow: visible; }
 .ss-doc table.ss-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }
@@ -496,6 +578,8 @@
 /* The side margins belong to the editor, so a click or drag anywhere across the line reaches the text, as in Docs */
 .ss-sheet-content { position: relative; padding: var(--ss-m-top, 1in) 0 0; cursor: text; }
 .ss-sheet-content .ss-doc {
+  /* The first paragraph's space above stays inside the text area, so the page measures from the margin */
+  display: flow-root;
   min-height: calc(var(--ss-page-h, 11in) - var(--ss-m-top, 1in) - var(--ss-m-bottom, 1in));
   padding: 0 var(--ss-m-right, 1in) 0 var(--ss-m-left, 1in);
 }
@@ -810,6 +894,14 @@ tr.ss-page-gap { display: table-row; }
 .ss-outline-item { display: block; width: 100%; padding: 4px 8px; border-radius: 9999px; font-size: 13px; line-height: 18px; text-align: left; color: var(--ss-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ss-outline li[data-level="0"] .ss-outline-item, .ss-outline li[data-level="1"] .ss-outline-item { font-weight: 500; color: var(--ss-text); }
 .ss-outline-item:hover { background: var(--ss-hover); }
+/* Document tabs in the left panel, as Docs lists them */
+.ss-doc-tabs { flex: none; max-height: 40%; overflow-y: auto; padding: 0 12px 8px; }
+.ss-doc-tabs ul { list-style: none; margin: 0; padding: 0; }
+.ss-doc-tab { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 12px; border-radius: 9999px; font-size: 14px; text-align: left; color: var(--ss-text-2); }
+.ss-doc-tab:hover:not(:disabled) { background: var(--ss-hover); }
+.ss-doc-tab[aria-current="page"] { background: var(--ss-pressed); color: var(--ss-on-pressed); font-weight: 500; }
+.ss-doc-tab:disabled { opacity: 0.5; cursor: default; }
+.ss-doc-tab-emoji { width: 18px; flex: none; text-align: center; font-size: 15px; line-height: 1; }
 /* Right-click menu and shortcuts */
 .ss-context-menu { min-width: 240px; padding: 8px 0; }
 .ss-context-menu .ss-menu-item { width: 100%; }

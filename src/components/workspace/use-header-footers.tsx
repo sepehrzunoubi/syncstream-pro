@@ -12,12 +12,16 @@ import { segmentEdits } from "@/lib/doc-model";
 import { useSegmentEditor } from "./segment-editor";
 import type { HeaderFooters } from "./paged-surface";
 import { postJson } from "./api";
-import type { DocRefs, Setter } from "./doc-state";
+import { tabFields, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
 /** A header or footer: a Docs segment with the content as last saved */
 export type Segment = { id: string; base: EditorNode[] };
 export type Segments = { header: Segment | null; footer: Segment | null; firstPageHeader: Segment | null; firstPageFooter: Segment | null };
 export type HfSetup = { useFirstPage: boolean; marginHeader: number; marginFooter: number };
+
+/** Where a header, footer or footnote edit was made: its segment as it was, the document and tab, and their revision */
+type Made = { seg: Segment; content: DocContent; revisionId: string };
+const sameTab = (a: DocContent | null | undefined, b: DocContent) => a?.status === "ready" && a.docId === b.docId && (a.tabId ?? null) === (b.tabId ?? null);
 
 export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor }: {
   editor: Editor | null;
@@ -39,16 +43,20 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
   const segmentTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const saveSegment = useCallback(async (key: keyof Segments, doc: JSONContent) => {
-    const seg = segmentsRef.current[key];
-    const content = docContentRef.current;
-    if (!seg || content?.status !== "ready") return;
+  /**
+   * Save a header, footer or footnote edit to the document and tab it was made in. Its save waits a
+   * moment after typing, by which time another tab or document may be shown: the edit still goes to
+   * its own (its segment, and that document's revision when it was made), never to the one shown.
+   */
+  const saveSegment = useCallback(async (key: keyof Segments, doc: JSONContent, made: Made) => {
+    const { seg, content } = made;
     const target = doc as EditorNode;
     const { requests } = segmentEdits({ type: "doc", content: seg.base }, target, seg.id);
     if (!requests.length) return;
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const shown = sameTab(docContentRef.current, content);
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: shown ? revisionRef.current : made.revisionId, requests, ...tabFields(content) });
     if (ok) {
-      if (data.revisionId) revisionRef.current = data.revisionId;
+      if (data.revisionId && sameTab(docContentRef.current, content)) revisionRef.current = data.revisionId;
       setSegments((s) => (s[key] && s[key]!.id === seg.id ? { ...s, [key]: { id: seg.id, base: target.content ?? [] } } : s));
       return;
     }
@@ -56,20 +64,23 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     setSnack(data.error || "Couldn't save the header or footer to Google Docs");
   }, [docContentRef, revisionRef, setScopeError, setSnack]);
   const segmentChanged = useCallback((key: keyof Segments) => (doc: JSONContent) => {
+    const seg = segmentsRef.current[key];
+    const content = docContentRef.current;
     clearTimeout(segmentTimers.current[key]);
-    segmentTimers.current[key] = setTimeout(() => { void saveSegment(key, doc); }, 600);
-  }, [saveSegment]);
+    if (!seg || content?.status !== "ready") return;
+    const made: Made = { seg, content, revisionId: revisionRef.current };
+    segmentTimers.current[key] = setTimeout(() => { void saveSegment(key, doc, made); }, 600);
+  }, [saveSegment, docContentRef, revisionRef]);
   const segmentFocused = (which: "header" | "footer") => (e: Editor) => { setSegmentEditor(e); setEditingHf(which); };
   const footnoteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const saveFootnote = useCallback(async (id: string, doc: JSONContent) => {
-    const base = footnotesRef.current[id];
-    const content = docContentRef.current;
-    if (!base || content?.status !== "ready") return;
-    const { requests } = segmentEdits({ type: "doc", content: base }, doc as EditorNode, id);
+  const saveFootnote = useCallback(async (id: string, doc: JSONContent, made: Made) => {
+    const { seg, content } = made;
+    const { requests } = segmentEdits({ type: "doc", content: seg.base }, doc as EditorNode, id);
     if (!requests.length) return;
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const shown = sameTab(docContentRef.current, content);
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: shown ? revisionRef.current : made.revisionId, requests, ...tabFields(content) });
     if (ok) {
-      if (data.revisionId) revisionRef.current = data.revisionId;
+      if (data.revisionId && sameTab(docContentRef.current, content)) revisionRef.current = data.revisionId;
       setFootnotes((f) => (f[id] ? { ...f, [id]: (doc as EditorNode).content ?? [] } : f));
       return;
     }
@@ -78,9 +89,16 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
   }, [docContentRef, revisionRef, setScopeError, setSnack]);
   const footnoteProps = useMemo(() => ({
     items: Object.entries(footnotes).map(([id, base]) => ({ id, base })),
-    onChange: (id: string, doc: JSONContent) => { clearTimeout(footnoteTimers.current[id]); footnoteTimers.current[id] = setTimeout(() => { void saveFootnote(id, doc); }, 600); },
+    onChange: (id: string, doc: JSONContent) => {
+      clearTimeout(footnoteTimers.current[id]);
+      const base = footnotesRef.current[id];
+      const content = docContentRef.current;
+      if (!base || content?.status !== "ready") return;
+      const made: Made = { seg: { id, base }, content, revisionId: revisionRef.current };
+      footnoteTimers.current[id] = setTimeout(() => { void saveFootnote(id, doc, made); }, 600);
+    },
     onFocus: (_id: string, e: Editor) => { setSegmentEditor(e); setEditingHf(null); },
-  }), [footnotes, saveFootnote, setSegmentEditor, setEditingHf]);
+  }), [footnotes, saveFootnote, setSegmentEditor, setEditingHf, docContentRef, revisionRef]);
   const headerEditor = useSegmentEditor(segments.header?.base ?? null, segmentChanged("header"), segmentFocused("header"));
   const footerEditor = useSegmentEditor(segments.footer?.base ?? null, segmentChanged("footer"), segmentFocused("footer"));
   const firstHeaderEditor = useSegmentEditor(segments.firstPageHeader?.base ?? null, segmentChanged("firstPageHeader"), segmentFocused("header"));
@@ -91,7 +109,7 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     const content = docContentRef.current;
     if (content?.status !== "ready") { setSnack("Open a Google Doc first"); return null; }
     await saveNow();
-    const { ok, status, data } = await postJson<{ revisionId: string; replies?: Record<string, unknown>[] }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const { ok, status, data } = await postJson<{ revisionId: string; replies?: Record<string, unknown>[] }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
     if (!ok) {
       if (status === 401) setScopeError(true);
       setSnack(data.error || "Couldn't change the document");
@@ -117,8 +135,17 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     }
     setEditingHf(which);
     const ed = which === "header" ? (first ? firstHeaderEditor : headerEditor) : first ? firstFooterEditor : footerEditor;
-    setTimeout(() => ed?.commands.focus("end"), 50);
-  }, [docEdit, hfSetup.useFirstPage, headerEditor, footerEditor, firstHeaderEditor, firstFooterEditor, setEditingHf, setSnack]);
+    // It is the editor shown from now (the toolbar's, Ctrl+A's), not from when it takes focus
+    if (ed) setSegmentEditor(ed);
+    // Unless it has a selection of its own by then (Ctrl+A, a click in it; its focus comes a frame
+    // later), which stays. New content read from the document doesn't count
+    const opened = ed?.state;
+    setTimeout(() => {
+      if (!ed || ed.isDestroyed || ed.isFocused) return;
+      if (opened && ed.state.doc === opened.doc && !ed.state.selection.eq(opened.selection)) return;
+      ed.commands.focus("end");
+    }, 50);
+  }, [docEdit, hfSetup.useFirstPage, headerEditor, footerEditor, firstHeaderEditor, firstFooterEditor, setEditingHf, setSegmentEditor, setSnack]);
 
   const removeHeaderFooter = useCallback(async (which: "header" | "footer") => {
     const cur = segmentsRef.current;

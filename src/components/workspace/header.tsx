@@ -21,6 +21,8 @@ interface HeaderProps {
   isCreatingDoc: boolean;
   jobDocName?: string;
   jobDocId?: string;
+  /** The tab shown or typed into, in a document with more than one */
+  tab?: { id: string; title: string } | null;
   subtitle: string;
   primary: { label: string; onClick: () => void; disabled?: boolean; title?: string; kind: "start" | "new" };
   onToggleRail: () => void;
@@ -97,6 +99,12 @@ export function Header(props: HeaderProps) {
           ) : (
             <span className="truncate px-1.5 text-[18px] leading-6">{title}</span>
           )}
+          {props.tab && renaming == null && (
+            <span className="ss-header-tab flex min-w-0 items-center text-[14px] text-[var(--ss-text-2)]" title={`Tab: ${props.tab.title}`} aria-label={`Tab: ${props.tab.title}`}>
+              <Icon name="chevron_right" size={18} className="flex-none text-[var(--ss-text-3)]" />
+              <span className="truncate">{props.tab.title}</span>
+            </span>
+          )}
           {canRename && renaming == null && (
             <button className="ss-icon-btn h-8 w-8 rounded-full" onClick={() => setRenaming(selected!.name)} title="Rename" aria-label="Rename document">
               <Icon name="edit" size={18} />
@@ -104,7 +112,7 @@ export function Header(props: HeaderProps) {
           )}
           {docId && (
             <a
-              href={`https://docs.google.com/document/d/${docId}/edit`}
+              href={docsUrl(docId, props.tab?.id)}
               target="_blank"
               rel="noopener noreferrer"
               className="ss-icon-btn h-8 w-8 rounded-full"
@@ -174,3 +182,6 @@ function editedLabel(iso: string): string | undefined {
   const sameDay = d.toDateString() === new Date().toDateString();
   return sameDay ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
+
+/** The document in Google Docs, at its tab when it has one */
+export const docsUrl = (docId: string, tabId?: string | null) => `https://docs.google.com/document/d/${docId}/edit${tabId ? `?tab=${encodeURIComponent(tabId)}` : ""}`;

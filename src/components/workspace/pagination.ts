@@ -2,6 +2,8 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import { flowColumns, type FlowBlock } from "./column-flow";
+import { docKeeps } from "@/lib/doc-import";
+import { keepFlags, NAMED_STYLES, namedKeep, type NamedStyle } from "@/lib/rich-text";
 
 /** Page and margins in CSS px (96 per inch); Letter with 1in margins by default */
 export interface PageGeometry { w: number; h: number; top: number; bottom: number; left: number; right: number }
@@ -18,6 +20,12 @@ interface Break {
   row?: number;
   /** The gap sits inside a column section and spans its columns */
   span?: boolean;
+  /**
+   * A gap before a block: how far it reaches up into the margins around it (the smaller of the block's
+   * space above and the space below the block before it, which collapsed into one). The block then keeps
+   * its own space above at the top of the new page, as Docs does, and the page above drops its last space below
+   */
+  pull?: number;
 }
 interface PaginationState {
   breaks: Break[];
@@ -48,7 +56,7 @@ declare module "@tiptap/core" {
   }
 }
 
-function gapElement(height: number, block: boolean, row = 0, span = false): HTMLElement {
+function gapElement(height: number, block: boolean, row = 0, span = false, pull = 0): HTMLElement {
   // Between table rows the gap is a row itself, so the table lays out normally around it
   const el = document.createElement(row ? "tr" : block ? "div" : "span");
   el.className = span ? "ss-page-gap ss-page-gap-span" : "ss-page-gap";
@@ -57,7 +65,10 @@ function gapElement(height: number, block: boolean, row = 0, span = false): HTML
     td.setAttribute("colspan", String(row));
     td.style.cssText = `height: ${height}px; padding: 0; border: 0; background: transparent; line-height: 0; font-size: 0`;
     el.appendChild(td);
-  } else el.style.height = `${height}px`;
+  } else {
+    el.style.height = `${height}px`;
+    if (pull) el.style.marginTop = `${-pull}px`;
+  }
   el.dataset.gap = String(height);
   el.setAttribute("contenteditable", "false");
   el.setAttribute("aria-hidden", "true");
@@ -67,7 +78,7 @@ function gapElement(height: number, block: boolean, row = 0, span = false): HTML
 function decorate(doc: Parameters<typeof DecorationSet.create>[0], breaks: Break[], colStarts: number[] = []): DecorationSet {
   const gaps = breaks
     .filter((b) => b.pos >= 0 && b.pos <= doc.content.size)
-    .map((b) => Decoration.widget(b.pos, () => gapElement(b.height, b.block, b.row, b.span), { side: -1, key: `gap:${b.row ? `r${b.row}` : b.span ? "s" : b.block ? "b" : "i"}:${b.height}`, ignoreSelection: true }));
+    .map((b) => Decoration.widget(b.pos, () => gapElement(b.height, b.block, b.row, b.span, b.pull), { side: -1, key: `gap:${b.row ? `r${b.row}` : b.span ? "s" : b.block ? "b" : "i"}:${b.height}:${b.pull ?? 0}`, ignoreSelection: true }));
   // A column start is a forced column break on the block (CSS break-before), so the browser flows the columns as computed
   const starts = colStarts.flatMap((pos) => {
     const node = pos >= 0 && pos < doc.content.size ? doc.nodeAt(pos) : null;
@@ -157,10 +168,10 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
   // The gap before the next page: what is left of the sheet (footnotes included) plus the margins and the
   // space between sheets. Negative means something taller than a page: no gap can fix that
   const gapAfter = (used: number) => Math.round((FULL_H - used + BETWEEN) * 2) / 2;
-  const pushBreak = (pos: number, used: number, block: boolean, row = 0, span = false): boolean => {
+  const pushBreak = (pos: number, used: number, block: boolean, row = 0, span = false, pull = 0): boolean => {
     const height = gapAfter(used);
     if (height < 0) return false;
-    breaks.push({ pos, height, block, ...(row ? { row } : {}), ...(span ? { span } : {}) });
+    breaks.push({ pos, height, block, ...(row ? { row } : {}), ...(span ? { span } : {}), ...(pull > 0 ? { pull: Math.round(pull * 100) / 100 } : {}) });
     return true;
   };
   const dom = view.dom as HTMLElement;
@@ -168,6 +179,34 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
   const scale = box.width / (dom.offsetWidth || box.width || 1) || 1;
   const toLocal = (clientY: number) => (clientY - box.top) / scale;
   const gapSize = (el: Element) => parseFloat((el as HTMLElement).dataset.gap || "0");
+  /**
+   * How far a paragraph's text is drawn above (or below) where it is laid out: Docs puts a line's spacing
+   * beyond single below its text (docs.css, .ss-text). Its text, drawn so, is what has to fit a page; where
+   * the page breaks is where it is laid out. The paragraph's own box is where it is laid out.
+   */
+  const shiftOf = (el: Element | null | undefined) => {
+    const text = el instanceof HTMLElement && el.tagName === "P" ? el.querySelector(":scope > .ss-text") : null;
+    return text ? parseFloat(getComputedStyle(text).top) || 0 : 0;
+  };
+  /**
+   * A block's space above and the space below the block before it (our gaps aside), in layout px. They
+   * collapse into one in the flow; a page starting at the block keeps its space above (Docs does).
+   */
+  const marginsAt = (el: Element): { above: number; pull: number } => {
+    const above = parseFloat(getComputedStyle(el).marginTop) || 0;
+    let prev = el.previousElementSibling;
+    while (prev?.classList.contains("ss-page-gap")) prev = prev.previousElementSibling;
+    const below = prev ? parseFloat(getComputedStyle(prev).marginBottom) || 0 : 0;
+    return { above, pull: Math.max(0, Math.min(above, below)) };
+  };
+  /** A page break right before block `el`, whose border box starts at flow `top`: the new page starts at its space above */
+  const breakAtBlock = (el: Element, pos: number, top: number): boolean => {
+    const { above, pull } = marginsAt(el);
+    const start = top - above;
+    if (start <= pageStart + 1 || !pushBreak(pos, start - pageStart, true, 0, false, pull)) return false;
+    pageStart = start;
+    return true;
+  };
   let removed = 0;
   let pageStart = 0;
 
@@ -209,9 +248,19 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
           const y = rowStart ? toLocal(rowStart.getBoundingClientRect().bottom) : toLocal(section.getBoundingClientRect().top);
           flowY = y - gapsAbove(y) + Math.min(Math.max(sum / columns, tallest), CONTENT_H);
         }
+      } else if (block) {
+        // A page starting at a paragraph starts at its space above, which the paragraph keeps there
+        const el = view.nodeDOM($pos.before(1));
+        if (!(el instanceof HTMLElement)) continue;
+        const y = toLocal(el.getBoundingClientRect().top);
+        const flowTop = y - gapsAbove(y);
+        if (flowTop <= pageStart + 1 || !breakAtBlock(el, $pos.before(1), flowTop)) continue;
+        pinnedUntil = pos;
+        nextPage();
+        continue;
       } else {
         const y = toLocal(view.coordsAtPos(pos).top);
-        flowY = y - gapsAbove(y);
+        flowY = y - gapsAbove(y) - shiftOf(view.nodeDOM($pos.before(1)) as Element | null);
       }
     } catch { continue; }
     if (flowY <= pageStart + 1) continue;
@@ -223,7 +272,16 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
 
   const all = Array.from(dom.children) as HTMLElement[];
   const children = all.filter((c) => !c.classList.contains("ss-page-gap"));
-  const keepOf = (el: HTMLElement | undefined) => (el?.getAttribute("data-keep") ?? "").split(" ");
+  // A paragraph's own keep options, else its named style's (a heading keeps with the next paragraph), as Docs has them
+  const keeps = docKeeps(dom);
+  const keepOf = (el: HTMLElement | undefined): string[] => {
+    if (!el) return [];
+    const own = el.getAttribute("data-keep");
+    if (own !== null) return own.split(" ");
+    if (el.tagName !== "P") return [];
+    const style = (el.getAttribute("data-style") ?? "normal") as NamedStyle;
+    return keepFlags(namedKeep(style in NAMED_STYLES ? style : "normal", keeps));
+  };
   // Paragraph tops in flow space, so a break can be moved up to an earlier paragraph
   const flowTop = new Map<HTMLElement, number>();
   let lastBreakPara = -1;
@@ -296,8 +354,10 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     const innerSize = (g: Element) => (g.tagName === "TR" ? g.getBoundingClientRect().height / scale : gapSize(g));
     const innerTotal = inner.reduce((s, g) => s + innerSize(g), 0);
     const r = child.getBoundingClientRect();
+    // Its top where it is laid out; its bottom as its text is drawn (what has to fit, see shiftOf)
+    const shift = shiftOf(child);
     const top = toLocal(r.top) - removed;
-    const bottom = toLocal(r.bottom) - removed - innerTotal;
+    const bottom = toLocal(r.bottom) - removed - innerTotal + shift;
     flowTop.set(child, top);
     // What Google already paginated is left alone; measuring starts after the last pin
     if (pinnedUntil >= 0) {
@@ -307,8 +367,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     }
     const forced = forceNext;
     forceNext = !!child.querySelector("[data-page-break]") || (child.getAttribute("data-kind") === "section" && child.getAttribute("data-section") !== "continuous");
-    if (forced && top > pageStart + 1 && pushBreak(view.posAtDOM(child, 0) - 1, top - pageStart, true)) {
-      pageStart = top;
+    if (forced && top > pageStart + 1 && breakAtBlock(child, view.posAtDOM(child, 0) - 1, top)) {
       lastBreakPara = ci;
       nextPage();
     }
@@ -322,9 +381,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       const el = children[q];
       const t = flowTop.get(el) ?? top;
       if (t <= pageStart + 1) return false;
-      const pos = view.posAtDOM(el, 0) - 1;
-      if (!pushBreak(pos, t - pageStart, true)) return false;
-      pageStart = t;
+      if (!breakAtBlock(el, view.posAtDOM(el, 0) - 1, t)) return false;
       lastBreakPara = q;
       nextPage();
       return true;
@@ -369,7 +426,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       return { ...l, ft: l.top - removed - above, fb: l.bottom - removed - above };
     });
     // An empty paragraph (a new line with nothing typed yet) has no text to measure: its box is its one line
-    if (!lines.length) lines.push({ top: toLocal(r.top), bottom: toLocal(r.bottom), first: null as unknown as Fragment, ft: top, fb: bottom });
+    if (!lines.length) lines.push({ top: toLocal(r.top), bottom: toLocal(r.bottom), first: null as unknown as Fragment, ft: top + shift, fb: bottom });
     // Prevent single lines (Docs' default): never leave one line alone on either page
     const singleLines = !keep.includes("single") && lines.length >= 2;
     for (let i = 0; i < lines.length; i++) {
@@ -383,13 +440,11 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
       if (singleLines && at === lines.length - 1 && at >= 2) at = lines.length - 2; // a widow: take one more line along
       if (singleLines && at === 1 && fits) at = 0; // taking a line along may have left one alone
       if (at === 0) {
-        if (!breakBefore(ci) && top > pageStart + 1 && pushBreak(view.posAtDOM(child, 0) - 1, top - pageStart, true)) {
-          pageStart = top;
-          nextPage();
-        }
+        if (!breakBefore(ci) && top > pageStart + 1 && breakAtBlock(child, view.posAtDOM(child, 0) - 1, top)) nextPage();
       } else {
         const Lb = lines[at];
-        const breakTop = (lines[at - 1].fb + Lb.ft) / 2;
+        // Between the two lines as they are laid out
+        const breakTop = (lines[at - 1].fb + Lb.ft) / 2 - shift;
         const pos = lineStartPos(view, Lb, toLocal);
         if (pos != null && breakTop > pageStart + 1 && pushBreak(pos, breakTop - pageStart, false)) {
           pageStart = breakTop;
@@ -405,7 +460,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
 }
 
 const same = (a: Break[], b: Break[]) =>
-  a.length === b.length && a.every((x, i) => x.pos === b[i].pos && x.block === b[i].block && !!x.span === !!b[i].span && Math.abs(x.height - b[i].height) < 1);
+  a.length === b.length && a.every((x, i) => x.pos === b[i].pos && x.block === b[i].block && !!x.span === !!b[i].span && Math.abs(x.height - b[i].height) < 1 && Math.abs((x.pull ?? 0) - (b[i].pull ?? 0)) < 1);
 const sameList = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Splits the editor into US Letter pages, like Docs' default layout. */

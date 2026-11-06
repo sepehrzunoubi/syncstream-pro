@@ -7,9 +7,19 @@ import { useEffect, type MutableRefObject } from "react";
 import type { Editor, EditorOptions } from "@tiptap/react";
 import { editorExtensions } from "./extensions";
 import { ProgressMarks } from "./pagination";
-import { clipboardTextParser, handlePaste, imageFilesOf, transformPastedHTML } from "./paste";
+import { PastedImages } from "./pasted-images";
+import { COPY_TEXT } from "./page-copy";
+import { clipboardTextParser, DroppedBreaks, handlePaste, imageFilesOf, LineBreaks, transformPastedHTML } from "./paste";
 
-export const bodyExtensions = editorExtensions;
+export const bodyExtensions = [...editorExtensions, DroppedBreaks, LineBreaks, PastedImages];
+
+/**
+ * Typing and pasting behave as in Google Docs: lists start from "* " and
+ * "1. " (Docs' list detection), but Markdown marks typed or pasted
+ * (*italic*, ~~strike~~) stay text, as Docs keeps them. URLs in pasted
+ * plain text become links, as in Docs; formatted text keeps the links it has.
+ */
+export const DOCS_RULES: Pick<EditorOptions, "enableInputRules" | "enablePasteRules" | "coreExtensionOptions"> = { enableInputRules: ["docFormat"], enablePasteRules: ["link"], coreExtensionOptions: { clipboardTextSerializer: COPY_TEXT } };
 /** A read-only copy of the editor shows a running sync, paginated the same way */
 export const viewerExtensions = [...editorExtensions, ProgressMarks];
 

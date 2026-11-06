@@ -1,4 +1,6 @@
 import { test, expect, CLOSING_TEXT, LONG_BODY, plainParagraphs, DOC } from "./fixtures";
+import { importDoc } from "../src/lib/doc-import";
+import { EMPTY_DOC } from "./fixtures/empty-doc";
 
 /** Rectangles of every paragraph and every page sheet, to check how the text sits on the pages */
 async function layout(page: import("@playwright/test").Page) {
@@ -58,6 +60,38 @@ test.describe("pages", () => {
     }
   });
 
+  test("double-spaced text flows onto pages and every line stays inside the margins", async ({ app, page }) => {
+    await app.open({ plain: Array.from({ length: 16 }, (_, i) => ({ type: "paragraph", attrs: { lineSpacing: 200 }, content: [{ type: "text", text: `${i + 1}. ${LONG_BODY}` }] })) });
+    await expect.poll(() => app.sheets()).toBeGreaterThanOrEqual(3);
+    await expect.poll(async () => (await layout(page)).gaps.length).toBe((await app.sheets()) - 1);
+    const { sheets, lines } = await page.evaluate((sel) => {
+      const rect = (r: DOMRect) => ({ top: r.top, bottom: r.bottom });
+      const out: { top: number; bottom: number }[] = [];
+      for (const p of Array.from(document.querySelectorAll(`${sel} > p`))) {
+        const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+          const range = document.createRange();
+          range.selectNodeContents(t);
+          out.push(...Array.from(range.getClientRects()).map(rect));
+        }
+      }
+      return { sheets: Array.from(document.querySelectorAll(".ss-sheet")).map((s) => rect(s.getBoundingClientRect())), lines: out };
+    }, DOC);
+    const margin = (sheets[0].bottom - sheets[0].top) / 11;
+    // Lines by where they sit (a line can come as more than one rectangle)
+    const onPage = sheets.map(() => new Set<number>());
+    for (const l of lines) {
+      const k = sheets.findIndex((s) => l.top >= s.top && l.top < s.bottom);
+      expect(k, "a line on a page").toBeGreaterThanOrEqual(0);
+      expect(l.top).toBeGreaterThanOrEqual(sheets[k].top + margin - 1);
+      expect(l.bottom).toBeLessThanOrEqual(sheets[k].bottom - margin + 1);
+      onPage[k].add(Math.round(l.top));
+    }
+    // Docs keeps a line on a page when its top and its text's natural height (12.64pt) fit: 26 double-spaced
+    // Arial 11 lines (25.28pt apart) on a 648pt page
+    expect(onPage[0].size).toBe(26);
+  });
+
   test("a table taller than a page breaks between rows", async ({ app, page }) => {
     await app.open({ plain: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text: "Before the table" }] }, tallTable(45), { type: "paragraph", attrs: {}, content: [{ type: "text", text: "After the table" }] }] });
     await expect.poll(() => app.sheets()).toBeGreaterThanOrEqual(2);
@@ -73,6 +107,51 @@ test.describe("pages", () => {
     }, DOC);
     expect(straddling).toBe(0);
     await expect(app.doc.locator("tr:not(.ss-page-gap)")).toHaveCount(45);
+  });
+
+  // A filler paragraph whose space above puts what follows near the end of the first page (a 9in text area)
+  const filler = (above: number) => ({ type: "paragraph", attrs: { box: { start: 0, first: 0, above, below: 0 } }, content: [{ type: "text", text: "Filler" }] });
+  const para = (text: string, attrs: Record<string, unknown> = {}) => ({ type: "paragraph", attrs, content: [{ type: "text", text }] });
+  /** Each paragraph's sheet and where its border box starts below the sheet's text area, in pt */
+  const placed = (page: import("@playwright/test").Page) => page.evaluate((sel) => {
+    const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+    const sheets = Array.from(document.querySelectorAll(".ss-sheet")).map((s) => s.getBoundingClientRect());
+    return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+      const top = p.getBoundingClientRect().top;
+      const k = sheets.findIndex((s) => top >= s.top && top < s.bottom);
+      // Letter paper, 1in margins: the text area starts 96px down the sheet
+      return { text: p.textContent, sheet: k, below: k < 0 ? NaN : Math.round(((top - sheets[k].top) / zoom - 96) * 0.75 * 10) / 10 };
+    });
+  }, DOC);
+
+  test("a paragraph moved to a new page keeps its space above there, as Docs does", async ({ app, page }) => {
+    // The heading (20pt above, a 26pt line) doesn't fit after 600pt and a line of filler
+    await app.open({ plain: [filler(600), para("Heading pushed down", { styleName: "h1" }), para("Text after it")] });
+    await expect.poll(() => app.sheets()).toBe(2);
+    await expect.poll(async () => (await placed(page)).map((p) => p.sheet)).toEqual([0, 1, 1]);
+    const [first, heading] = await placed(page);
+    // Space above stays at the top of a page, the first page's too
+    expect(Math.abs(first.below - 600)).toBeLessThanOrEqual(1);
+    expect(Math.abs(heading.below - 20)).toBeLessThanOrEqual(1);
+  });
+
+  test("a heading keeps with the next paragraph as its style says, unless it says otherwise itself", async ({ app, page }) => {
+    // After 577pt and a line of filler the heading fits at the end of the page, the text after it doesn't
+    await app.open({ plain: [filler(577), para("Heading made here", { styleName: "h1" }), para("Text after it")] });
+    await expect.poll(() => app.sheets()).toBe(2);
+    // A heading with no keep options of its own has its style's: Docs' headings keep with the next paragraph
+    await expect.poll(async () => (await placed(page)).map((p) => p.sheet)).toEqual([0, 1, 1]);
+    expect(Math.abs((await placed(page))[1].below - 20)).toBeLessThanOrEqual(1);
+    // The menu says so, and turning it off there leaves the heading where it fits
+    await app.caretBefore("Heading made here");
+    await page.locator(".ss-menubar-trigger", { hasText: "Format" }).click();
+    await page.getByRole("menuitem").filter({ has: page.getByText("Line & paragraph spacing", { exact: true }) }).hover();
+    const keepNext = page.getByRole("menuitem").filter({ has: page.getByText("Keep with next", { exact: true }) });
+    await expect(keepNext.locator(".ss-check > *")).toHaveCount(1);
+    await keepNext.click();
+    await expect.poll(async () => (await placed(page)).map((p) => p.sheet)).toEqual([0, 0, 1]);
+    // Its own options now: lines together still, as its style had them
+    await expect(app.doc.locator("p[data-keep]")).toHaveAttribute("data-keep", "lines");
   });
 
   test("Ctrl+Enter inserts a page break and the text after it starts a new page", async ({ app, page }) => {
@@ -118,9 +197,312 @@ test.describe("pages", () => {
     await expect(page.locator(".ss-pages")).toHaveClass(/ss-pageless/);
     await expect(page.locator(".ss-sheet")).toHaveCount(1);
     await expect(app.doc.locator(".ss-page-break-label")).toBeVisible();
-    // Paper and margins didn't change, so Google Docs is not written to
-    expect(api.edits).toEqual([]);
+    // Paper and margins didn't change: only the format is written to Google Docs
+    await expect.poll(() => api.edits.length).toBe(1);
+    expect(api.edits[0].requests).toEqual([{ updateDocumentStyle: { documentStyle: { documentFormat: { documentMode: "PAGELESS" } }, fields: "documentFormat.documentMode" } }]);
     expect(await app.text()).toContain(CLOSING_TEXT);
+  });
+
+  test("a pageless Google Doc opens as one continuous sheet", async ({ app, page, api }) => {
+    api.content = { ...api.content, pageless: true };
+    await app.open();
+    await expect(page.locator(".ss-pages")).toHaveClass(/ss-pageless/);
+    await expect(page.locator(".ss-sheet")).toHaveCount(1);
+  });
+});
+
+test.describe("lines as Docs draws them", () => {
+  test("a document in another font spaces its lines by that font's line height", async ({ app, api, page }) => {
+    // A Word document's Calibri (drawn in Carlito, which has its metrics): taller lines than Arial's
+    const doc = structuredClone(EMPTY_DOC);
+    doc.namedStyles.styles[0].textStyle.weightedFontFamily = { fontFamily: "Calibri", weight: 400 };
+    api.content = importDoc(doc as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    await page.evaluate(() => window.ssEditor!.chain().focus().insertContent("Text in the document's own font").run());
+    const got = await page.evaluate((sel) => {
+      const p = document.querySelector<HTMLElement>(`${sel} > p`)!;
+      // The font's natural line height, at a size where the browser's rounding to whole pixels costs nothing
+      const probe = document.createElement("div");
+      probe.style.cssText = `position:absolute;font-size:10000px;line-height:normal;white-space:nowrap;font-family:${getComputedStyle(p).fontFamily}`;
+      probe.textContent = "Hg";
+      document.body.appendChild(probe);
+      const natural = probe.getBoundingClientRect().height / 10000;
+      probe.remove();
+      return { lineHeight: parseFloat(getComputedStyle(p).lineHeight), fontSize: parseFloat(getComputedStyle(p).fontSize), natural, nlh: parseFloat(getComputedStyle(p).getPropertyValue("--ss-nlh")) };
+    }, DOC);
+    expect(got.natural).toBeGreaterThan(1.2);
+    // Measured to the fourth decimal (Calibri's is 1.2207: 1.22 would cost 0.05% a line)
+    expect(Math.abs(got.nlh - got.natural)).toBeLessThan(0.00006);
+    expect(Math.abs(got.lineHeight - 1.15 * got.natural * got.fontSize)).toBeLessThan(0.02);
+  });
+
+  test("items of a list leave out the space between them unless their spacing mode keeps it, as Docs does", async ({ app, page }) => {
+    const item = (text: string, spacingMode?: string) => ({ type: "paragraph", attrs: { list: "bullet", level: 0, box: { start: 36, marker: -18, above: 0, below: 12 }, ...(spacingMode ? { spacingMode } : {}) }, content: [{ type: "text", text }] });
+    const para = (text: string) => ({ type: "paragraph", attrs: {}, content: [{ type: "text", text }] });
+    await app.open({ plain: [item("Tight one"), item("Tight two"), para("Between"), item("Kept one", "NEVER_COLLAPSE"), item("Kept two", "NEVER_COLLAPSE"), para("After")] });
+    const gaps = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      const ps = Array.from(document.querySelectorAll(`${sel} > p`)).map((p) => p.getBoundingClientRect());
+      return ps.slice(1).map((r, i) => Math.round(((r.top - ps[i].bottom) / zoom) * 0.75 * 10) / 10);
+    }, DOC);
+    // A list's last item keeps its space below: what follows is not an item of the list
+    expect(gaps).toEqual([0, 12, 0, 12, 12]);
+  });
+
+  test("text spaced wider than single sits where a single-spaced line's does, the extra space below it", async ({ app, page }) => {
+    const para = (text: string, lineSpacing: number) => ({ type: "paragraph", attrs: { lineSpacing }, content: [{ type: "text", text }] });
+    await app.open({ plain: [para("Single", 115), para("Double", 200), para("One and a half", 150), para("Single again", 115)] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        const range = document.createRange();
+        range.selectNodeContents(p.firstChild!);
+        const text = range.getClientRects()[0];
+        // The paragraph's box is where it is laid out: only its text is drawn higher
+        const box = p.getBoundingClientRect();
+        return { textTop: text.top / zoom, top: box.top / zoom, bottom: box.bottom / zoom };
+      });
+    }, DOC);
+    // Text below the top of its line by as much as single-spaced text is, whatever the spacing
+    const single = got[0].textTop - got[0].top;
+    for (const p of got) expect(Math.abs(p.textTop - p.top - single), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
+    // Laid out as before: each paragraph starts where the one above ends, the double-spaced one twice as tall
+    for (let i = 1; i < got.length; i++) expect(Math.abs(got[i].top - got[i - 1].bottom)).toBeLessThanOrEqual(0.6);
+    expect((got[1].bottom - got[1].top) / (got[0].bottom - got[0].top)).toBeCloseTo(200 / 115, 1);
+  });
+
+  test("a wider-spaced paragraph draws only its text higher: its shading, border and clicks stay in its box", async ({ app, page }) => {
+    const run = (text: string) => [{ type: "text", text }];
+    await app.open({ plain: [
+      { type: "paragraph", attrs: { box: { start: 0, first: 0, above: 0, below: 0 } }, content: run("Plain line above, with descenders: gjpqy") },
+      { type: "paragraph", attrs: { lineSpacing: 200, shading: "#fff2cc", box: { start: 0, first: 0, above: 0, below: 0 }, borders: { top: { width: 1, color: "#000000", dash: "SOLID", padding: 0 } } }, content: run("Shaded and double spaced") },
+    ] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      const [a, b] = Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`));
+      const textOf = (p: HTMLElement) => { const r = document.createRange(); r.selectNodeContents(p.querySelector(".ss-text")!); return r.getClientRects()[0]; };
+      const ta = textOf(a);
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      // Just above the bottom of the line above's text: its descenders
+      const hit = document.elementFromPoint(ta.left + 4, ta.bottom - 1);
+      return {
+        gap: (rb.top - ra.bottom) / zoom,
+        // Each paragraph's text below the top of its box by as much (Docs puts the extra spacing below the text)
+        aText: (ta.top - ra.top) / zoom,
+        bText: (textOf(b).top - rb.top) / zoom,
+        hitsAbove: !!hit && a.contains(hit),
+        shading: getComputedStyle(b).backgroundColor,
+        border: parseFloat(getComputedStyle(b).borderTopWidth),
+      };
+    }, DOC);
+    expect(got.gap, JSON.stringify(got)).toBeGreaterThanOrEqual(-0.05);
+    expect(got.hitsAbove, JSON.stringify(got)).toBe(true);
+    // The border's width aside, the text sits where the plain paragraph's does
+    expect(Math.abs(got.bText - got.border - got.aText), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
+    expect(got.shading).toBe("rgb(255, 242, 204)");
+    // A copy has the text right in its paragraphs: the span is the page's
+    const copied = await page.evaluate(() => { const v = window.ssEditor!.view; return v.serializeForClipboard(v.state.doc.slice(0, v.state.doc.content.size)).dom.innerHTML; });
+    expect(copied).not.toContain("ss-text");
+    expect(copied).toContain("Shaded and double spaced");
+  });
+
+  test("a wider-spaced paragraph's text sits by the size of its text, not its paragraph style's", async ({ app, page }) => {
+    const big = (text: string) => ({ type: "text", text, marks: [{ type: "textStyle", attrs: { fontSize: 24 } }] });
+    const P = (lineSpacing: number, ...content: object[]) => ({ type: "paragraph", attrs: { lineSpacing, box: { start: 0, first: 0, above: 0, below: 0 } }, content });
+    await app.open({ plain: [P(115, big("Big, single spaced")), P(200, big("Big, double spaced")), P(200, { type: "text", text: "small then " }, big("BIG")), P(150, big("Big, one and a half"))] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        // The 24pt text: the paragraph's last run
+        const spans = p.querySelectorAll(".ss-text [style*='font-size']");
+        const r = document.createRange();
+        r.selectNodeContents(spans[spans.length - 1]);
+        return (r.getClientRects()[0].top - p.getBoundingClientRect().top) / zoom;
+      });
+    }, DOC);
+    // Below the top of its line by as much as single-spaced text of its size is, to the pixel the browser rounds to
+    for (const top of got) expect(Math.abs(top - got[0]), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
+  });
+
+  test("an empty line is as tall as its newline's own size makes it, and text typed there takes that size, as in Docs", async ({ app, page }) => {
+    const box = { start: 0, first: 0, above: 0, below: 0 };
+    const text = (t: string, size?: number) => ({ type: "paragraph", attrs: { box }, content: [{ type: "text", text: t, ...(size ? { marks: [{ type: "textStyle", attrs: { fontSize: size } }] } : {}) }] });
+    const empty = (size?: number) => ({ type: "paragraph", attrs: { box, ...(size ? { nl: [{ type: "textStyle", attrs: { fontSize: size } }] } : {}) }, content: [] });
+    await app.open({ plain: [text("Big words", 15), empty(15), text("Normal words"), empty(), text("Small words", 6), empty(6)] });
+    await page.evaluate(() => document.fonts.ready);
+    const heights = await page.evaluate((sel) => Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).slice(0, 6).map((p) => Math.round(p.getBoundingClientRect().height * 100) / 100), DOC);
+    // Each empty line as tall as a line of text in its size
+    expect(Math.abs(heights[1] - heights[0]), JSON.stringify(heights)).toBeLessThanOrEqual(0.05);
+    expect(Math.abs(heights[3] - heights[2]), JSON.stringify(heights)).toBeLessThanOrEqual(0.05);
+    expect(Math.abs(heights[5] - heights[4]), JSON.stringify(heights)).toBeLessThanOrEqual(0.05);
+    expect(heights[1]).toBeGreaterThan(heights[3] + 5);
+    // Typing in the 15pt empty line
+    await page.evaluate(() => { const ed = window.ssEditor!; let at = 0; ed.state.doc.forEach((n, pos, i) => { if (i === 1) at = pos + 1; }); ed.chain().focus().setTextSelection(at).run(); });
+    await expect.poll(() => page.evaluate(() => { const ed = window.ssEditor!; return ed.isFocused && ed.state.selection.$from.parent.childCount === 0 && !!ed.state.storedMarks; })).toBe(true);
+    await page.keyboard.type("typed");
+    const typed = await page.evaluate(() => {
+      const n = window.ssEditor!.state.doc.child(1).firstChild;
+      return { text: n?.text, size: n?.marks.find((m) => m.type.name === "textStyle")?.attrs.fontSize };
+    });
+    expect(typed).toEqual({ text: "typed", size: 15 });
+  });
+
+  test("lines are as tall as their text's font and size make them, not the paragraph style's", async ({ app, page }) => {
+    const ts = (attrs: object) => [{ type: "textStyle", attrs }];
+    const P = (marks: object[] | null, lineSpacing = 115) => ({ type: "paragraph", attrs: { lineSpacing, box: { start: 0, first: 0, above: 0, below: 0 } }, content: [{ type: "text", text: LONG_BODY, ...(marks ? { marks } : {}) }] });
+    // In an Arial 11 document: its own text, Calibri (taller lines), 8pt text, both, Calibri double spaced, and
+    // Calibri after a word in the paragraph's own font (lines of Calibri alone are Calibri's)
+    const mixed = { ...P(ts({ fontFamily: "Calibri" })), content: [{ type: "text", text: "Arial " }, { type: "text", text: LONG_BODY, marks: ts({ fontFamily: "Calibri" }) }] };
+    await app.open({ plain: [P(null), P(ts({ fontFamily: "Calibri" })), P(ts({ fontSize: 8 })), P(ts({ fontFamily: "Calibri", fontSize: 8 })), P(ts({ fontFamily: "Calibri" }), 200), mixed] });
+    await page.evaluate(() => document.fonts.ready);
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        // The paragraph's last run, from its second line (the first may hold other text)
+        const walk = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        let node = walk.nextNode() as Text;
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) node = n as Text;
+        const r = document.createRange();
+        r.selectNodeContents(node);
+        const tops = Array.from(r.getClientRects()).map((x) => x.top / zoom);
+        const lines = tops.filter((t, i) => i === 0 || Math.abs(t - tops[i - 1]) > 1).slice(1);
+        const cs = getComputedStyle(node.parentElement!);
+        // Docs' line: the spacing times the font's natural line height at the text's size
+        const want = Number(p.dataset.spacing ?? 115) / 100 * parseFloat(cs.getPropertyValue("--ss-nlh")) * parseFloat(cs.fontSize);
+        return { lines: lines.length, pitch: (lines[lines.length - 1] - lines[0]) / (lines.length - 1), want };
+      });
+    }, DOC);
+    for (const g of got) {
+      expect(g.lines, JSON.stringify(got)).toBeGreaterThanOrEqual(2);
+      expect(Math.abs(g.pitch - g.want), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
+    }
+    // Calibri's lines are taller than Arial's, 8pt text's shorter than 11pt's
+    expect(got[1].pitch / got[0].pitch).toBeCloseTo(1.2207 / 1.1499, 2);
+    expect(got[2].pitch / got[0].pitch).toBeCloseTo(8 / 11, 2);
+  });
+
+  test("text kerns the pairs inside a word but not a pair with a space, as Docs does, and a space is always its font's own", async ({ app, page }) => {
+    const text = "Tavily A round";
+    const tnr = [{ type: "textStyle", attrs: { fontFamily: "Times New Roman" } }];
+    await app.open({ plain: [{ type: "paragraph", content: [{ type: "text", text }] }, { type: "paragraph", content: [{ type: "text", text, marks: tnr }] }] });
+    // Whether this browser draws a font it loads at the advances an installed font has (Chrome on Linux
+    // with fontconfig's hinting on draws it at whole pixels): a face of its own, from a font installed here
+    const exact = await page.evaluate(async () => {
+      const face = new FontFace("SS Probe", 'local("Liberation Sans"), local("LiberationSans")', { unicodeRange: "U+0020" });
+      document.fonts.add(await face.load());
+      const c = document.createElement("canvas").getContext("2d")!;
+      c.font = '100px "SS Probe", monospace';
+      const loaded = c.measureText(" ").width;
+      c.font = '100px "Liberation Sans"';
+      const installed = c.measureText(" ").width;
+      document.fonts.delete(face);
+      return Math.abs(loaded - installed) < 0.01;
+    });
+    const faceOf = (family: string) => page.evaluate((f) => Array.from(document.fonts).some((x) => x.family.replace(/"/g, "") === `SS Space ${f}` && x.style === "normal" && x.status === "loaded"), family);
+    if (exact) {
+      await page.evaluate(async () => { await document.fonts.load('11pt "SS Space Arial"', " "); await document.fonts.load('11pt "SS Space Times New Roman"', " "); await document.fonts.ready; });
+      expect(await faceOf("Arial")).toBe(true);
+      expect(await faceOf("Times New Roman")).toBe(true);
+    } else {
+      // Its space faces would draw every space off by up to half a pixel: they are checked once loaded, and left out
+      await expect.poll(() => faceOf("Arial")).toBe(false);
+      await expect.poll(() => faceOf("Times New Roman")).toBe(false);
+    }
+    const got = await page.evaluate(({ sel, text }) => {
+      const pages = document.querySelector<HTMLElement>(".ss-pages")!;
+      const stacks = ['Arial, Arimo, "Liberation Sans", sans-serif', '"Times New Roman", Tinos, "Liberation Serif", serif'];
+      return Array.from(document.querySelectorAll(`${sel} > p`)).map((p, i) => {
+        const node = document.createTreeWalker(p, NodeFilter.SHOW_TEXT).nextNode() as Text;
+        const width = (from: number, to: number) => { const r = document.createRange(); r.setStart(node, from); r.setEnd(node, to); return r.getBoundingClientRect().width; };
+        // The same text in the same font, beside the page and at its zoom, kerned or not, with no space face
+        const ref = (s: string, kerning: string) => {
+          const el = document.createElement("span");
+          el.style.cssText = `position:absolute;white-space:pre;font-variant-ligatures:none;font-size:${getComputedStyle(node.parentElement!).fontSize};font-family:${stacks[i]};font-kerning:${kerning}`;
+          el.textContent = s;
+          pages.appendChild(el);
+          const w = el.getBoundingClientRect().width;
+          el.remove();
+          return w;
+        };
+        const a = text.indexOf("A ");
+        // What the space faces resolved to, for a failure's message
+        const faces = Array.from(document.fonts).filter((f) => f.family.includes("SS Space")).map((f) => `${f.family} ${f.weight} ${f.style}: ${f.status}`);
+        return { word: width(0, 6), wordKerned: ref("Tavily", "normal"), wordPlain: ref("Tavily", "none"), aSpace: width(a, a + 2), aSpacePlain: ref("A ", "none"), aSpaceKerned: ref("A ", "normal"), space: width(a + 1, a + 2), spacePlain: ref(" ", "none"), family: getComputedStyle(node.parentElement!).fontFamily, faces };
+      });
+    }, { sel: DOC, text });
+    for (const g of got) {
+      const seen = JSON.stringify({ exact, ...g });
+      // Each font kerns T-a and A-space, so both checks below tell kerned from not
+      expect(g.wordPlain - g.wordKerned, seen).toBeGreaterThan(0.5);
+      expect(g.aSpacePlain - g.aSpaceKerned, seen).toBeGreaterThan(0.3);
+      expect(Math.abs(g.word - g.wordKerned), seen).toBeLessThan(0.1);
+      // A space is as wide as its font's own, whatever the browser (to the layout's 1/64 px)
+      expect(Math.abs(g.space - g.spacePlain), seen).toBeLessThan(0.02);
+      // Where the space faces draw it so, no pair with a space is kerned; where they can't, the font's own kerning stays
+      expect(Math.abs(g.aSpace - (exact ? g.aSpacePlain : g.aSpaceKerned)), seen).toBeLessThan(0.1);
+      expect(g.family, seen).toMatch(/^"SS Space /);
+    }
+    // The page's space faces stay on the page: the editor's HTML, which its clipboard writes, names the fonts alone
+    expect(await page.evaluate(() => window.ssEditor!.getHTML())).not.toContain("SS Space");
+  });
+
+  test("a right-to-left paragraph starts at the right margin, is indented from it, and has its glyph on its right", async ({ app, page }) => {
+    const rtl = (text: string, attrs: Record<string, unknown> = {}) => ({ type: "paragraph", attrs: { dir: "rtl", ...attrs }, content: [{ type: "text", text }] });
+    await app.open({ plain: [
+      rtl("مرحبا بالعالم"),
+      rtl("مزاح", { box: { start: 36, first: 0, above: 0, below: 0 } }),
+      rtl("بند", { list: "bullet", level: 0 }),
+      rtl("إلى اليسار", { textAlign: "left" }),
+      { type: "paragraph", content: [{ type: "text", text: "Left to right" }] },
+    ] });
+    const got = await page.evaluate((sel) => {
+      const doc = document.querySelector<HTMLElement>(sel)!;
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      // The text column: the sheet without its margins
+      const sheet = doc.getBoundingClientRect();
+      const cs = getComputedStyle(doc);
+      const box = { left: sheet.left + parseFloat(cs.paddingLeft) * zoom, right: sheet.right - parseFloat(cs.paddingRight) * zoom };
+      const pt = (px: number) => Math.round((px / zoom) * 0.75 * 10) / 10;
+      return Array.from(doc.querySelectorAll(":scope > p")).map((p) => {
+        const r = document.createRange();
+        r.selectNodeContents(p);
+        const t = r.getBoundingClientRect();
+        const glyph = getComputedStyle(p, "::before");
+        return { dir: p.getAttribute("dir"), fromLeft: pt(t.left - box.left), fromRight: pt(box.right - t.right), glyphRight: glyph.content !== "none" ? glyph.right : null };
+      });
+    }, DOC);
+    expect(got.map((g) => g.dir)).toEqual(["rtl", "rtl", "rtl", "rtl", null]);
+    // Its start is the right margin: the text ends there, an indent from its start comes in from the right
+    expect(got[0].fromRight).toBeLessThan(0.5);
+    expect(Math.abs(got[1].fromRight - 36)).toBeLessThan(0.5);
+    // A list item's text at 36pt from its start, its glyph 18pt before the text, on the text's right
+    expect(Math.abs(got[2].fromRight - 36)).toBeLessThan(0.5);
+    expect(got[2].glyphRight).toBe("-24px");
+    // Aligned to its end, which is the left; and text left to right starts at the left again
+    expect(got[3].fromLeft).toBeLessThan(0.5);
+    expect(got[4].fromLeft).toBeLessThan(0.5);
+  });
+
+  test("a list glyph's highlight is the height of its text's and level with it", async ({ app, page }) => {
+    const text = { type: "text", text: "Highlighted item", marks: [{ type: "highlight", attrs: { color: "#fff2cc" } }] };
+    await app.open({ plain: [{ type: "paragraph", attrs: { list: "bullet", level: 0 }, content: [text] }, { type: "paragraph", attrs: { list: "bullet", level: 0, lineSpacing: 200 }, content: [{ ...text, text: "Double spaced" }] }] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        const mark = p.querySelector("mark")!.getClientRects()[0];
+        const g = getComputedStyle(p, "::before");
+        const height = parseFloat(g.backgroundSize.split(" ")[1]);
+        // The glyph box sits at the paragraph's top, moved as far as its text is (docs.css, --ss-shift)
+        const top = parseFloat(g.top) + parseFloat(g.backgroundPositionY);
+        return { glyph: [Math.round(top * 100) / 100, Math.round(height * 100) / 100], text: [Math.round(((mark.top - p.getBoundingClientRect().top) / zoom) * 100) / 100, Math.round((mark.height / zoom) * 100) / 100] };
+      });
+    }, DOC);
+    for (const p of got) {
+      expect(Math.abs(p.glyph[0] - p.text[0]), JSON.stringify(p)).toBeLessThanOrEqual(0.05);
+      expect(Math.abs(p.glyph[1] - p.text[1]), JSON.stringify(p)).toBeLessThanOrEqual(0.05);
+    }
   });
 });
 

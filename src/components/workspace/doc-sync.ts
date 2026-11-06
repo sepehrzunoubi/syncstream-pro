@@ -16,7 +16,7 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { listLabels } from "@/lib/list-labels";
 import { AddMarkStep, AttrStep, RemoveMarkStep, ReplaceStep } from "@tiptap/pm/transform";
 import type { Node as PMNode } from "@tiptap/pm/model";
-import type { EditorNode } from "@/lib/rich-text";
+import { cleanStyle, fontStack, styleFromMarks, type EditorNode } from "@/lib/rich-text";
 import { PENDING_MARK, groupColumns } from "@/lib/doc-model";
 import { deleteParts, editableParts, lockedRanges } from "./locked-edits";
 
@@ -79,6 +79,27 @@ export function setGlow(editor: Editor, glow: boolean) {
   editor.view.dispatch(editor.state.tr.setMeta(docSyncKey, { glow }).setMeta("addToHistory", false));
 }
 
+/**
+ * The text style Docs draws a list item's glyph in, as CSS variables for docs.css: its own bullet
+ * style when it has one, else its first character's (what a sync gives the glyph it creates).
+ */
+function glyphCss(node: PMNode): string {
+  const first = node.firstChild;
+  const raw = node.attrs.glyphStyle ?? (first?.isText ? styleFromMarks(first.marks.filter((m) => m.type.name !== PENDING_MARK).map((m) => ({ type: m.type.name, attrs: m.attrs }))) : null);
+  if (!raw) return "";
+  // Checked as the server checks a run: it goes into a style attribute, and it can come from a paste
+  const s = cleanStyle(raw);
+  const css: string[] = [];
+  if (s.font) css.push(`--ss-g-font: ${fontStack(s.font)}`);
+  if (s.size) css.push(`--ss-g-size: ${s.size}pt`);
+  if (s.color) css.push(`--ss-g-color: ${s.color}`);
+  if (s.bg) css.push(`--ss-g-bg: ${s.bg}`);
+  if (s.b) css.push("--ss-g-weight: 700");
+  else if (s.w) css.push(`--ss-g-weight: ${s.w}`);
+  if (s.i) css.push("--ss-g-italic: italic");
+  return css.join("; ");
+}
+
 /** List numbers as Docs shows them, drawn as decorations so they follow every edit */
 function labelDecorations(doc: PMNode): DecorationSet {
   const paras: { pos: number; node: PMNode }[] = [];
@@ -90,7 +111,12 @@ function labelDecorations(doc: PMNode): DecorationSet {
   const decos: Decoration[] = [];
   paras.forEach(({ pos, node }, i) => {
     const label = labels[i];
-    if (label != null) decos.push(Decoration.node(pos, pos + node.nodeSize, { "data-label": label }));
+    if (!node.attrs.list) return;
+    const style = glyphCss(node);
+    const attrs: Record<string, string> = {};
+    if (label != null) attrs["data-label"] = label;
+    if (style) attrs.style = style;
+    if (Object.keys(attrs).length) decos.push(Decoration.node(pos, pos + node.nodeSize, attrs));
   });
   return DecorationSet.create(doc, decos);
 }
@@ -101,6 +127,24 @@ const listLabelKey = new PluginKey<DecorationSet>("ssListLabels");
 let draggingInside = false;
 
 let lastLockedHint = 0;
+
+/** Whether a transaction leaves locked paragraphs as they are (a document's load may replace them) */
+function keepsLocked(tr: Transaction): boolean {
+  if (!tr.docChanged || tr.getMeta(LOAD_META)) return true;
+  if (!touchesLocked(tr)) return true;
+  // Say why nothing happened instead of swallowing the edit silently
+  if (typeof window !== "undefined" && Date.now() - lastLockedHint > 1500) {
+    lastLockedHint = Date.now();
+    window.dispatchEvent(new CustomEvent("ss-locked-hint"));
+  }
+  return false;
+}
+
+/** Locked paragraphs (a header's table, shown cell by cell) can't be changed here: for the header, footer and footnote editors */
+export const LockedParagraphs = Extension.create({
+  name: "lockedParagraphs",
+  addProseMirrorPlugins: () => [new Plugin({ filterTransaction: keepsLocked })],
+});
 
 /**
  * Delete, Backspace and their variants on a selection that spans locked
@@ -168,16 +212,7 @@ export const DocSync = Extension.create({
           init: () => ({ glow: false }),
           apply: (tr, value) => (tr.getMeta(docSyncKey) as { glow: boolean } | undefined) ?? value,
         },
-        filterTransaction(tr) {
-          if (!tr.docChanged || tr.getMeta(LOAD_META)) return true;
-          if (!touchesLocked(tr)) return true;
-          // Say why nothing happened instead of swallowing the edit silently
-          if (typeof window !== "undefined" && Date.now() - lastLockedHint > 1500) {
-            lastLockedHint = Date.now();
-            window.dispatchEvent(new CustomEvent("ss-locked-hint"));
-          }
-          return false;
-        },
+        filterTransaction: keepsLocked,
         // Whatever is typed or pasted becomes an addition; text dragged within the document keeps what it was
         appendTransaction(transactions, _old, newState) {
           // A column layout change regroups the document's blocks into column sections

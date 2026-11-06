@@ -34,7 +34,15 @@ export function Dialog({ open, title, onClose, onSubmit, children, footer, width
       else if (!e.shiftKey && (i === -1 || i === els.length - 1)) { e.preventDefault(); els[0].focus(); }
     };
     window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("keydown", onKey); previous?.focus?.(); };
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      // Focus goes back where it was, unless that was the menu the dialog was opened from: a closed
+      // menu's item taking focus wakes its menu again, and the next click on the menubar only closes it.
+      // Then it goes back to the document, as in Docs.
+      const usable = previous?.isConnected && !previous.closest("[role='menu'], [role='menubar']");
+      const target = usable ? previous : document.querySelector<HTMLElement>(".ss-sheet-content .ss-doc[contenteditable='true']");
+      target?.focus?.({ preventScroll: true });
+    };
   }, [open, onClose]);
   if (!open) return null;
   const id = `ss-dialog-${title.replace(/\W+/g, "-").toLowerCase()}`;

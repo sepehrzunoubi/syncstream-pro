@@ -17,16 +17,17 @@
 
 import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
-import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef } from "./rich-text";
+import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef, type ParagraphClose } from "./rich-text";
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
 import { reportError } from "./monitor";
 
+/** The document's Docs calls, each in the job's tab (`tabId`: none for a document without tabs) */
 export interface DocsApi {
-  snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
+  snapshot(accessToken: string, documentId: string, tabId?: string | null): Promise<DocSnapshot>;
   /** One atomic batchUpdate; refused by Google when the document moved past `requiredRevisionId` */
-  batch(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string): Promise<unknown>;
-  deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string): Promise<unknown>;
+  batch(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string, tabId?: string | null): Promise<unknown>;
+  deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string, tabId?: string | null): Promise<unknown>;
 }
 
 /** HTTP status of a Google API error */
@@ -275,7 +276,7 @@ export async function runJobWindow(
     }
     if (status === 404) {
       merged.status = "error";
-      merged.error = "The document was deleted or is no longer shared with you.";
+      merged.error = /tab of the document is gone/.test(message) ? `The tab ${merged.tabTitle ? `"${merged.tabTitle}" ` : ""}this sync types into was deleted.` : "The document was deleted or is no longer shared with you.";
       merged.activity = "Error";
       merged.finishedAt = now();
       merged.accessToken = "";
@@ -336,7 +337,7 @@ export async function runJobWindow(
 
 /** Formatting lookups used while typing */
 interface Formats {
-  writeRequests(start: number, end: number, docIndex: number, list: DocListState): { requests: DocsRequest[]; docList: DocListState };
+  writeRequests(start: number, end: number, docIndex: number, list: DocListState, closes?: ParagraphClose): { requests: DocsRequest[]; docList: DocListState };
   uniformStyleRequests(offset: number, length: number, docIndex: number): DocsRequest[];
   imageAt(at: number): ImageRef | undefined;
 }
@@ -558,7 +559,7 @@ class Context {
 
   private async writeOnce(text: string, step: number, isSource: boolean): Promise<void> {
     const snapTimer = startTimer(this.now);
-    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, this.job.tabId));
     const snapshotMs = snapTimer();
     const marker = this.job.inFlight;
     const markerMatches =
@@ -603,7 +604,9 @@ class Context {
       if (isSource && place?.repair) requests.push(...place.repair(index));
       if (fx) {
         if (isSource) {
-          const r = fx.writeRequests(offset, offset + text.length, index, list);
+          // What the text ends at: a paragraph opened here, the newline it is typed before, or more text
+          const closes: ParagraphClose = !place ? null : open.length ? "newline" : snap.chars[index] === "\n" ? (index >= snap.endIndex - 1 ? "final" : "newline") : null;
+          const r = fx.writeRequests(offset, offset + text.length, index, list, closes);
           requests.push(...r.requests);
           nextList = r.docList;
         } else {
@@ -611,7 +614,7 @@ class Context {
         }
       }
       const batchTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined));
+      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined, this.job.tabId));
       log.info("sync.write", { ...this.tag, action: this.job.currentAction, step, chars: text.length, requests: requests.length, docsMs: batchTimer(), snapshotMs, opened: open.length > 0, inPlace: !!place, charsSent: this.job.charsSent + (isSource ? text.length : 0), totalChars: this.job.totalChars });
       if (isSource && place?.repair) place.repaired();
       this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
@@ -664,9 +667,27 @@ class Context {
     return requests;
   }
 
+  /**
+   * Delete a typo's wrong characters. The range comes from one read of the document and the delete is
+   * only applied to that revision: when a collaborator's edit lands in between, Google refuses it and
+   * the typo is found again (a delete at stale indices would take their characters instead).
+   */
   private async erase(wrong: string): Promise<void> {
     if (wrong.length === 0) return;
-    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.eraseOnce(wrong);
+        return;
+      } catch (err) {
+        if (!isStaleRevision(err) || attempt >= STALE_RETRIES) throw err;
+        log.warn("sync.stale_revision", { ...this.tag, action: this.job.currentAction, erase: true, attempt: attempt + 1, maxAttempts: STALE_RETRIES });
+      }
+    }
+  }
+
+  private async eraseOnce(wrong: string): Promise<void> {
+    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, this.job.tabId));
+    const revision = snap.revisionId || undefined;
     const place = this.place();
     if (place) {
       const before = (place.state.ctx + place.typed).slice(-CONTEXT_CHARS);
@@ -679,7 +700,7 @@ class Context {
         return;
       }
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end, revision, this.job.tabId));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: true });
       place.state.cursor = end - wrong.length;
       return;
@@ -689,7 +710,7 @@ class Context {
     const start = Math.max(1, end - wrong.length);
     if (start < end) {
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end, revision, this.job.tabId));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: false });
     }
   }

@@ -16,8 +16,8 @@
 
 import {
   bulletRequests,
+  type BulletParagraph,
   DEFAULT_PARAGRAPH,
-  LINK_COLOR,
   OBJ,
   PAGE_BREAK,
   presetOf,
@@ -36,6 +36,7 @@ import {
   type RunFormat,
   type RunStyle,
 } from "./rich-text";
+import { listRuns, type ListParagraph } from "./list-labels";
 
 export const PENDING_MARK = "syncAdd";
 
@@ -393,7 +394,32 @@ function paragraphHasPending(target: Tok[], j: number): boolean {
 
 // ── Table structure ─────────────────────────────────────────────────────────
 
-interface TableShape { id: string; at: number; rows: { rid: string | null; cells: { cid: string | null }[] }[]; endAt: number }
+interface TableShape { id: string; at: number; rows: { rid: string | null; cells: { cid: string | null; colspan: number; rowspan: number }[] }[]; endAt: number }
+
+const spanCount = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v > 1 ? v : 1);
+
+/**
+ * Where each cell of a table sits in its grid (Docs addresses cells by grid row and column, merged
+ * ones by their head): rows of cells with their column and row spans, as the editor has them. Also
+ * the grid's width.
+ */
+export function cellGrid(rows: { colspan: number; rowspan: number }[][]): { columns: number[][]; width: number } {
+  const taken: Set<number>[] = rows.map(() => new Set());
+  let width = 0;
+  const columns = rows.map((cells, r) => {
+    let col = 0;
+    return cells.map((cell) => {
+      while (taken[r].has(col)) col++;
+      const at = col;
+      for (let dr = 0; dr < cell.rowspan && r + dr < rows.length; dr++) for (let dc = 0; dc < cell.colspan; dc++) taken[r + dr].add(at + dc);
+      col += cell.colspan;
+      width = Math.max(width, col);
+      return at;
+    });
+  });
+  for (const t of taken) for (const c of t) width = Math.max(width, c + 1);
+  return { columns, width };
+}
 
 /** The tables of a token list: where each starts, and its rows and columns by identity */
 function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
@@ -403,16 +429,34 @@ function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
     if (t.k !== "st") return;
     if (t.kind === "table") { cur = { id: t.id, at: index ? index[i] : i, rows: [], endAt: 0 }; out.push(cur); }
     else if (t.kind === "row" && cur) cur.rows.push({ rid: typeof t.attrs.rid === "string" ? t.attrs.rid : null, cells: [] });
-    else if (t.kind === "cell" && cur) cur.rows[cur.rows.length - 1]?.cells.push({ cid: typeof t.attrs.cid === "string" ? t.attrs.cid : null });
+    else if (t.kind === "cell" && cur) cur.rows[cur.rows.length - 1]?.cells.push({ cid: typeof t.attrs.cid === "string" ? t.attrs.cid : null, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan) });
     else if (t.kind === "tableEnd" && cur) { cur.endAt = (index ? index[i] : i) + t.span; cur = null; }
   });
   return out;
 }
 
-/** Column identities of a table: the first cell with an id in each column */
+/**
+ * Column identities of a table, by grid column: the first cell with an id that starts in it, or in a
+ * column no cell starts in, the merged cell's across it (its id and how far in)
+ */
 function columnIds(shape: TableShape): (string | null)[] {
-  const n = Math.max(0, ...shape.rows.map((r) => r.cells.length));
-  return Array.from({ length: n }, (_, c) => shape.rows.map((r) => r.cells[c]?.cid ?? null).find((x) => x) ?? null);
+  const grid = cellGrid(shape.rows.map((r) => r.cells));
+  const ids: (string | null)[] = Array.from({ length: grid.width }, () => null);
+  for (const across of [false, true]) shape.rows.forEach((r, ri) => r.cells.forEach((c, ci) => {
+    for (let k = across ? 1 : 0; k < (across ? c.colspan : 1); k++) {
+      const at = grid.columns[ri][ci] + k;
+      if (c.cid && ids[at] == null) ids[at] = k ? `${c.cid}+${k}` : c.cid;
+    }
+  }));
+  return ids;
+}
+
+/** A table's merged cells: where each starts in its grid, and its spans */
+function mergedCells(shape: TableShape): { row: number; column: number; rowSpan: number; columnSpan: number }[] {
+  const grid = cellGrid(shape.rows.map((r) => r.cells));
+  return shape.rows.flatMap((r, ri) => r.cells.flatMap((c, ci) => (c.colspan > 1 || c.rowspan > 1
+    ? [{ row: ri, column: grid.columns[ri][ci], rowSpan: Math.min(c.rowspan, shape.rows.length - ri), columnSpan: c.colspan }]
+    : [])));
 }
 
 /**
@@ -437,9 +481,17 @@ function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): Do
   for (const t of targetTables) {
     const b = byId.get(t.id);
     if (!b) {
+      // As wide as its grid, its merged cells merged: the document's table then has the editor's shape
       const rows = t.rows.length;
-      const columns = Math.max(1, ...t.rows.map((r) => r.cells.length));
-      changes.push({ at: docIndexAt(t.at), requests: [{ insertTable: { rows, columns, location: { index: docIndexAt(t.at) } } }] });
+      const grid = cellGrid(t.rows.map((r) => r.cells));
+      const at = docIndexAt(t.at);
+      const merges: DocsRequest[] = [];
+      t.rows.forEach((r, ri) => r.cells.forEach((c, ci) => {
+        if (c.colspan === 1 && c.rowspan === 1) return;
+        // The table starts after the newline Docs inserts before it
+        merges.push({ mergeTableCells: { tableRange: { tableCellLocation: { tableStartLocation: { index: at + 1 }, rowIndex: ri, columnIndex: grid.columns[ri][ci] }, rowSpan: Math.min(c.rowspan, rows - ri), columnSpan: c.colspan } } });
+      }));
+      changes.push({ at, requests: [{ insertTable: { rows, columns: Math.max(1, grid.width), location: { index: at } } }, ...merges] });
       continue;
     }
     const reqs: DocsRequest[] = [];
@@ -468,6 +520,16 @@ function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): Do
       reqs.push({ insertTableRow: { ...loc(Math.max(0, idx), 0), insertBelow: !!prev } });
       keptRows = prev ? [...keptRows.slice(0, idx + 1), rid ?? `row${r}`, ...keptRows.slice(idx + 1)] : [rid ?? `row${r}`, ...keptRows];
     });
+    // A row or column whose reference cell is merged goes with every one the merge spans (and a new
+    // one goes past the merge): with merged cells, they're unmerged first and merged again as the
+    // editor has them once the table has the editor's rows and columns
+    const merged = mergedCells(b);
+    const merges = mergedCells(t);
+    if (reqs.length && (merged.length || merges.length)) {
+      const range = (m: (typeof merged)[number]) => ({ tableCellLocation: loc(m.row, m.column).tableCellLocation, rowSpan: m.rowSpan, columnSpan: m.columnSpan });
+      reqs.unshift(...merged.map((m) => ({ unmergeTableCells: { tableRange: range(m) } })));
+      reqs.push(...merges.map((m) => ({ mergeTableCells: { tableRange: range(m) } })));
+    }
     if (reqs.length) changes.push({ at: b.at, requests: reqs });
   }
   for (const b of baseTables) if (!targetTables.some((t) => t.id === b.id)) changes.push({ at: b.at, requests: [{ deleteContentRange: { range: { startIndex: b.at, endIndex: b.endAt } } }] });
@@ -489,7 +551,9 @@ function textStyleDiff(a: RunStyle, b: RunStyle): { textStyle: DocsRequest; fiel
   flag("u", "underline");
   flag("s", "strikethrough");
   if (!!a.sup !== !!b.sup || !!a.sub !== !!b.sub) { textStyle.baselineOffset = b.sup ? "SUPERSCRIPT" : b.sub ? "SUBSCRIPT" : "NONE"; fields.push("baselineOffset"); }
-  if (a.font !== b.font) { if (b.font) textStyle.weightedFontFamily = { fontFamily: b.font, weight: 400 }; fields.push("weightedFontFamily"); }
+  if (!!a.sc !== !!b.sc) { textStyle.smallCaps = !!b.sc; fields.push("smallCaps"); }
+  // Docs takes a weight only together with its family
+  if (a.font !== b.font || (a.w ?? 400) !== (b.w ?? 400)) { if (b.font) textStyle.weightedFontFamily = { fontFamily: b.font, weight: b.w ?? 400 }; fields.push("weightedFontFamily"); }
   if (a.size !== b.size) { if (b.size) textStyle.fontSize = { magnitude: b.size, unit: "PT" }; fields.push("fontSize"); }
   if (a.color !== b.color) { if (b.color) textStyle.foregroundColor = rgb(b.color); fields.push("foregroundColor"); }
   if (a.bg !== b.bg) { if (b.bg) textStyle.backgroundColor = rgb(b.bg); fields.push("backgroundColor"); }
@@ -501,10 +565,10 @@ function textStyleDiff(a: RunStyle, b: RunStyle): { textStyle: DocsRequest; fiel
       if (!b.u && !fields.includes("underline")) { textStyle.underline = false; fields.push("underline"); }
       if (!b.color && !fields.includes("foregroundColor")) fields.push("foregroundColor");
     }
-    // Links look like links in Docs only with the colour and underline set
+    // A link set without its colour and underline gets Docs' blue and underline: set it with the look it has here
     if (b.link && !a.link) {
-      if (!b.color && !fields.includes("foregroundColor")) { textStyle.foregroundColor = rgb(LINK_COLOR); fields.push("foregroundColor"); }
-      if (!fields.includes("underline")) { textStyle.underline = true; fields.push("underline"); }
+      if (!fields.includes("foregroundColor")) { if (b.color) textStyle.foregroundColor = rgb(b.color); fields.push("foregroundColor"); }
+      if (!fields.includes("underline")) { textStyle.underline = !!b.u; fields.push("underline"); }
     }
   }
   return fields.length ? { textStyle, fields } : null;
@@ -603,11 +667,15 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const extraNlAfter = new Set<Region>();
   // A paragraph's final newline cannot be deleted when it ends the body or a table cell, nor the one right before a table
   const finalNl = (i: number) => { const next = base[i + 1]; return base[i]?.k === "nl" && (i + 1 === base.length || (next.k === "st" && (next.kind === "cellEnd" || next.kind === "table"))); };
+  // Newlines a shifted deletion leaves in place of others (see below): base position → the newline Docs keeps there
+  const keptNl = new Map<number, number>();
   for (const r of [...regions].reverse()) {
     let bs = r.bs;
     let be = r.be;
-    // Deleting the last paragraphs: delete the ones before instead, which leaves the same text
+    // Deleting the last paragraphs: delete the ones before instead, which leaves the same text. The
+    // paragraphs before then end with the newlines that were to go, and have those newlines' style
     while (be > bs && finalNl(be - 1) && bs > 0 && base[bs - 1].k === "nl") { bs--; be--; }
+    for (let k = 0; bs + k < r.bs; k++) keptNl.set(bs + k, be + k);
     let at = index[bs];
     if (be > bs) contentRequests.push({ deleteContentRange: { range: { startIndex: at, endIndex: index[be] } } });
     if (r.pending || r.te === r.ts) continue;
@@ -683,6 +751,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   // from when it is new (a newline copies the style of the paragraph it is inserted into).
   const saved: Tok[] = [];
   const docsAttrs = new Map<number, Record<string, unknown> | undefined>();
+  // Section breaks made now, by their place in `saved`
+  const newSections: number[] = [];
   const prevNl = (tokens: Tok[], from: number) => { for (let q = from; q >= 0; q--) { const t = tokens[q]; if (t.k === "nl") return t; } return undefined; };
   const regionAt = new Map<number, Region>();
   for (const r of regions) regionAt.set(r.ts, r);
@@ -699,6 +769,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
             saved.push({ k: "nl", attrs: enclosing ?? {} });
             docsAttrs.set(saved.length - 1, enclosing);
             saved.push({ k: "block", node: { ...t.node, attrs: { ...t.node.attrs, span: 1 } } });
+            newSections.push(saved.length - 1);
             continue;
           }
           saved.push(stripPending(t));
@@ -722,8 +793,9 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     if (i < 0) continue;
     const t = target[j];
     if (t.k === "nl") {
-      saved.push(paragraphHasPending(target, j) ? base[i] : stripPending(t));
-      docsAttrs.set(saved.length - 1, (base[i] as Extract<Tok, { k: "nl" }>).attrs);
+      const docsNl = base[keptNl.get(i) ?? i] as Extract<Tok, { k: "nl" }>;
+      saved.push(paragraphHasPending(target, j) ? docsNl : stripPending(t));
+      docsAttrs.set(saved.length - 1, docsNl.attrs);
     } else saved.push(stripPending(t));
   }
 
@@ -743,13 +815,25 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const listRequests: DocsRequest[] = [];
   const paraRequests: DocsRequest[] = [];
   const changedLists = new Set<number>();
+  // The list each item is counted in on the page (see listRuns): Docs has to put it in that one
+  const memberOf = new Map<number, string | null>();
+  {
+    const nls: number[] = [];
+    saved.forEach((t, q) => { if (t.k === "nl") nls.push(q); });
+    const { lists } = listRuns(nls.map((q) => ((saved[q] as Extract<Tok, { k: "nl" }>).attrs ?? {}) as ListParagraph));
+    nls.forEach((q, i) => memberOf.set(q, lists[i]));
+  }
   for (let p = 0; p < saved.length; p++) {
     const t = saved[p];
     if (t.k !== "nl" || !docsAttrs.has(p)) continue;
     const pa = paragraphFromAttrs(docsAttrs.get(p));
     const pb = paragraphFromAttrs(t.attrs);
     const range = { startIndex: sIndex[sParaStart[p]], endIndex: sIndex[p] + 1 };
-    const listChanged = (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
+    // A paragraph in a Docs list (its own, or the one of the paragraph it was split from) that the page
+    // counts in another list moves to that one
+    const docsList = docsAttrs.get(p)?.listId;
+    const moved = !!pb.list && typeof docsList === "string" && memberOf.get(p) !== docsList;
+    const listChanged = moved || (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
     if (listChanged) {
       if (pa.list && !pb.list) listRequests.push({ deleteParagraphBullets: { range } });
       if (pb.list) changedLists.add(p);
@@ -768,8 +852,12 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     const type = kindAt(j);
     const nlBefore = (q: number) => { for (let k = q - 1; k >= 0; k--) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
     const nlAfter = (q: number) => { for (let k = q + 1; k < saved.length; k++) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
-    for (let k = nlBefore(s); k >= 0 && kindAt(k) === type; k = nlBefore(k)) s = k;
-    for (let k = nlAfter(e); k >= 0 && kindAt(k) === type; k = nlAfter(k)) e = k;
+    // The items the page counts in the same list, across list items' next lines (ParagraphFormat.cont)
+    const cont = (q: number) => { const t = saved[q]; return t.k === "nl" && !!paragraphFromAttrs(t.attrs).cont; };
+    const list = memberOf.get(j);
+    const same = (k: number) => kindAt(k) === type && memberOf.get(k) === list;
+    for (let k = nlBefore(s); k >= 0 && (same(k) || (!kindAt(k) && cont(k))); k = nlBefore(k)) if (same(k)) s = k;
+    for (let k = nlAfter(e); k >= 0 && (same(k) || (!kindAt(k) && cont(k))); k = nlAfter(k)) if (same(k)) e = k;
     return [s, e];
   };
   const runs: [number, number][] = [];
@@ -779,22 +867,40 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   }
   runs.sort((a, b) => b[0] - a[0]);
   for (const [s, e] of runs) {
-    const items: { start: number; end: number; level: number }[] = [];
+    const run: BulletParagraph[] = [];
     let preset = "";
     for (let q = s; q <= e; q++) {
       const t = saved[q];
       if (t.k !== "nl") continue;
       const pb = paragraphFromAttrs(t.attrs);
-      if (!pb.list) continue;
+      const range = { start: sIndex[sParaStart[q]], end: sIndex[q] + 1 };
+      if (!pb.list) {
+        let tabs = 0;
+        for (let k = sParaStart[q]; k < q; k++) { const c = saved[k]; if (c.k !== "c" || c.c !== "\t") break; tabs++; }
+        run.push({ ...range, level: 0, line: pb, tabs });
+        continue;
+      }
       preset = presetOf(pb);
-      items.push({ start: sIndex[sParaStart[q]], end: sIndex[q] + 1, level: pb.level ?? 0 });
+      run.push({ ...range, level: pb.level ?? 0 });
     }
-    if (!items.length) continue;
-    listRequests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
-    listRequests.push(...bulletRequests(items, preset));
+    if (!preset) continue;
+    listRequests.push({ deleteParagraphBullets: { range: { startIndex: run[0].start, endIndex: run[run.length - 1].end } } });
+    listRequests.push(...bulletRequests(run, preset));
   }
 
-  const requests = [...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
+  // A new section's columns: Docs' section break doesn't take them (its section is laid out as Docs
+  // decides), so the section is given the editor's, over it once the break is in
+  for (const p of newSections) {
+    const start = sIndex[p] + sizeOf(saved[p]);
+    let end = sIndex[saved.length];
+    for (let q = p + 1; q < saved.length; q++) {
+      const b = saved[q];
+      if (b.k === "block" && b.node.attrs?.kind === "section" && !b.node.attrs?.first) { end = sIndex[q]; break; }
+    }
+    paraRequests.push(sectionStyleRequest((saved[p] as Extract<Tok, { k: "block" }>).node.attrs ?? {}, start, Math.max(start + 1, end)));
+  }
+  // Cell backgrounds change no index: at the document's indices as they are, before the rest
+  const requests = [...cellStyleRequests(base, target, match, index), ...columnWidthRequests(base, target, match, index), ...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
   return { requests, saved: untokenize(saved) };
 }
 
@@ -885,8 +991,13 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
       paragraphs.push(paragraphFromAttrs(nextNl(target, q)?.attrs));
       lineStart = false;
     }
+    // Docs drops soft line breaks sent through its API (commit 5675618), so a line break is typed as a new paragraph
     if (t.k === "nl" || t.k === "br") {
-      const style = { ...lastStyle };
+      // A newline has the look of the text it ends; an empty paragraph's has its own (Docs gives typed text
+      // the look of the text before it, so this one is styled too, not left with that)
+      const empty = q === 0 || ["nl", "br", "block", "st"].includes(target[q - 1].k);
+      const own = t.k === "nl" && Array.isArray(t.attrs?.nl) ? styleFromMarks(t.attrs.nl as EditorNode["marks"]) : {};
+      const style = empty ? own : { ...lastStyle };
       delete style.link;
       text += "\n";
       push(1, style);
@@ -962,6 +1073,9 @@ export function rebase(newBase: EditorNode, oldTarget: EditorNode): EditorNode {
  * (typed before the table existed in the document) is kept as additions and
  * the next save carries on instead of seeing a different table.
  */
+/** What a table, row or cell token takes from the document when the editor's table is adopted */
+const STRUCTURE_IDS = ["tid", "rid", "cid", "span", "endSpan"];
+
 function adoptTables(base: Tok[], target: Tok[]): Tok[] {
   type St = Extract<Tok, { k: "st" }>;
   const tablesIn = (tokens: Tok[]) => {
@@ -977,19 +1091,147 @@ function adoptTables(base: Tok[], target: Tok[]): Tok[] {
     });
     return out;
   };
-  const mine = tablesIn(target).filter((t) => t.id.startsWith("new"));
+  const out = target.slice();
+  // The document's ids and index spans; the editor's look stays (a pasted cell's background and column
+  // widths), for the next save to write. A column the editor gives no width has the document's
+  const adopt = (m: { at: number[] }, b: { at: number[] }) => m.at.forEach((pos, n) => {
+    const doc = base[b.at[n]] as St;
+    const own = (target[pos] as St).attrs;
+    const width = own.colwidth == null && doc.attrs.colwidth != null ? { colwidth: doc.attrs.colwidth } : {};
+    out[pos] = { ...doc, attrs: { ...own, ...width, ...Object.fromEntries(STRUCTURE_IDS.filter((key) => key in doc.attrs).map((key) => [key, doc.attrs[key]])) } };
+  });
+  const all = tablesIn(target);
+  const read = tablesIn(base);
+  // The document has the editor's tables, in order (a structural save makes it so): each takes the
+  // document's by place. The document's row and column ids are by position, so a row or column added
+  // or removed gives every one after it another id, and a table added before a table gives it another
+  if (all.length === read.length) {
+    all.forEach((m, k) => { if (m.kinds.join() === read[k].kinds.join()) adopt(m, read[k]); });
+    return out;
+  }
+  const mine = all.filter((t) => t.id.startsWith("new"));
   if (!mine.length) return target;
   const known = new Set(target.filter((t): t is St => t.k === "st").map((t) => t.id));
-  const theirs = tablesIn(base).filter((t) => !known.has(t.id));
-  const out = target.slice();
+  const theirs = read.filter((t) => !known.has(t.id));
   let k = 0;
   for (const m of mine) {
     while (k < theirs.length && theirs[k].kinds.join() !== m.kinds.join()) k++;
     if (k >= theirs.length) break;
-    const b = theirs[k++];
-    m.at.forEach((pos, n) => { out[pos] = base[b.at[n]]; });
+    adopt(m, theirs[k++]);
   }
   return out;
+}
+
+/** A cell's background as Docs reads it: white is none */
+const cellBackground = (attrs: Record<string, unknown>): string | null => {
+  const bg = typeof attrs.background === "string" ? attrs.background.toLowerCase() : null;
+  return bg && bg !== "#ffffff" ? bg : null;
+};
+
+/**
+ * Cells whose background the editor has and the document doesn't (a pasted table's, once the table is
+ * in the document), or the other way round: one updateTableCellStyle each, at the cell's table, row and
+ * column in the document.
+ */
+/** A table's column widths in pixels, by grid column, from its cells' widths (null where none gives one) */
+function columnWidths(rows: { colspan: number; rowspan: number; colwidth: unknown }[][]): (number | null)[] {
+  const grid = cellGrid(rows);
+  const out: (number | null)[] = Array.from({ length: grid.width }, () => null);
+  rows.forEach((cells, r) => cells.forEach((c, k) => {
+    if (!Array.isArray(c.colwidth)) return;
+    for (let d = 0; d < c.colspan; d++) {
+      const w = c.colwidth[d];
+      const at = grid.columns[r][k] + d;
+      if (typeof w === "number" && w > 0 && out[at] == null) out[at] = w;
+    }
+  }));
+  return out;
+}
+
+/** Each table of a token list: its start token, and its rows of cells */
+function tableCells(tokens: Tok[]): { at: number; rows: { at: number; colspan: number; rowspan: number; colwidth: unknown }[][] }[] {
+  const out: { at: number; rows: { at: number; colspan: number; rowspan: number; colwidth: unknown }[][] }[] = [];
+  let depth = 0;
+  tokens.forEach((t, i) => {
+    if (t.k !== "st") return;
+    if (t.kind === "table") { if (depth++ === 0) out.push({ at: i, rows: [] }); return; }
+    if (t.kind === "tableEnd") { depth--; return; }
+    if (depth !== 1) return;
+    const table = out[out.length - 1];
+    if (t.kind === "row") table.rows.push([]);
+    else if (t.kind === "cell") table.rows[table.rows.length - 1]?.push({ at: i, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan), colwidth: t.attrs.colwidth });
+  });
+  return out;
+}
+
+/** Docs' smallest column width, in points */
+const MIN_COLUMN_PT = 5;
+
+/**
+ * Columns whose width the editor has and the document doesn't (a pasted table's, from the copy's
+ * HTML, once the table is in the document): one updateTableColumnProperties each, fixed at the
+ * editor's width. A column the editor gives no width keeps the document's.
+ */
+function columnWidthRequests(base: Tok[], target: Tok[], match: number[], index: number[]): DocsRequest[] {
+  const baseTables = new Map(tableCells(base).map((t) => [t.at, t]));
+  const requests: DocsRequest[] = [];
+  for (const t of tableCells(target)) {
+    const b = baseTables.get(match[t.at]);
+    if (!b) continue;
+    const want = columnWidths(t.rows);
+    const have = columnWidths(b.rows);
+    if (want.length !== have.length) continue;
+    // A width in points, at least Docs' least, and in pixels as the document reads it back. The base is
+    // the document's (read back) or what the editor had (after a save that didn't read it back)
+    const points = (px: number) => Math.max(MIN_COLUMN_PT, Math.round(px * 0.75 * 100) / 100);
+    const asRead = (px: number) => Math.round(points(px) / 0.75);
+    want.forEach((w, c) => {
+      if (w == null) return;
+      const pt = points(w);
+      if (have[c] != null && Math.abs(asRead(have[c]!) - asRead(w)) < 1) return;
+      requests.push({ updateTableColumnProperties: {
+        tableStartLocation: { index: index[b.at] },
+        columnIndices: [c],
+        tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: pt, unit: "PT" } },
+        fields: "widthType,width",
+      } });
+    });
+  }
+  return requests;
+}
+
+function cellStyleRequests(base: Tok[], target: Tok[], match: number[], index: number[]): DocsRequest[] {
+  // Each document cell's table start, and its grid row and column
+  const where = new Map<number, { start: number; row: number; column: number }>();
+  let table: { start: number; rows: { at: number; colspan: number; rowspan: number }[][] } | null = null;
+  const place = () => {
+    if (!table) return;
+    const { start, rows } = table;
+    const grid = cellGrid(rows);
+    rows.forEach((cells, r) => cells.forEach((c, k) => where.set(c.at, { start, row: r, column: grid.columns[r][k] })));
+  };
+  base.forEach((t, i) => {
+    if (t.k !== "st") return;
+    if (t.kind === "table") table = { start: index[i], rows: [] };
+    else if (t.kind === "row") table?.rows.push([]);
+    else if (t.kind === "cell") table?.rows[table.rows.length - 1]?.push({ at: i, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan) });
+    else if (t.kind === "tableEnd") { place(); table = null; }
+  });
+  const requests: DocsRequest[] = [];
+  target.forEach((t, j) => {
+    if (t.k !== "st" || t.kind !== "cell") return;
+    const at = where.get(match[j]);
+    const b = base[match[j]];
+    if (!at || b?.k !== "st") return;
+    const want = cellBackground(t.attrs);
+    if (want === cellBackground(b.attrs)) return;
+    requests.push({ updateTableCellStyle: {
+      tableRange: { tableCellLocation: { tableStartLocation: { index: at.start }, rowIndex: at.row, columnIndex: at.column }, rowSpan: 1, columnSpan: 1 },
+      tableCellStyle: want ? { backgroundColor: rgb(want) } : {},
+      fields: "backgroundColor",
+    } });
+  });
+  return requests;
 }
 
 /** After tables were created in the document: the editor's content with the document's ids and spans */

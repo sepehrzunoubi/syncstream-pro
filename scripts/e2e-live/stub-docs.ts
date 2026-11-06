@@ -26,9 +26,9 @@ type Item =
   | { k: "c"; ch: string; ts: TextStyle }
   | { k: "pb"; ts: TextStyle }
   | { k: "nl"; ts: TextStyle; ps: ParagraphStyle; bullet?: Bullet }
-  | { k: "tbl"; columns: number }
+  | { k: "tbl"; columns: number; widths?: docs_v1.Schema$TableColumnProperties[] }
   | { k: "row" }
-  | { k: "cell" }
+  | { k: "cell"; style?: docs_v1.Schema$TableCellStyle; covered?: boolean }
   | { k: "tend" };
 
 const STRUCTURAL = new Set(["sb", "tbl", "row", "cell", "tend"]);
@@ -79,7 +79,23 @@ interface Request {
   updateParagraphStyle?: { range: { startIndex: number; endIndex: number }; paragraphStyle: ParagraphStyle; fields: string };
   createParagraphBullets?: { range: { startIndex: number; endIndex: number }; bulletPreset: string };
   deleteParagraphBullets?: { range: { startIndex: number; endIndex: number } };
+  updateTableCellStyle?: docs_v1.Schema$UpdateTableCellStyleRequest;
+  mergeTableCells?: docs_v1.Schema$MergeTableCellsRequest;
+  unmergeTableCells?: docs_v1.Schema$UnmergeTableCellsRequest;
+  updateTableColumnProperties?: docs_v1.Schema$UpdateTableColumnPropertiesRequest;
+  insertTableRow?: docs_v1.Schema$InsertTableRowRequest;
+  deleteTableRow?: docs_v1.Schema$DeleteTableRowRequest;
+  insertTableColumn?: docs_v1.Schema$InsertTableColumnRequest;
+  deleteTableColumn?: docs_v1.Schema$DeleteTableColumnRequest;
 }
+
+/** A table's cells by grid row and column (the covered ones too), each with what follows it up to the next */
+interface GridCell { cell: Extract<Item, { k: "cell" }>; content: Item[] }
+interface Grid { at: number; end: number; tbl: Extract<Item, { k: "tbl" }>; rows: GridCell[][] }
+const rowSpanOf = (c: GridCell) => c.cell.style?.rowSpan ?? 1;
+const columnSpanOf = (c: GridCell) => c.cell.style?.columnSpan ?? 1;
+/** An unset column, as documents.get gives it: "width... Set when the column's widthType is FIXED_WIDTH" */
+const evenColumn = (): docs_v1.Schema$TableColumnProperties => ({ widthType: "EVENLY_DISTRIBUTED" });
 
 export class StubDocument {
   items: Item[] = [{ k: "sb" }, { k: "nl", ts: {}, ps: { namedStyleType: "NORMAL_TEXT" } }];
@@ -168,6 +184,7 @@ export class StubDocument {
       const rowStart = i++;
       const tableCells: docs_v1.Schema$TableCell[] = [];
       while (this.items[i]?.k === "cell") {
+        const cellItem = this.items[i] as Extract<Item, { k: "cell" }>;
         const cellStart = i++;
         const content: docs_v1.Schema$StructuralElement[] = [];
         while (this.items[i] && !["cell", "row", "tend"].includes(this.items[i].k)) {
@@ -176,13 +193,13 @@ export class StubDocument {
           content.push(p.element);
           i = p.end;
         }
-        tableCells.push({ startIndex: cellStart, endIndex: i, content, tableCellStyle: {} });
+        tableCells.push({ startIndex: cellStart, endIndex: i, content, tableCellStyle: clone(cellItem.style ?? {}) });
       }
       tableRows.push({ startIndex: rowStart, endIndex: i, tableCells });
     }
     if (this.items[i]?.k !== "tend") throw new Error(`stub: table at ${start} has no end`);
     i++;
-    return { element: { startIndex: start, endIndex: i, table: { rows: tableRows.length, columns: tbl.columns, tableRows, tableStyle: { tableColumnProperties: Array.from({ length: tbl.columns }, () => ({ width: { magnitude: 468 / tbl.columns, unit: "PT" } })) } } }, end: i };
+    return { element: { startIndex: start, endIndex: i, table: { rows: tableRows.length, columns: tbl.columns, tableRows, tableStyle: { tableColumnProperties: Array.from({ length: tbl.columns }, (_, c) => clone(tbl.widths?.[c] ?? evenColumn())) } } }, end: i };
   }
 
   // ── Paragraph geometry ────────────────────────────────────────────────────
@@ -260,6 +277,14 @@ export class StubDocument {
     if (r.updateParagraphStyle) return this.updateParagraphStyle(r.updateParagraphStyle.range.startIndex, r.updateParagraphStyle.range.endIndex, r.updateParagraphStyle.paragraphStyle, r.updateParagraphStyle.fields);
     if (r.createParagraphBullets) return this.createParagraphBullets(r.createParagraphBullets.range.startIndex, r.createParagraphBullets.range.endIndex, r.createParagraphBullets.bulletPreset);
     if (r.deleteParagraphBullets) return this.deleteParagraphBullets(r.deleteParagraphBullets.range.startIndex, r.deleteParagraphBullets.range.endIndex);
+    if (r.updateTableCellStyle) return this.updateTableCellStyle(r.updateTableCellStyle);
+    if (r.mergeTableCells) return this.mergeTableCells(r.mergeTableCells);
+    if (r.updateTableColumnProperties) return this.updateTableColumnProperties(r.updateTableColumnProperties);
+    if (r.unmergeTableCells) return this.unmergeTableCells(r.unmergeTableCells);
+    if (r.insertTableRow) return this.insertTableRow(r.insertTableRow);
+    if (r.deleteTableRow) return this.deleteTableRow(r.deleteTableRow);
+    if (r.insertTableColumn) return this.insertTableColumn(r.insertTableColumn);
+    if (r.deleteTableColumn) return this.deleteTableColumn(r.deleteTableColumn);
     throw bad(`The stub does not model ${key} requests`);
   }
 
@@ -269,7 +294,9 @@ export class StubDocument {
     const ts = this.inheritedStyle(index);
     const end = this.items[this.paragraphEnd(index)] as Extract<Item, { k: "nl" }>;
     const fresh: Item[] = [];
-    for (const ch of text) {
+    // Docs counts indexes in UTF-16 code units: a character outside the basic plane (an emoji) takes two
+    for (let k = 0; k < text.length; k++) {
+      const ch = text[k];
       if (ch === "\n") fresh.push({ k: "nl", ts: clone(ts), ps: clone(end.ps), ...(end.bullet ? { bullet: clone(end.bullet) } : {}) });
       else if (ch === "\r" || ch === "\u000C") continue; // Docs drops these from insertText
       else fresh.push({ k: "c", ch, ts: clone(ts) });
@@ -296,6 +323,234 @@ export class StubDocument {
     }
     fresh.push({ k: "tend" });
     this.items.splice(index, 0, ...fresh);
+  }
+
+  /** One cell's style (the stub models a range of one cell, and its background) */
+  updateTableCellStyle(u: docs_v1.Schema$UpdateTableCellStyleRequest): void {
+    const loc = u.tableRange?.tableCellLocation;
+    const at = loc?.tableStartLocation?.index;
+    if (at == null || this.items[at]?.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    if ((u.tableRange?.rowSpan ?? 1) !== 1 || (u.tableRange?.columnSpan ?? 1) !== 1) throw bad("The stub models one cell at a time");
+    const fields = (u.fields ?? "").split(",").filter(Boolean);
+    if (!fields.length) throw bad("fields is required");
+    if (fields.some((f) => f !== "backgroundColor")) throw bad(`The stub does not model table cell fields ${fields.join(",")}`);
+    let row = -1;
+    let column = -1;
+    for (let i = at + 1; i < this.items.length && this.items[i].k !== "tend"; i++) {
+      const it = this.items[i];
+      if (it.k === "row") { row++; column = -1; continue; }
+      if (it.k !== "cell" || ++column !== loc?.columnIndex || row !== loc?.rowIndex) continue;
+      const style = { ...(it.style ?? {}) };
+      if (u.tableCellStyle?.backgroundColor) style.backgroundColor = clone(u.tableCellStyle.backgroundColor);
+      else delete style.backgroundColor;
+      it.style = style;
+      return;
+    }
+    throw bad(`Invalid table cell location: row ${loc?.rowIndex}, column ${loc?.columnIndex}`);
+  }
+
+  /** Columns' width: "If the value of tableColumnProperties#width is less than 5 points (5/72 inch), a 400 bad request error is returned" */
+  updateTableColumnProperties(u: docs_v1.Schema$UpdateTableColumnPropertiesRequest): void {
+    const at = u.tableStartLocation?.index;
+    const tbl = at == null ? undefined : this.items[at];
+    if (!tbl || tbl.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    const fields = (u.fields ?? "").split(",").filter(Boolean);
+    if (!fields.length) throw bad("fields is required");
+    if (fields.some((f) => f !== "width" && f !== "widthType")) throw bad(`The stub does not model table column fields ${fields.join(",")}`);
+    const props = u.tableColumnProperties ?? {};
+    const w = props.width;
+    if (fields.includes("width") && w && (w.unit !== "PT" || !((w.magnitude ?? 0) >= 5))) throw bad("The column width must be at least 5 points");
+    const columns = u.columnIndices?.length ? u.columnIndices : Array.from({ length: tbl.columns }, (_, c) => c);
+    for (const c of columns) if (!Number.isInteger(c) || c < 0 || c >= tbl.columns) throw bad(`Invalid column index ${c}`);
+    const widths = tbl.widths ?? Array.from({ length: tbl.columns }, evenColumn);
+    for (const c of columns) {
+      const now: docs_v1.Schema$TableColumnProperties = { ...widths[c] };
+      for (const f of fields as ("width" | "widthType")[]) {
+        if (props[f] == null) delete now[f];
+        else (now as Record<string, unknown>)[f] = clone(props[f]);
+      }
+      if (now.widthType === "FIXED_WIDTH" && !now.width) throw bad("A fixed width column needs a width");
+      // An evenly distributed column has no width of its own
+      if (now.widthType !== "FIXED_WIDTH") delete now.width;
+      widths[c] = now;
+    }
+    tbl.widths = widths;
+  }
+
+  /** The table starting at `at`, cell by cell of its grid */
+  private grid(at: number | null | undefined): Grid {
+    const tbl = at == null ? undefined : this.items[at];
+    if (!tbl || tbl.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    const rows: GridCell[][] = [];
+    let i = at! + 1;
+    for (; this.items[i].k !== "tend"; i++) {
+      const it = this.items[i];
+      if (it.k === "row") rows.push([]);
+      else if (it.k === "cell") rows[rows.length - 1].push({ cell: it, content: [] });
+      else rows[rows.length - 1][rows[rows.length - 1].length - 1].content.push(it);
+    }
+    return { at: at!, end: i + 1, tbl, rows };
+  }
+
+  private writeGrid(g: Grid): void {
+    const out: Item[] = [g.tbl];
+    for (const row of g.rows) {
+      out.push({ k: "row" });
+      for (const c of row) out.push(c.cell, ...c.content);
+    }
+    out.push({ k: "tend" });
+    this.items.splice(g.at, g.end - g.at, ...out);
+  }
+
+  /** The cell a request refers to. What a cell a merge covers means isn't documented: the stub refuses it */
+  private referenceCell(loc: docs_v1.Schema$TableCellLocation | undefined): { g: Grid; r: number; c: number } {
+    const g = this.grid(loc?.tableStartLocation?.index);
+    const r = loc?.rowIndex ?? 0;
+    const c = loc?.columnIndex ?? 0;
+    if (!g.rows[r]?.[c]) throw bad(`Invalid table cell location: row ${r}, column ${c}`);
+    if (g.rows[r][c].cell.covered) throw bad("The stub does not model a reference cell that a merge covers");
+    return { g, r, c };
+  }
+
+  /** The head of the merge (or the cell) at a grid row and column */
+  private headAt(g: Grid, r: number, c: number): [number, number] {
+    for (let hr = r; hr >= 0; hr--) for (let hc = c; hc >= 0; hc--) {
+      const h = g.rows[hr][hc];
+      if (!h.cell.covered && hr + rowSpanOf(h) > r && hc + columnSpanOf(h) > c) return [hr, hc];
+    }
+    throw new Error("stub: a covered cell has no head");
+  }
+
+  /**
+   * Rows or columns taken out: a merge across one shrinks, and when its head's goes, the first one it
+   * keeps takes the head (and its content)
+   */
+  private removeLines(g: Grid, lines: Set<number>, columns: boolean): void {
+    const at = (a: number, b: number) => (columns ? g.rows[b][a] : g.rows[a][b]);
+    const span = columns ? columnSpanOf : rowSpanOf;
+    g.rows.forEach((row, r) => row.forEach((h, c) => {
+      const [line, other] = columns ? [c, r] : [r, c];
+      if (h.cell.covered || span(h) === 1) return;
+      const kept = Array.from({ length: span(h) }, (_, k) => line + k).filter((x) => !lines.has(x));
+      if (!kept.length || kept[0] === line) {
+        if (kept.length) h.cell.style = { ...h.cell.style, [columns ? "columnSpan" : "rowSpan"]: kept.length };
+        return;
+      }
+      const next = at(kept[0], other);
+      next.cell.covered = false;
+      next.cell.style = { ...h.cell.style, [columns ? "columnSpan" : "rowSpan"]: kept.length };
+      next.content = h.content;
+    }));
+    if (columns) {
+      for (const row of g.rows) for (let c = row.length - 1; c >= 0; c--) if (lines.has(c)) row.splice(c, 1);
+      g.tbl.widths = g.tbl.widths?.filter((_, c) => !lines.has(c));
+      g.tbl.columns -= lines.size;
+    } else g.rows = g.rows.filter((_, r) => !lines.has(r));
+    if (!g.rows.length || !g.tbl.columns) throw bad("The stub does not delete a table's every row or column");
+  }
+
+  /** "If this is a merged cell that spans multiple rows, all rows that the cell spans will be deleted" */
+  deleteTableRow(d: docs_v1.Schema$DeleteTableRowRequest): void {
+    const { g, r, c } = this.referenceCell(d.tableCellLocation);
+    this.removeLines(g, new Set(Array.from({ length: rowSpanOf(g.rows[r][c]) }, (_, k) => r + k)), false);
+    this.writeGrid(g);
+  }
+
+  /** "If this is a merged cell that spans multiple columns, all columns that the cell spans will be deleted" */
+  deleteTableColumn(d: docs_v1.Schema$DeleteTableColumnRequest): void {
+    const { g, r, c } = this.referenceCell(d.tableCellLocation);
+    this.removeLines(g, new Set(Array.from({ length: columnSpanOf(g.rows[r][c]) }, (_, k) => c + k)), true);
+    this.writeGrid(g);
+  }
+
+  /** "If the reference cell is a merged cell, a new row will be inserted above (or below) the merged cell" */
+  insertTableRow(ins: docs_v1.Schema$InsertTableRowRequest): void {
+    const { g, r, c } = this.referenceCell(ins.tableCellLocation);
+    const k = ins.insertBelow ? r + rowSpanOf(g.rows[r][c]) : r;
+    const fresh: GridCell[] = Array.from({ length: g.tbl.columns }, () => ({ cell: { k: "cell" }, content: [{ k: "nl", ts: {}, ps: { namedStyleType: "NORMAL_TEXT" } }] }));
+    // A merge across where it goes takes it in
+    if (k > 0 && k < g.rows.length) for (let col = 0; col < g.tbl.columns; col++) {
+      const [hr, hc] = this.headAt(g, k - 1, col);
+      const h = g.rows[hr][hc];
+      if (hr + rowSpanOf(h) <= k) continue;
+      fresh[col].cell.covered = true;
+      if (hc === col) h.cell.style = { ...h.cell.style, rowSpan: rowSpanOf(h) + 1 };
+    }
+    g.rows.splice(k, 0, fresh);
+    this.writeGrid(g);
+  }
+
+  /** "If the reference cell is a merged cell, a new column will be inserted to the left (or right) of the merged cell" */
+  insertTableColumn(ins: docs_v1.Schema$InsertTableColumnRequest): void {
+    const { g, r, c } = this.referenceCell(ins.tableCellLocation);
+    const k = ins.insertRight ? c + columnSpanOf(g.rows[r][c]) : c;
+    g.rows.forEach((row, ri) => {
+      const fresh: GridCell = { cell: { k: "cell" }, content: [{ k: "nl", ts: {}, ps: { namedStyleType: "NORMAL_TEXT" } }] };
+      if (k > 0 && k < g.tbl.columns) {
+        const [hr, hc] = this.headAt(g, ri, k - 1);
+        const h = g.rows[hr][hc];
+        if (hc + columnSpanOf(h) > k) {
+          fresh.cell.covered = true;
+          if (hr === ri) h.cell.style = { ...h.cell.style, columnSpan: columnSpanOf(h) + 1 };
+        }
+      }
+      row.splice(k, 0, fresh);
+    });
+    if (g.tbl.widths) g.tbl.widths.splice(k, 0, evenColumn());
+    g.tbl.columns++;
+    this.writeGrid(g);
+  }
+
+  /** "All merged cells in this range will be unmerged"; a merged cell's text stays in its head */
+  unmergeTableCells(u: docs_v1.Schema$UnmergeTableCellsRequest): void {
+    const loc = u.tableRange?.tableCellLocation;
+    const g = this.grid(loc?.tableStartLocation?.index);
+    const r0 = loc?.rowIndex ?? 0;
+    const c0 = loc?.columnIndex ?? 0;
+    const r1 = r0 + (u.tableRange?.rowSpan ?? 1);
+    const c1 = c0 + (u.tableRange?.columnSpan ?? 1);
+    if (r0 < 0 || c0 < 0 || r1 > g.rows.length || c1 > g.tbl.columns) throw bad("The table range is out of the table's bounds");
+    for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) {
+      const h = g.rows[r][c];
+      if (h.cell.covered || (rowSpanOf(h) === 1 && columnSpanOf(h) === 1)) continue;
+      for (let dr = 0; dr < rowSpanOf(h); dr++) for (let dc = 0; dc < columnSpanOf(h); dc++) if (dr || dc) g.rows[r + dr][c + dc].cell.covered = false;
+      const style = { ...h.cell.style };
+      delete style.rowSpan;
+      delete style.columnSpan;
+      h.cell.style = style;
+    }
+    this.writeGrid(g);
+  }
+
+  /**
+   * Cells merged into their head (the range's top left). The stub's tables list every cell of their
+   * grid, the covered ones too (each keeps its own newline); it merges cells that hold no text.
+   */
+  mergeTableCells(m: docs_v1.Schema$MergeTableCellsRequest): void {
+    const range = m.tableRange;
+    const loc = range?.tableCellLocation;
+    const at = loc?.tableStartLocation?.index;
+    if (at == null || this.items[at]?.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    const rows: number[][] = [];
+    for (let i = at + 1; i < this.items.length && this.items[i].k !== "tend"; i++) {
+      if (this.items[i].k === "row") rows.push([]);
+      else if (this.items[i].k === "cell") rows[rows.length - 1].push(i);
+    }
+    const r0 = loc?.rowIndex ?? 0;
+    const c0 = loc?.columnIndex ?? 0;
+    const rs = range?.rowSpan ?? 1;
+    const cs = range?.columnSpan ?? 1;
+    if (rs < 1 || cs < 1 || r0 < 0 || c0 < 0 || r0 + rs > rows.length || rows.slice(r0, r0 + rs).some((row) => c0 + cs > row.length)) throw bad("The table range is out of the table's bounds");
+    for (let r = r0; r < r0 + rs; r++) for (let c = c0; c < c0 + cs; c++) {
+      const cell = this.items[rows[r][c]] as Extract<Item, { k: "cell" }>;
+      if ((cell.style?.rowSpan ?? 1) > 1 || (cell.style?.columnSpan ?? 1) > 1 || cell.covered) throw bad("The range overlaps merged cells");
+      const next = this.items[rows[r][c] + 1];
+      const after = this.items[rows[r][c] + 2];
+      if ((r !== r0 || c !== c0) && !(next?.k === "nl" && (!after || ["cell", "row", "tend"].includes(after.k)))) throw bad("The stub merges cells that hold no text");
+    }
+    for (let r = r0; r < r0 + rs; r++) for (let c = c0; c < c0 + cs; c++) if (r !== r0 || c !== c0) (this.items[rows[r][c]] as Extract<Item, { k: "cell" }>).covered = true;
+    const head = this.items[rows[r0][c0]] as Extract<Item, { k: "cell" }>;
+    head.style = { ...(head.style ?? {}), rowSpan: rs, columnSpan: cs };
   }
 
   deleteContentRange(start: number, end: number): void {

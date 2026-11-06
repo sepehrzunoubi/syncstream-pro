@@ -54,6 +54,19 @@ test("imports paragraphs as editable nodes, numbering questions across the answe
   assert.deepEqual(out.nodes[0].content, [{ type: "text", text: "Logistics:", marks: [{ type: "underline" }] }]);
 });
 
+test("a checklist is a level with no glyph of its own; a list the document doesn't describe is bulleted, not a checklist", () => {
+  const checks = { c: { listProperties: { nestingLevels: [{ glyphType: "GLYPH_TYPE_UNSPECIFIED" }, {}] } } };
+  const out = importDoc(makeDoc([
+    { text: "To do", bullet: { listId: "c" } },
+    { text: "Nested to do", bullet: { listId: "c", nestingLevel: 1 } },
+    { text: "Undescribed", bullet: { listId: "missing" } },
+    { text: "Undescribed level", bullet: { listId: "b", nestingLevel: 2 } },
+  ], { lists: { ...lists, ...checks } }));
+  assert.deepEqual(out.nodes.map((n) => n.attrs?.list), ["check", "check", "bullet", "bullet"]);
+  // With no lists at all (a tab read without its lists), every bullet is still a bullet
+  assert.deepEqual(importDoc(makeDoc([{ text: "One", bullet: { listId: "x" } }, { text: "Two", bullet: { listId: "x", nestingLevel: 1 } }])).nodes.map((n) => n.attrs?.list), ["bullet", "bullet"]);
+});
+
 test("an empty document imports as empty", () => {
   const out = importDoc(makeDoc([{ text: "" }, { text: "  " }]));
   assert.equal(out.empty, true);
@@ -172,6 +185,34 @@ test("headers, footers and footnotes are read as their own segments", async () =
   assert.equal(body.attrs?.locked, undefined, "a paragraph with a footnote reference stays editable");
 });
 
+test("a header's table is shown cell by cell and kept as it is: the header's editor can load it, and typing after it saves only what's typed", async () => {
+  const { getSchema } = await import("@tiptap/core");
+  const { segmentExtensions } = await import("../components/workspace/extensions");
+  const { segmentEdits } = await import("./doc-model");
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex)], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  // "Head", then a table of one row (Address | Phone), then the paragraph Docs keeps after a table
+  const table = { startIndex: 5, endIndex: 21, table: { rows: 1, columns: 2, tableRows: [{ startIndex: 6, endIndex: 20, tableCells: [
+    { startIndex: 7, endIndex: 13, content: [para("Addr\n", 8)] },
+    { startIndex: 13, endIndex: 20, content: [para("Phone\n", 14)] },
+  ] }] } };
+  const doc = {
+    revisionId: "r",
+    documentStyle: { defaultHeaderId: "kix.h" },
+    headers: { "kix.h": { content: [para("Head\n", 0), table, para("\n", 21)] } },
+    body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: {} }, para("Body\n", 1)] },
+  };
+  const nodes = importDoc(doc as never).header!.nodes;
+  assert.deepEqual(nodes.map((n) => [n.type, (n.content ?? []).map((c) => c.text).join(""), n.attrs?.locked ?? false, n.attrs?.span ?? null]), [
+    ["paragraph", "Head", false, null], ["paragraph", "Addr", true, 16], ["paragraph", "Phone", true, 0], ["paragraph", "", false, null],
+  ]);
+  assert.doesNotThrow(() => getSchema(segmentExtensions()).nodeFromJSON({ type: "doc", content: nodes }));
+  const typed = nodes.map((n, i) => (i === 3 ? { ...n, content: [{ type: "text", text: "Hi" }] } : n));
+  const { requests } = segmentEdits({ type: "doc", content: nodes }, { type: "doc", content: typed }, "kix.h");
+  assert.deepEqual(requests.map((r) => Object.keys(r)[0]).filter((k) => k !== "updateTextStyle"), ["insertText"]);
+  assert.deepEqual(requests[0], { insertText: { location: { index: 21, segmentId: "kix.h" }, text: "Hi" } });
+});
+
 test("section breaks are read with their column layout, the first as a hidden marker", async () => {
   const { importDoc } = await import("./doc-import");
   const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
@@ -185,4 +226,65 @@ test("section breaks are read with their column layout, the first as a hidden ma
   const twoColFirst = { ...doc, body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: cols } }, para("Title\n", 1)] } };
   const { nodes: n2 } = importDoc(twoColFirst as never);
   assert.deepEqual(n2[0].attrs, { kind: "section", first: true, sectionType: "continuous", columns: 2, spacing: 18, line: true, locked: true, span: 0, bid: "b1" });
+});
+
+test("a merged cell: the cells it covers are left out when Docs lists them, their indices kept; nothing is left out when it doesn't", async () => {
+  const { importDoc } = await import("./doc-import");
+  const { directEdits } = await import("./doc-model");
+  const run = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, textRun: { content: text, textStyle: {} } });
+  const para = (text: string, startIndex: number) => ({ startIndex, endIndex: startIndex + text.length, paragraph: { elements: [run(text, startIndex)], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+  const cell = (text: string, startIndex: number, style: object = {}) => ({ startIndex, endIndex: startIndex + 1 + text.length, content: [para(text, startIndex + 1)], tableCellStyle: style });
+  // "Intro\n" 1..7; table at 7: row 8, cells 9 ("Wide\n" 10..15, spanning two columns) and 15 (covered, "\n" 16);
+  // row 17, cells 18 ("A\n") and 21 ("B\n"); the table ends at 24; "After\n" 24..30
+  const listed = {
+    revisionId: "r",
+    body: { content: [
+      { startIndex: 0, endIndex: 1, sectionBreak: {} },
+      para("Intro\n", 1),
+      { startIndex: 7, endIndex: 24, table: { rows: 2, columns: 2, tableRows: [
+        { startIndex: 8, endIndex: 17, tableCells: [cell("Wide\n", 9, { columnSpan: 2, rowSpan: 1 }), cell("\n", 15, { columnSpan: 1, rowSpan: 1 })] },
+        { startIndex: 17, endIndex: 24, tableCells: [cell("A\n", 18), cell("B\n", 21)] },
+      ] } },
+      para("After\n", 24),
+    ] },
+  };
+  const nodes = importDoc(listed as never).nodes;
+  const table = nodes.find((n) => n.type === "table")!;
+  assert.deepEqual(table.content!.map((r) => r.content!.map((c) => [c.attrs?.colspan, (c.content?.[0].content ?? []).map((x) => x.text).join("")])), [[[2, "Wide"]], [[1, "A"], [1, "B"]]]);
+  // Indices after the merged cell are right: typing in B and after the table goes where Docs has them
+  const base = { type: "doc", content: nodes };
+  const edited = JSON.parse(JSON.stringify(base));
+  edited.content[1].content[1].content[1].content[0].content[0].text = "Bx";
+  edited.content[2].content[0].text = "After!";
+  assert.deepEqual(directEdits(base, edited).requests.filter((r) => r.insertText).map((r) => r.insertText), [{ location: { index: 29 }, text: "!" }, { location: { index: 23 }, text: "x" }]);
+  // A row that doesn't list its whole grid (no covered cells in it) keeps every cell it has
+  const short = JSON.parse(JSON.stringify(listed));
+  short.body.content[2].table.tableRows[0].tableCells.pop();
+  assert.deepEqual(importDoc(short as never).nodes.find((n) => n.type === "table")!.content!.map((r) => r.content!.length), [1, 2]);
+  const odd = JSON.parse(JSON.stringify(listed));
+  odd.body.content[2].table.tableRows[0].tableCells[0].tableCellStyle = {};
+  assert.deepEqual(importDoc(odd as never).nodes.find((n) => n.type === "table")!.content!.map((r) => r.content!.length), [2, 2], "no merge, nothing left out");
+
+  // A cell two rows tall and two wide: the row it covers whole has no cell of its own, as the editor's table has it
+  // Table at 7: row 8, cells 9 ("Big\n" 10..14) and 14 (covered); row 16, cells 17 and 19 (covered); row 21,
+  // cells 22 ("A\n") and 25 ("B\n"); the table ends at 28; "After\n" 28..34
+  const tall = {
+    revisionId: "r",
+    body: { content: [
+      { startIndex: 0, endIndex: 1, sectionBreak: {} },
+      para("Intro\n", 1),
+      { startIndex: 7, endIndex: 28, table: { rows: 3, columns: 2, tableRows: [
+        { startIndex: 8, endIndex: 16, tableCells: [cell("Big\n", 9, { columnSpan: 2, rowSpan: 2 }), cell("\n", 14)] },
+        { startIndex: 16, endIndex: 21, tableCells: [cell("\n", 17), cell("\n", 19)] },
+        { startIndex: 21, endIndex: 28, tableCells: [cell("A\n", 22), cell("B\n", 25)] },
+      ] } },
+      para("After\n", 28),
+    ] },
+  };
+  const tallNodes = importDoc(tall as never).nodes;
+  assert.deepEqual(tallNodes.find((n) => n.type === "table")!.content!.map((r) => r.content!.length), [1, 0, 2]);
+  const tallEdited = JSON.parse(JSON.stringify(tallNodes));
+  tallEdited[1].content[2].content[1].content[0].content[0].text = "Bx";
+  tallEdited[2].content[0].text = "After!";
+  assert.deepEqual(directEdits({ type: "doc", content: tallNodes }, { type: "doc", content: tallEdited }).requests.filter((r) => r.insertText).map((r) => r.insertText), [{ location: { index: 33 }, text: "!" }, { location: { index: 27 }, text: "x" }]);
 });

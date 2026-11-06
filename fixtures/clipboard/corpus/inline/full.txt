@@ -1,0 +1,6 @@
+This is a test of inline formatting.
+
+This is bold and italic or just italic. Or underlined, struck through, or linked (to GitHub).
+
+Some textis superscript and someis subscript.
+

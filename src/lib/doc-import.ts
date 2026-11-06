@@ -9,8 +9,8 @@
  */
 
 import type { docs_v1 } from "googleapis";
-import { pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
-import { BORDER_SIDES, DEFAULT_FONT, NAMED_STYLES, OBJ, PAGE_BREAK, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle } from "./rich-text";
+import { isPageless, pageSetupFromDocumentStyle, type PageSetup } from "./page-setup";
+import { BORDER_SIDES, DEFAULT_FONT, fontWeightOf, NAMED_STYLES, OBJ, PAGE_BREAK, styleFromMarks, type Align, type Border, type Borders, type EditorNode, type KeepOptions, type ListType, type NamedStyle, type StyleKeeps } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
 type Element = docs_v1.Schema$StructuralElement;
@@ -37,6 +37,18 @@ export interface DocDefaults {
   lineSpacing: number;
   /** Per paragraph style: size, font and colour when the document's named style sets them */
   styles: Partial<Record<NamedStyle, { fontSize?: number; fontFamily?: string; color?: string }>>;
+  /** Per paragraph style: the keep options the document's named style gives (Google's when it has none) */
+  keep?: StyleKeeps;
+  /** Normal text's spacing mode, when it never collapses list spacing (Docs' default does) */
+  spacingMode?: "NEVER_COLLAPSE";
+}
+
+/** The keep options of the document the page shows (see use-page-setup) */
+export function docKeeps(dom: { dataset?: Record<string, string | undefined> } | null | undefined): StyleKeeps | undefined {
+  try {
+    const raw = dom?.dataset?.docDefaults;
+    return raw ? (JSON.parse(raw) as DocDefaults).keep : undefined;
+  } catch { return undefined; }
 }
 
 export interface ImportedDoc {
@@ -45,6 +57,8 @@ export interface ImportedDoc {
   defaults: DocDefaults;
   /** Paper size, margins and colour, from the document's style */
   pageSetup: PageSetup;
+  /** Docs' pageless format: one continuous page, no page breaks */
+  pageless: boolean;
   /** Headers and footers, when the document has them */
   header?: ImportedSegment;
   footer?: ImportedSegment;
@@ -106,13 +120,30 @@ const NAMED: Record<string, NamedStyle> = {
   HEADING_5: "h5",
   HEADING_6: "h6",
 };
-const ALIGN: Record<string, Align | null> = { START: null, CENTER: "center", END: "right", JUSTIFIED: "justify" };
+/** Where a paragraph sits on the page. Docs' START and END are its own direction's sides; null is where its text starts */
+function alignOf(alignment: string | null | undefined, rtl: boolean): Align | null {
+  switch (alignment) {
+    case "CENTER": return "center";
+    case "JUSTIFIED": return "justify";
+    case "END": return rtl ? "left" : "right";
+    default: return null;
+  }
+}
 const ORDERED = new Set(["DECIMAL", "ZERO_DECIMAL", "UPPER_ALPHA", "ALPHA", "UPPER_ROMAN", "ROMAN"]);
 
 function pt(d: docs_v1.Schema$Dimension | undefined | null): number | undefined {
   if (!d) return undefined;
   const m = d.magnitude ?? 0;
   return d.unit === "PT" || !d.unit ? m : undefined;
+}
+
+/** Keep options as a resolved Docs paragraph style has them (Docs' own default for single lines is on) */
+function keepOf(ps: docs_v1.Schema$ParagraphStyle): KeepOptions {
+  const keep: KeepOptions = {};
+  if (ps.keepWithNext) keep.withNext = true;
+  if (ps.keepLinesTogether) keep.linesTogether = true;
+  if (ps.avoidWidowAndOrphan === false) keep.singleLines = false;
+  return keep;
 }
 
 function hex(c: docs_v1.Schema$OptionalColor | undefined | null): string | undefined {
@@ -126,7 +157,8 @@ function hex(c: docs_v1.Schema$OptionalColor | undefined | null): string | undef
 function listInfo(lists: Doc["lists"], bullet: docs_v1.Schema$Bullet) {
   const levelIdx = bullet.nestingLevel ?? 0;
   const level = lists?.[bullet.listId ?? ""]?.listProperties?.nestingLevels?.[levelIdx];
-  const type: ListType = level?.glyphSymbol ? "bullet" : level?.glyphType && ORDERED.has(level.glyphType) ? "ordered" : level?.glyphType === "NONE" ? "bullet" : "check";
+  // A checklist is a level with no glyph of its own; a list the document doesn't describe is a plain bulleted one
+  const type: ListType = !level || level.glyphSymbol ? "bullet" : level.glyphType && ORDERED.has(level.glyphType) ? "ordered" : level.glyphType === "NONE" ? "bullet" : "check";
   return {
     type,
     level,
@@ -135,6 +167,16 @@ function listInfo(lists: Doc["lists"], bullet: docs_v1.Schema$Bullet) {
       level: levelIdx,
       glyph: { type: level?.glyphType ?? null, format: level?.glyphFormat ?? null, symbol: level?.glyphSymbol ?? null, start: level?.startNumber ?? null },
     },
+  };
+}
+
+/** The font, size and colour a paragraph style gives text that sets none of its own */
+export function namedStyleText(defaults: DocDefaults, style: NamedStyle): { font: string; size: number; color: string } {
+  const own = defaults.styles[style] ?? {};
+  return {
+    font: own.fontFamily ?? defaults.fontFamily,
+    size: own.fontSize ?? (style === "normal" ? defaults.fontSize : NAMED_STYLES[style].size),
+    color: own.color ?? "#000000",
   };
 }
 
@@ -155,16 +197,16 @@ function textMarks(ts: TextStyle, style: NamedStyle, defaults: DocDefaults): Non
   const color = hex(ts.foregroundColor);
   // A value the paragraph's named style already gives is not a mark: the editor shows the
   // document's defaults itself, and text with no mark is written to Docs without an explicit value
-  const own = defaults.styles[style] ?? {};
-  const styleFont = own.fontFamily ?? defaults.fontFamily;
-  const styleSize = own.fontSize ?? (style === "normal" ? defaults.fontSize : NAMED_STYLES[style].size);
-  const styleColor = own.color ?? "#000000";
+  const { font: styleFont, size: styleSize, color: styleColor } = namedStyleText(defaults, style);
+  // A weighted font (Roboto Light, Montserrat SemiBold) keeps its weight, and then its family too
+  const weight = fontWeightOf(ts.weightedFontFamily?.weight ?? undefined);
   const attrs = {
-    fontFamily: font && font !== styleFont ? font : null,
+    fontFamily: font && (font !== styleFont || weight) ? font : null,
     fontSize: size && size !== styleSize ? size : null,
     color: color && color !== styleColor ? color : null,
+    fontWeight: font && weight ? weight : null,
   };
-  if (attrs.fontFamily || attrs.fontSize || attrs.color) marks.push({ type: "textStyle", attrs });
+  if (attrs.fontFamily || attrs.fontSize || attrs.color || attrs.fontWeight) marks.push({ type: "textStyle", attrs });
   return marks;
 }
 
@@ -186,7 +228,10 @@ function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDe
   const normal = namedStyles.get("NORMAL_TEXT");
   const nt = normal?.textStyle ?? {};
   const styles: DocDefaults["styles"] = {};
+  const keep: StyleKeeps = {};
   for (const [docsName, name] of Object.entries(NAMED)) {
+    const named = namedStyles.get(docsName);
+    if (named) keep[name] = keepOf({ ...stripNull(normal?.paragraphStyle ?? {}), ...stripNull(named.paragraphStyle ?? {}) });
     if (docsName === "NORMAL_TEXT") continue;
     const ts = namedStyles.get(docsName)?.textStyle ?? {};
     const entry: { fontSize?: number; fontFamily?: string; color?: string } = {};
@@ -202,10 +247,17 @@ function docDefaults(namedStyles: Map<string, docs_v1.Schema$NamedStyle>): DocDe
     fontSize: pt(nt.fontSize) ?? NAMED_STYLES.normal.size,
     lineSpacing: normal?.paragraphStyle?.lineSpacing ? Math.round(normal.paragraphStyle.lineSpacing) : 115,
     styles,
+    ...(Object.keys(keep).length ? { keep } : {}),
+    ...(normal?.paragraphStyle?.spacingMode === "NEVER_COLLAPSE" ? { spacingMode: "NEVER_COLLAPSE" as const } : {}),
   };
 }
 
-export function importDoc(doc: Doc): ImportedDoc {
+/**
+ * `defaults` reads the paragraphs against another document's named styles:
+ * content pasted from one document into another keeps its own look, and
+ * only what differs from the destination's styles becomes formatting.
+ */
+export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): ImportedDoc {
   let blockId = 0;
   const lock = (node: EditorNode, span: number) => {
     node.attrs = { ...node.attrs, locked: true, span, bid: `b${++blockId}` };
@@ -213,7 +265,7 @@ export function importDoc(doc: Doc): ImportedDoc {
   };
   const namedStyles = new Map<string, docs_v1.Schema$NamedStyle>();
   for (const s of doc.namedStyles?.styles ?? []) if (s.namedStyleType) namedStyles.set(s.namedStyleType, s);
-  const defaults = docDefaults(namedStyles);
+  const defaults = opts.defaults ?? docDefaults(namedStyles);
   let hasContent = false;
 
   const paragraphNode = (p: docs_v1.Schema$Paragraph): EditorNode => {
@@ -241,6 +293,12 @@ export function importDoc(doc: Doc): ImportedDoc {
       const info = listInfo(doc.lists, p.bullet);
       list = info.type;
       listAttrs = info.attrs;
+      // What Docs draws the glyph in: what differs from the paragraph's style (none given: its first character's)
+      if (p.bullet.textStyle) {
+        const glyph = styleFromMarks(textMarks({ ...baseText, ...stripNull(p.bullet.textStyle) }, style, defaults));
+        delete glyph.link;
+        listAttrs.glyphStyle = glyph;
+      }
       if (own.indentStart == null && info.level?.indentStart) start = pt(info.level.indentStart) ?? start;
       if (own.indentFirstLine == null && info.level?.indentFirstLine) first = pt(info.level.indentFirstLine) ?? first;
     }
@@ -248,10 +306,13 @@ export function importDoc(doc: Doc): ImportedDoc {
     const content: EditorNode[] = [];
     let unsupported = false;
     let rule = false;
+    // The look of the paragraph's newline: an empty paragraph is as tall as it makes it
+    let newline: NonNullable<EditorNode["marks"]> = [];
     for (const pe of p.elements ?? []) {
       if (pe.textRun?.content != null) {
         const ts = { ...baseText, ...stripNull(pe.textRun.textStyle ?? {}) };
         const marks = textMarks(ts, style, defaults);
+        if (pe.textRun.content.endsWith("\n")) newline = marks.filter((m) => m.type !== "link");
         const text = pe.textRun.content.replace(/\n$/, "");
         text.split("\u000b").forEach((part, i) => {
           if (i > 0) content.push({ type: "hardBreak" });
@@ -274,7 +335,8 @@ export function importDoc(doc: Doc): ImportedDoc {
         unsupported = true;
       } else if (pe.richLink?.richLinkProperties) {
         const rl = pe.richLink.richLinkProperties;
-        content.push(textNode(rl.title || rl.uri || "link", rl.uri ? [{ type: "link", attrs: { href: rl.uri } }] : []));
+        // Shown as a link looks (the editor has no chips): Docs' link colour, underlined
+        content.push(textNode(rl.title || rl.uri || "link", rl.uri ? [{ type: "link", attrs: { href: rl.uri } }, { type: "textStyle", attrs: { fontFamily: null, fontSize: null, color: "#1155cc" } }, { type: "underline" }] : []));
         hasContent = true;
         unsupported = true;
       } else if (pe.pageBreak) {
@@ -297,11 +359,10 @@ export function importDoc(doc: Doc): ImportedDoc {
       : { start, first: first - start };
     const above = pt(ps.spaceAbove);
     const below = pt(ps.spaceBelow);
-    // Keep options as Docs has them (its own default for single lines is on)
-    const keep: KeepOptions = {};
-    if (ps.keepWithNext) keep.withNext = true;
-    if (ps.keepLinesTogether) keep.linesTogether = true;
-    if (ps.avoidWidowAndOrphan === false) keep.singleLines = false;
+    // Keep options of its own, as Docs resolves them; with none of its own the paragraph has its named
+    // style's, whatever that style is or becomes
+    const ownsKeep = own.keepWithNext != null || own.keepLinesTogether != null || own.avoidWidowAndOrphan != null;
+    const keep = ownsKeep ? keepOf(ps) : null;
     const borders: Borders = {};
     const sides = { top: ps.borderTop, bottom: ps.borderBottom, left: ps.borderLeft, right: ps.borderRight, between: ps.borderBetween };
     for (const side of BORDER_SIDES) {
@@ -312,23 +373,29 @@ export function importDoc(doc: Doc): ImportedDoc {
       borders[side] = border;
     }
     const shading = hex(ps.shading?.backgroundColor);
+    // Its direction as Docs resolves it, its own or its named style's
+    const rtl = ps.direction === "RIGHT_TO_LEFT";
     return {
       type: "paragraph",
       attrs: {
         styleName: style,
-        textAlign: ALIGN[ps.alignment ?? "START"] ?? null,
+        textAlign: alignOf(ps.alignment, rtl),
+        ...(rtl ? { dir: "rtl" } : {}),
         ...(rule ? { kind: "rule" } : {}),
         indent: 0,
         firstLine: false,
-        lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : 115,
+        lineSpacing: ps.lineSpacing ? Math.round(ps.lineSpacing) : defaults.lineSpacing,
         list,
         ...listAttrs,
         indentEnd: pt(ps.indentEnd) || null,
         box: { ...box, above: above ?? null, below: below ?? null },
-        keep: Object.keys(keep).length ? keep : null,
+        keep,
         borders: Object.keys(borders).length ? borders : null,
         shading: shading && shading !== "#ffffff" ? shading : null,
+        // Its own spacing mode only: with none, its named style's
+        spacingMode: own.spacingMode === "COLLAPSE_LISTS" || own.spacingMode === "NEVER_COLLAPSE" ? own.spacingMode : null,
         ...(unsupported ? { locked: true } : {}),
+        ...(!content.length && newline.length ? { nl: newline } : {}),
       },
       content,
     };
@@ -344,10 +411,33 @@ export function importDoc(doc: Doc): ImportedDoc {
   const tableNode = (el: Element, tid: string): EditorNode => {
     const table = el.table!;
     const widths = (table.tableStyle?.tableColumnProperties ?? []).map((c) => pt(c.width));
+    // A cell's width per column it spans, in pixels, when the document gives them all
+    const colwidthOf = (c: number, spans: number) => {
+      const w = widths.slice(c, c + spans);
+      return w.length === spans && w.every((x) => x) ? w.map((x) => Math.round(x! / 0.75)) : null;
+    };
+    // Cells a merge covers. Docs lists them in a row that lists its whole grid; the editor's table (as
+    // any ProseMirror table) has only the merged cell, with its spans, and the covered cells' indices
+    // go with the next cell's span. A row a merge covers whole has no cell of its own (as the page's
+    // table has it, pasted from Docs' HTML: an empty <tr>)
+    const tableRows = table.tableRows ?? [];
+    const covered = tableRows.map(() => new Set<number>());
+    const taken = tableRows.map(() => new Set<number>());
+    tableRows.forEach((row, r) => {
+      const cells = row.tableCells ?? [];
+      if (!table.columns || cells.length !== table.columns) return;
+      cells.forEach((cell, c) => {
+        if (taken[r].has(c)) { covered[r].add(c); return; }
+        const cs = Math.max(1, cell.tableCellStyle?.columnSpan ?? 1);
+        const rs = Math.max(1, cell.tableCellStyle?.rowSpan ?? 1);
+        for (let dr = 0; dr < rs && r + dr < tableRows.length; dr++) for (let dc = 0; dc < cs; dc++) if (dr || dc) taken[r + dr].add(c + dc);
+      });
+    });
     // The index just after the last content read so far
     let cursor = el.startIndex ?? 0;
-    const rowNodes: EditorNode[] = (table.tableRows ?? []).map((row, r) => {
-      const cellNodes: EditorNode[] = (row.tableCells ?? []).map((cell, c) => {
+    const rowNodes: EditorNode[] = tableRows.map((row, r) => {
+      const cellNodes: EditorNode[] = (row.tableCells ?? []).flatMap((cell, c) => {
+        if (covered[r].has(c)) return [];
         const content: EditorNode[] = [];
         const firstContent = cell.content?.[0]?.startIndex ?? (cell.startIndex ?? cursor) + 1;
         const span = Math.max(0, firstContent - cursor);
@@ -370,9 +460,9 @@ export function importDoc(doc: Doc): ImportedDoc {
           attrs: {
             cid: `${tid}c${c}`,
             span,
-            colspan: style.columnSpan ?? 1,
-            rowspan: style.rowSpan ?? 1,
-            colwidth: widths[c] ? [Math.round(widths[c]! / 0.75)] : null,
+            colspan: Math.max(1, style.columnSpan ?? 1),
+            rowspan: Math.max(1, style.rowSpan ?? 1),
+            colwidth: colwidthOf(c, Math.max(1, style.columnSpan ?? 1)),
             background: bg && bg !== "#ffffff" ? bg : null,
           },
           content,
@@ -431,14 +521,22 @@ export function importDoc(doc: Doc): ImportedDoc {
   }
 
   if (!nodes.length) nodes.push({ type: "paragraph", attrs: {}, content: [] });
+  markListLines(nodes);
 
-  // Headers, footers and footnotes: paragraphs of their own, read the same way
+  // Headers, footers and footnotes: paragraphs of their own, read the same way. A table (a letterhead's)
+  // is shown cell by cell and kept as it is, as a table of contents is: their editors have no tables
   const segment = (id: string | null | undefined, content: Element[] | undefined): ImportedSegment | undefined => {
     if (!id) return undefined;
     const out: EditorNode[] = [];
     for (const el of content ?? []) {
-      if (el.paragraph) { const node = paragraphNode(el.paragraph); out.push(node.attrs?.locked ? lock(node, (el.endIndex ?? 0) - (el.startIndex ?? 0)) : node); }
-      else if (el.table) out.push(tableNode(el, `t${++blockId}`));
+      const size = (el.endIndex ?? 0) - (el.startIndex ?? 0);
+      if (el.paragraph) { const node = paragraphNode(el.paragraph); out.push(node.attrs?.locked ? lock(node, size) : node); }
+      else if (el.table) {
+        const cells: EditorNode[] = [];
+        cellParagraphs([el], cells);
+        if (!cells.length) cells.push({ type: "paragraph", attrs: {}, content: [] });
+        cells.forEach((c, k) => out.push(lock(c, k === 0 ? size : 0)));
+      }
     }
     if (!out.length) out.push({ type: "paragraph", attrs: {}, content: [] });
     return { id, nodes: out };
@@ -450,6 +548,7 @@ export function importDoc(doc: Doc): ImportedDoc {
     revisionId: doc.revisionId ?? "",
     defaults,
     pageSetup: pageSetupFromDocumentStyle(doc.documentStyle),
+    pageless: isPageless(doc.documentStyle),
     header: segment(ds.defaultHeaderId, doc.headers?.[ds.defaultHeaderId ?? ""]?.content ?? undefined),
     footer: segment(ds.defaultFooterId, doc.footers?.[ds.defaultFooterId ?? ""]?.content ?? undefined),
     firstPageHeader: segment(ds.firstPageHeaderId, doc.headers?.[ds.firstPageHeaderId ?? ""]?.content ?? undefined),
@@ -461,6 +560,27 @@ export function importDoc(doc: Doc): ImportedDoc {
     empty: !hasContent,
     nodes,
   };
+}
+
+/**
+ * Docs numbers the items of one list across the paragraphs between them (questions with their answers
+ * in between): each such paragraph is marked as the list's next line (listCont, ParagraphFormat.cont),
+ * so the labels, the list-style menu and a sync that re-makes the list keep the items around it one
+ * list, and a pasted copy (whose lists lose their Docs ids) counts on as Docs' own paste does. A table,
+ * a section break or content the editor can't change ends the run: no list is bulleted across those.
+ */
+export function markListLines(nodes: EditorNode[]): EditorNode[] {
+  const key = (n: EditorNode) => (n.type === "paragraph" && n.attrs?.list && n.attrs.listId ? `${n.attrs.listId as string}\u0000${n.attrs.list as string}` : null);
+  // The last list item, with only plain paragraphs after it so far
+  let last: { key: string; at: number } | null = null;
+  nodes.forEach((n, i) => {
+    const k = key(n);
+    if (k) {
+      if (last?.key === k) for (let j = last.at + 1; j < i; j++) nodes[j] = { ...nodes[j], attrs: { ...nodes[j].attrs, listCont: true } };
+      last = { key: k, at: i };
+    } else if (n.type !== "paragraph" || n.attrs?.list || n.attrs?.locked || n.attrs?.kind) last = null;
+  });
+  return nodes;
 }
 
 function stripNull<T extends object>(o: T): Partial<T> {

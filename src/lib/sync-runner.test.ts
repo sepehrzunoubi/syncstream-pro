@@ -459,24 +459,33 @@ test("lists: bullets start once, items join the same list across writes, and pla
   assert.equal(job.docList ?? null, null);
 });
 
-test("images are inserted inline in the same batch, and links get Docs' link colour", async () => {
+test("images are inserted inline in the same batch, and links are set with the look they have", async () => {
   const { h, batches } = await formattedHarness(
     [{ type: "paragraph", content: [
       { type: "text", text: "See " },
       { type: "image", attrs: { src: "https://example.com/a.png", width: 200, height: 100 } },
-      { type: "text", text: " site", marks: [{ type: "link", attrs: { href: "example.com" } }] },
+      // A link as the editor makes one (Docs' blue, underlined), then one copied plain
+      { type: "text", text: " site", marks: [{ type: "link", attrs: { href: "example.com" } }, { type: "textStyle", attrs: { color: "#1155cc" } }, { type: "underline" }] },
+      { type: "text", text: " plain", marks: [{ type: "link", attrs: { href: "example.org" } }] },
     ] }],
     [
       { kind: "insert", text: "See \uFFFC", delayMs: 0, activity: "Typing" },
-      { kind: "insert", text: " site", delayMs: 400, activity: "Typing" },
+      { kind: "insert", text: " site plain", delayMs: 400, activity: "Typing" },
     ]
   );
-  assert.equal(h.doc.text, "See \uFFFC site");
-  const linkReq = batches[1].reqs.find((r) => r.updateTextStyle && (r.updateTextStyle.textStyle as { link?: unknown }).link)!;
-  const ts = linkReq.updateTextStyle.textStyle as { link: { url: string }; underline: boolean; foregroundColor: { color: { rgbColor: { blue: number } } } };
-  assert.equal(ts.link.url, "https://example.com");
-  assert.equal(ts.underline, true);
-  assert.ok(ts.foregroundColor.color.rgbColor.blue > 0.7);
+  assert.equal(h.doc.text, "See \uFFFC site plain");
+  type Look = { link: { url: string }; underline: boolean; foregroundColor?: { color: { rgbColor: { blue: number } } } };
+  const links = batches[1].reqs.filter((r) => r.updateTextStyle && (r.updateTextStyle.textStyle as { link?: unknown }).link).map((r) => r.updateTextStyle as unknown as { textStyle: Look; fields: string });
+  assert.equal(links.length, 2);
+  const [site, plain] = links;
+  assert.equal(site.textStyle.link.url, "https://example.com");
+  assert.equal(site.textStyle.underline, true);
+  assert.ok(site.textStyle.foregroundColor!.color.rgbColor.blue > 0.7);
+  // Docs colours and underlines a link only when the request leaves those fields out: they are always in it
+  assert.equal(plain.textStyle.link.url, "https://example.org");
+  assert.equal(plain.textStyle.underline, false);
+  assert.equal(plain.textStyle.foregroundColor, undefined);
+  for (const l of links) assert.ok(/(^|,)underline(,|$)/.test(l.fields) && /(^|,)foregroundColor(,|$)/.test(l.fields));
 });
 
 test("image batches carry insertInlineImage with the image address and size", async () => {
@@ -556,6 +565,36 @@ test("typos inside an existing document are erased at the right place", async ()
   await drain(h);
   assert.equal(h.doc.text, "Why do you want to join?\nBecause.\nGood answer\nWhat else?\nNothing.");
   assert.equal(h.doc.calls.delete, 1);
+});
+
+test("a typo's delete is refused when a collaborator typed after it was read, and found again", async () => {
+  const actions: DripAction[] = [
+    { kind: "insert", text: "Good ", delayMs: 0, activity: "Typing" },
+    { kind: "typo", text: "answer", typoChars: "anwser", holdMs: 800, delayMs: 300, activity: "Typing" },
+  ];
+  const h = await makeHarness("Good answer", { actions, existing: EXISTING, anchor: { mode: "before", at: 35 } });
+  // The document's revision moves with every change; a delete bound to an older one is refused
+  let revision = 1;
+  const snapshot = h.doc.snapshot.bind(h.doc);
+  h.doc.snapshot = async (t) => ({ ...(await snapshot(t)), revisionId: `r${revision}` });
+  const del = h.doc.deleteRange.bind(h.doc);
+  let collaborated = false;
+  const required: (string | undefined)[] = [];
+  h.doc.deleteRange = async (t: string, d: string, start: number, end: number, requiredRevisionId?: string) => {
+    required.push(requiredRevisionId);
+    if (!collaborated) {
+      // Someone types at the top of the document between the read and the delete
+      collaborated = true;
+      h.doc.text = "Hi! " + h.doc.text;
+      revision++;
+    }
+    if (requiredRevisionId !== `r${revision}`) throw Object.assign(new Error("The required revision ID does not match the latest revision."), { code: 400 });
+    await del(t, d, start, end);
+  };
+  await runJobWindow(h.jobId, 0, h.deps);
+  await drain(h);
+  assert.equal(h.doc.text, "Hi! Why do you want to join?\nBecause.\nGood answer\nWhat else?\nNothing.");
+  assert.deepEqual(required, ["r1", "r2"]);
 });
 
 test("fails clearly when the text around the sync was deleted", async () => {

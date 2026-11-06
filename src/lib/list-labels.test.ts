@@ -12,3 +12,34 @@ test("lists made in the editor are numbered per level in their Docs style", () =
   // A new list of another style starts counting again
   assert.deepEqual(listLabels([n(0), n(0, "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS")]), ["1.", "1)"]);
 });
+
+test("new items right after a Docs list in the same style count on from it, as the sync adds them to it", () => {
+  const doc = (n: number) => ({ list: "ordered", listId: "kix.a", level: 0, glyph: { type: "DECIMAL", format: "%0.", start: 1 }, n });
+  const mine = (level = 0, preset = "NUMBERED_DECIMAL_ALPHA_ROMAN") => ({ list: "ordered", level, preset });
+  // Docs: createParagraphBullets adds paragraphs to the list right before them when its style matches
+  assert.deepEqual(listLabels([doc(1), doc(2), mine(), mine(1), mine()]), ["1.", "2.", "3.", "a.", "4."]);
+  // Another style, or a paragraph in between: a list of their own
+  assert.deepEqual(listLabels([doc(1), doc(2), mine(0, "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS")]), ["1.", "2.", "1)"]);
+  assert.deepEqual(listLabels([doc(1), {}, mine()]), ["1.", null, "1."]);
+  // The Docs list goes on counting after them
+  assert.deepEqual(listLabels([doc(1), mine(), doc(3)]), ["1.", "2.", "3."]);
+});
+
+test("a list item's next line (a pasted line break) keeps its list counting, as Docs numbers the items around it", () => {
+  const n = (level = 0) => ({ list: "ordered", level, preset: "NUMBERED_DECIMAL_ALPHA_ROMAN" });
+  const cont = { listCont: true };
+  assert.deepEqual(listLabels([n(), cont, n(), cont, cont, n(1), n()]), ["1.", null, "2.", null, null, "a.", "3."]);
+  // Any other paragraph ends the list
+  assert.deepEqual(listLabels([n(), {}, n()]), ["1.", null, "1."]);
+  assert.deepEqual(listLabels([n(), cont, {}, n()]), ["1.", null, null, "1."]);
+});
+
+test("items of a Docs list count across the paragraphs between them; new items after such a paragraph start their own list", () => {
+  const doc = (level = 0) => ({ list: "ordered", listId: "kix.a", level, glyph: { type: "DECIMAL", format: "%0.", start: 1 } });
+  const mine = () => ({ list: "ordered", level: 0, preset: "NUMBERED_DECIMAL_ALPHA_ROMAN" });
+  const between = { listCont: true };
+  assert.deepEqual(listLabels([doc(), between, between, doc(), between, doc()]), ["1.", null, null, "2.", null, "3."]);
+  // Right after an item, new ones join its list; after a paragraph between items they don't
+  assert.deepEqual(listLabels([doc(), mine(), between, doc()]), ["1.", "2.", null, "3."]);
+  assert.deepEqual(listLabels([doc(), between, mine(), doc()]), ["1.", null, "1.", "2."]);
+});

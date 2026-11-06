@@ -57,6 +57,9 @@ export interface SyncJob {
   userId: string;
   documentId: string;
   documentName: string;
+  /** The tab typed into, and its name (absent: a document read without its tabs, or an older job) */
+  tabId?: string;
+  tabTitle?: string;
   status: JobStatus;
   createdAt: number;
   /** When the job is allowed to start typing */

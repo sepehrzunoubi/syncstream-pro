@@ -191,3 +191,10 @@ export function fixtureContent(fixture: Fixture = fixtureDocument()): ImportedDo
 export function plainParagraphs(texts: string[]): Record<string, unknown>[] {
   return texts.map((text) => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] }));
 }
+
+/** Another tab of the document: plain paragraphs, imported the way the app imports them */
+export function tabContent(texts: string[]): ImportedDoc {
+  const b = new DocBuilder();
+  texts.forEach((t, i) => b.paragraph(`p${i}`, { runs: [t] }));
+  return importDoc(b.build());
+}

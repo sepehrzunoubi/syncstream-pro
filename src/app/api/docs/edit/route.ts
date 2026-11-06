@@ -1,31 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { editDocumentWithReplies } from "@/lib/google";
+import { editDocumentWithReplies, getDocument } from "@/lib/google";
 import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
+import { EDIT_REQUESTS } from "@/lib/docs-requests";
+import { isTabId } from "@/lib/doc-tabs";
 
 export const dynamic = "force-dynamic";
 
-/** The kinds of change the editor saves directly (formatting, deleting, restoring text) */
-const ALLOWED = new Set([
-  "updateTextStyle",
-  "updateParagraphStyle",
-  "deleteContentRange",
-  "insertText",
-  "insertInlineImage",
-  "createParagraphBullets",
-  "deleteParagraphBullets",
-  "updateDocumentStyle",
-  "insertPageBreak",
-  "insertSectionBreak",
-  "createHeader",
-  "createFooter",
-  "deleteHeader",
-  "deleteFooter",
-  "createFootnote",
-  "updateSectionStyle",
-]);
 const MAX_REQUESTS = 2000;
 
 /**
@@ -39,7 +22,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   if (limited) return limited;
   const big = tooLarge(req, 4_000_000);
   if (big) return big;
-  let body: { documentId?: unknown; revisionId?: unknown; requests?: unknown };
+  let body: { documentId?: unknown; revisionId?: unknown; requests?: unknown; tabId?: unknown; firstTab?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -53,12 +36,22 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
   for (const r of requests) {
     const keys = r && typeof r === "object" ? Object.keys(r) : [];
-    if (keys.length !== 1 || !ALLOWED.has(keys[0])) return NextResponse.json({ error: "Unsupported edit" }, { status: 400 });
+    if (keys.length !== 1 || !EDIT_REQUESTS.has(keys[0])) return NextResponse.json({ error: "Unsupported edit" }, { status: 400 });
   }
   const revisionId = typeof body.revisionId === "string" && body.revisionId ? body.revisionId : undefined;
+  // The tab the edits are in (none: a document read without its tabs, or an older page)
+  if (body.tabId != null && !isTabId(body.tabId)) return NextResponse.json({ error: "Invalid tab" }, { status: 400 });
+  let tab = body.tabId ? { id: body.tabId as string, first: body.firstTab === true } : null;
   const done = startTimer();
   try {
-    const next = await withGoogleToken(user, (token) => editDocumentWithReplies(token, documentId, requests as object[], revisionId));
+    const next = await withGoogleToken(user, async (token) => {
+      // A new header or footer belongs to its tab's own page style, found by whether the tab is first
+      // now: the page's idea of that is as old as its last read, and the tabs may have been reordered
+      if (tab && requests.some((r) => "createHeader" in (r as object) || "createFooter" in (r as object))) {
+        tab = { id: tab.id, first: (await getDocument(token, documentId)).tabId === tab.id };
+      }
+      return editDocumentWithReplies(token, documentId, requests as object[], revisionId, tab);
+    });
     log.info("docs.edit", { uid: uidTag(user.userId), requests: requests.length, ms: done() });
     return applyAuthCookies(NextResponse.json({ revisionId: next.revisionId, replies: next.replies }), user);
   } catch (error) {

@@ -1,0 +1,3 @@
+test of inline formatting.
+
+This is bold and italic or just
