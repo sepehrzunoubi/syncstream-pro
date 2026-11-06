@@ -72,6 +72,9 @@ jobs:
           name: next-build
           path: .next
       - run: npx playwright install --with-deps chromium
+      # The page tests measure text as Docs draws it: Arial and Times New Roman in their metric
+      # twins (Liberation), Calibri and Cambria in theirs (Carlito, Caladea), as users' machines have them
+      - run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea
       - run: npm run e2e
         env:
           NEXT_PUBLIC_BASE_URL: http://localhost:3000
