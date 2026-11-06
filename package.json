@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint --dir src --dir e2e --dir scripts",
     "test": "tsx --test src/**/*.test.ts src/components/**/*.test.ts scripts/**/*.test.ts",
+    "fidelity": "tsx scripts/fidelity/run.ts",
     "typecheck": "tsc --noEmit",
     "style:eval": "tsx scripts/style-lab/run.ts",
     "style:compile": "tsx scripts/style-lab/compile.ts",

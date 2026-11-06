@@ -269,7 +269,9 @@ export class StubDocument {
     const ts = this.inheritedStyle(index);
     const end = this.items[this.paragraphEnd(index)] as Extract<Item, { k: "nl" }>;
     const fresh: Item[] = [];
-    for (const ch of text) {
+    // Docs counts indexes in UTF-16 code units: a character outside the basic plane (an emoji) takes two
+    for (let k = 0; k < text.length; k++) {
+      const ch = text[k];
       if (ch === "\n") fresh.push({ k: "nl", ts: clone(ts), ps: clone(end.ps), ...(end.bullet ? { bullet: clone(end.bullet) } : {}) });
       else if (ch === "\r" || ch === "\u000C") continue; // Docs drops these from insertText
       else fresh.push({ k: "c", ch, ts: clone(ts) });

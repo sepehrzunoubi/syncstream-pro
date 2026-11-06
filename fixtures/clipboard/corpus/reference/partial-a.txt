@@ -1,0 +1,4 @@
+make sure to talk/share this information in order to understand the industry as a whole):
+Industry subsegment value proposition
+For agents and the devs building them
+APIs provide the data in a format ready for LLMs, i.e. providing the results in a format that agents
