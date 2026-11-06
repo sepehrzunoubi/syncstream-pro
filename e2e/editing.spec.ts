@@ -67,6 +67,69 @@ test.describe("direct edits save to Google Docs", () => {
     expect(api.edits[1].requests).toEqual([{ updateParagraphStyle: { range, paragraphStyle: { alignment: "START", direction: "LEFT_TO_RIGHT" }, fields: "alignment,direction" } }]);
   });
 
+  test("paint format copies a paragraph's direction and a list item's level", async ({ app, api, page }) => {
+    await app.open();
+    const intro = "Notes on three works, with bold, italic and underlined words.";
+    const paint = async (from: string, to: string) => {
+      await app.caretAfter(from);
+      await page.getByRole("button", { name: "Paint format" }).click();
+      await app.select(to);
+      await app.doc.dispatchEvent("mouseup");
+      await expect(page.getByRole("button", { name: "Paint format" })).toHaveAttribute("aria-pressed", "false");
+    };
+    await app.caretAfter("Closing");
+    await page.locator(".ss-menubar-trigger", { hasText: "Format" }).click();
+    await page.getByRole("menuitem").filter({ has: page.getByText("Align & indent", { exact: true }) }).hover();
+    await page.getByRole("menuitem").filter({ has: page.getByText("Right-to-left text", { exact: true }) }).click();
+    await app.waitForSave(1);
+    // A right-to-left paragraph aligned to its start: the paragraph painted turns around with it
+    await paint("Closing", "Notes on three");
+    await expect(app.doc.locator("p", { hasText: intro })).toHaveAttribute("dir", "rtl");
+    await app.waitForSave(2);
+    const range = { startIndex: api.fixture.at.intro, endIndex: api.fixture.at.intro + intro.length + 1 };
+    const styles = api.edits[1].requests.filter((r) => "updateParagraphStyle" in r).map((r) => (r as { updateParagraphStyle: { range: unknown; paragraphStyle: Record<string, unknown> } }).updateParagraphStyle);
+    expect(styles.find((u) => JSON.stringify(u.range) === JSON.stringify(range))?.paragraphStyle).toMatchObject({ alignment: "START", direction: "RIGHT_TO_LEFT" });
+    // A nested item paints its level, not just that it is an item
+    await paint("How the voice", "Second piece");
+    await expect.poll(async () => (await app.paragraphs()).find((p) => p.text.startsWith("Second piece"))?.level).toBe(1);
+  });
+
+  test("the ruler measures a right-to-left paragraph's indents from the right", async ({ app, api, page }) => {
+    await app.open();
+    await app.caretAfter("Closing");
+    await page.locator(".ss-menubar-trigger", { hasText: "Format" }).click();
+    await page.getByRole("menuitem").filter({ has: page.getByText("Align & indent", { exact: true }) }).hover();
+    await page.getByRole("menuitem").filter({ has: page.getByText("Right-to-left text", { exact: true }) }).click();
+    await app.waitForSave(1);
+    const ruler = page.locator(".ss-ruler svg");
+    const box = (await ruler.boundingBox())!;
+    const scale = box.width / Number(await ruler.getAttribute("width"));
+    const centre = async (marker: string) => { const b = (await ruler.locator(`[data-marker="${marker}"]`).boundingBox())!; return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    // The start and first-line markers sit on the right margin, the end marker on the left one
+    const paper = (await app.doc.boundingBox())!;
+    const margin = 96 * scale;
+    expect(Math.abs((await centre("start")).x - (box.x + box.width - margin))).toBeLessThan(1);
+    expect(Math.abs((await centre("first")).x - (box.x + box.width - margin))).toBeLessThan(1);
+    expect(Math.abs((await centre("end")).x - (box.x + margin))).toBeLessThan(1);
+    expect(Math.abs(paper.width - box.width)).toBeLessThan(1);
+    // Dragging the start marker an inch to the left indents the paragraph an inch from the right
+    const from = await centre("start");
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x - 48 * scale, from.y, { steps: 4 });
+    await page.mouse.move(from.x - 96 * scale, from.y, { steps: 4 });
+    await page.mouse.up();
+    const closing = app.doc.locator("p", { hasText: CLOSING_TEXT });
+    await expect.poll(() => closing.evaluate((p) => [getComputedStyle(p).marginRight, getComputedStyle(p).marginLeft])).toEqual(["96px", "0px"]);
+    await app.waitForSave(2);
+    expect(api.edits[1].requests).toEqual([{ updateParagraphStyle: {
+      range: { startIndex: api.fixture.at.closing, endIndex: api.fixture.at.closing + CLOSING_TEXT.length + 1 },
+      paragraphStyle: { indentStart: { magnitude: 72, unit: "PT" }, indentFirstLine: { magnitude: 72, unit: "PT" } },
+      fields: "indentStart,indentFirstLine",
+    } }]);
+    expect(Math.abs((await centre("start")).x - (box.x + box.width - 2 * margin))).toBeLessThan(1);
+  });
+
   test("Heading 1 via Ctrl+Alt+1 restyles the paragraph and saves its named style", async ({ app, api, page }) => {
     await app.open();
     await app.caretAfter("Closing");

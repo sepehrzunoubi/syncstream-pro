@@ -79,6 +79,13 @@ interface ToolbarProps {
 
 type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para: Record<string, unknown> } | null;
 
+/**
+ * The paragraph's format that paint format copies: all of it, as Docs does. Its direction goes with its
+ * alignment (start, end), so a right-to-left paragraph paints the same however it came to be one; a list
+ * item paints its list style and its level, not the list it is in.
+ */
+const PAINTED = ["styleName", "textAlign", "dir", "lineSpacing", "indent", "firstLine", "indentEnd", "list", "level", "preset", "box", "keep", "borders", "shading", "spacingMode"];
+
 export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl, onCustomSpacing }: ToolbarProps) {
   const mod = useModKey();
   const [spellcheck, setSpellcheck] = useState(true);
@@ -97,8 +104,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       if (editor.state.selection.empty) return;
       let chain = editor.chain().focus().unsetFormattingMarks();
       for (const m of painter.marks) chain = chain.setMark(m.type, m.attrs);
-      const { styleName, textAlign, lineSpacing, indent, firstLine, list, box, keep, borders, shading } = painter.para;
-      chain.updateAttributes("paragraph", { styleName, textAlign, lineSpacing, indent, firstLine, list, box, keep, borders, shading }).run();
+      chain.updateAttributes("paragraph", Object.fromEntries(PAINTED.map((k) => [k, painter.para[k] ?? null]))).run();
       setPainter(null);
     }, 0);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPainter(null); };
