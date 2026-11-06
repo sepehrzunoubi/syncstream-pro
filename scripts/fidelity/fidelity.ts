@@ -414,6 +414,18 @@ export const SCENARIOS: Scenario[] = [
     labels: ["1.", "2.", "a.", "3."],
   },
   {
+    name: "list-across-tabbed-answers",
+    what: "answers between numbered questions that start with tabs: they keep them (Docs takes a paragraph's leading tabs when it bullets it), and the questions count on",
+    target: (base) => asAdded(pasteSlice(docsCopy([{ text: "Question one here", level: 0 }, { text: "\tIndented answer" }, { text: "Question two here", level: 0 }, { text: "\t\tTwice indented" }, { text: "Question three", level: 0 }, { text: "After" }]), base)),
+    labels: ["1.", "2.", "3."],
+  },
+  {
+    name: "list-item-short-line-break",
+    what: "a short numbered item with a line break, its line typed with it in one write: the items after it count on",
+    target: () => asPasted([LI(0, "ordered", "One", { type: "hardBreak" }, "x"), LI(0, "ordered", "Two"), LI(0, "ordered", "Three")]),
+    labels: ["1.", "2.", "3."],
+  },
+  {
     name: "list-custom-indent-space",
     what: "list items with their own indent (54pt) and 6pt above and below",
     target: () => [P({ list: "bullet", level: 0, box: { start: 54, marker: -18, above: 6, below: 6 } }, "Indented item with spacing"), P({ list: "bullet", level: 0, box: { start: 54, marker: -18, above: 6, below: 6 } }, "Second indented item")],

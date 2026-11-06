@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { asAdded, differences, labelsOf, newlineSizesOf, pasteCapture, SCENARIOS, syncInto, type Scenario } from "./fidelity";
+import { asAdded, differences, docsCopy, labelsOf, newlineSizesOf, pasteCapture, pasteSlice, SCENARIOS, syncInto, type Scenario } from "./fidelity";
 
 const FIXTURES = path.join(__dirname, "..", "..", "fixtures", "clipboard");
 const CORPUS = path.join(FIXTURES, "corpus");
@@ -35,6 +35,21 @@ test("the dashboard's path, the whole page typed as one text, gives the same doc
     const r = await syncInto(s, { append: true });
     assert.equal(r.outcome, "done", `${s.name}: ${r.error}`);
     assert.deepEqual(differences(r.target, r.doc), [], s.name);
+  }
+});
+
+test("numbered questions with answers between them take requests in proportion to their number, not its square", async () => {
+  // Each question after an answer joins the list from the answers before it, not by re-making the list
+  const paras: { text: string; level?: number }[] = [];
+  for (let k = 1; k <= 30; k++) paras.push({ text: `Question number ${k} goes here`, level: 0 }, { text: `The answer to question ${k} is this` });
+  paras.push({ text: "End" });
+  for (const append of [false, true]) {
+    const r = await syncInto({ target: (base) => asAdded(pasteSlice(docsCopy(paras), base)) }, { append });
+    assert.equal(r.outcome, "done", r.error);
+    assert.deepEqual(differences(r.target, r.doc), [], append ? "whole page" : "segments");
+    const sizes = r.batches.map((b) => b.length);
+    assert.ok(Math.max(...sizes) <= 12, `largest batch ${Math.max(...sizes)} (${append ? "whole page" : "segments"})`);
+    assert.ok(sizes.reduce((a, b) => a + b, 0) <= 30 * 30, `${sizes.reduce((a, b) => a + b, 0)} requests (${append ? "whole page" : "segments"})`);
   }
 });
 

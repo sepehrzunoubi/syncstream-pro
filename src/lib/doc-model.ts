@@ -16,7 +16,7 @@
 
 import {
   bulletRequests,
-  contRequests,
+  type BulletParagraph,
   DEFAULT_PARAGRAPH,
   OBJ,
   PAGE_BREAK,
@@ -36,6 +36,7 @@ import {
   type RunFormat,
   type RunStyle,
 } from "./rich-text";
+import { listRuns, type ListParagraph } from "./list-labels";
 
 export const PENDING_MARK = "syncAdd";
 
@@ -745,13 +746,25 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const listRequests: DocsRequest[] = [];
   const paraRequests: DocsRequest[] = [];
   const changedLists = new Set<number>();
+  // The list each item is counted in on the page (see listRuns): Docs has to put it in that one
+  const memberOf = new Map<number, string | null>();
+  {
+    const nls: number[] = [];
+    saved.forEach((t, q) => { if (t.k === "nl") nls.push(q); });
+    const { lists } = listRuns(nls.map((q) => ((saved[q] as Extract<Tok, { k: "nl" }>).attrs ?? {}) as ListParagraph));
+    nls.forEach((q, i) => memberOf.set(q, lists[i]));
+  }
   for (let p = 0; p < saved.length; p++) {
     const t = saved[p];
     if (t.k !== "nl" || !docsAttrs.has(p)) continue;
     const pa = paragraphFromAttrs(docsAttrs.get(p));
     const pb = paragraphFromAttrs(t.attrs);
     const range = { startIndex: sIndex[sParaStart[p]], endIndex: sIndex[p] + 1 };
-    const listChanged = (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
+    // A paragraph in a Docs list (its own, or the one of the paragraph it was split from) that the page
+    // counts in another list moves to that one
+    const docsList = docsAttrs.get(p)?.listId;
+    const moved = !!pb.list && typeof docsList === "string" && memberOf.get(p) !== docsList;
+    const listChanged = moved || (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
     if (listChanged) {
       if (pa.list && !pb.list) listRequests.push({ deleteParagraphBullets: { range } });
       if (pb.list) changedLists.add(p);
@@ -770,10 +783,12 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     const type = kindAt(j);
     const nlBefore = (q: number) => { for (let k = q - 1; k >= 0; k--) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
     const nlAfter = (q: number) => { for (let k = q + 1; k < saved.length; k++) { const t = saved[k]; if (t.k === "nl") return k; if (t.k === "block" || t.k === "st") return -1; } return -1; };
-    // Across list items' next lines (ParagraphFormat.cont): the items around one are one list
+    // The items the page counts in the same list, across list items' next lines (ParagraphFormat.cont)
     const cont = (q: number) => { const t = saved[q]; return t.k === "nl" && !!paragraphFromAttrs(t.attrs).cont; };
-    for (let k = nlBefore(s); k >= 0 && (kindAt(k) === type || cont(k)); k = nlBefore(k)) if (kindAt(k) === type) s = k;
-    for (let k = nlAfter(e); k >= 0 && (kindAt(k) === type || cont(k)); k = nlAfter(k)) if (kindAt(k) === type) e = k;
+    const list = memberOf.get(j);
+    const same = (k: number) => kindAt(k) === type && memberOf.get(k) === list;
+    for (let k = nlBefore(s); k >= 0 && (same(k) || (!kindAt(k) && cont(k))); k = nlBefore(k)) if (same(k)) s = k;
+    for (let k = nlAfter(e); k >= 0 && (same(k) || (!kindAt(k) && cont(k))); k = nlAfter(k)) if (same(k)) e = k;
     return [s, e];
   };
   const runs: [number, number][] = [];
@@ -783,21 +798,25 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   }
   runs.sort((a, b) => b[0] - a[0]);
   for (const [s, e] of runs) {
-    const items: { start: number; end: number; level: number }[] = [];
-    const lines: { range: { startIndex: number; endIndex: number }; para: ReturnType<typeof paragraphFromAttrs> }[] = [];
+    const run: BulletParagraph[] = [];
     let preset = "";
     for (let q = s; q <= e; q++) {
       const t = saved[q];
       if (t.k !== "nl") continue;
       const pb = paragraphFromAttrs(t.attrs);
-      if (!pb.list) { lines.push({ range: { startIndex: sIndex[sParaStart[q]], endIndex: sIndex[q] + 1 }, para: pb }); continue; }
+      const range = { start: sIndex[sParaStart[q]], end: sIndex[q] + 1 };
+      if (!pb.list) {
+        let tabs = 0;
+        for (let k = sParaStart[q]; k < q; k++) { const c = saved[k]; if (c.k !== "c" || c.c !== "\t") break; tabs++; }
+        run.push({ ...range, level: 0, line: pb, tabs });
+        continue;
+      }
       preset = presetOf(pb);
-      items.push({ start: sIndex[sParaStart[q]], end: sIndex[q] + 1, level: pb.level ?? 0 });
+      run.push({ ...range, level: pb.level ?? 0 });
     }
-    if (!items.length) continue;
-    listRequests.push({ deleteParagraphBullets: { range: { startIndex: items[0].start, endIndex: items[items.length - 1].end } } });
-    listRequests.push(...bulletRequests(items, preset));
-    for (const l of lines) listRequests.push(...contRequests(l.range, l.para));
+    if (!preset) continue;
+    listRequests.push({ deleteParagraphBullets: { range: { startIndex: run[0].start, endIndex: run[run.length - 1].end } } });
+    listRequests.push(...bulletRequests(run, preset));
   }
 
   const requests = [...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];

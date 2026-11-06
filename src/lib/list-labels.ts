@@ -87,16 +87,28 @@ function joins(preset: string, before: ListParagraph): boolean {
 
 /** The label of each paragraph ("3.", "a.", "●"), or null (not a list, or a checklist box) */
 export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
+  return listRuns(paragraphs).labels;
+}
+
+/**
+ * The labels, and the list each item is counted in (null for other paragraphs): its Docs list's id, the
+ * Docs list a run of items made here joins, or that run's own key. A sync puts each item in that list.
+ */
+export function listRuns(paragraphs: ListParagraph[]): { labels: (string | null)[]; lists: (string | null)[] } {
+  const lists: (string | null)[] = [];
+  let runs = 0;
   const byList = new Map<string, number[]>();
   let runType: string | null = null;
   // The paragraph before, when it is an item of a Docs list, and the Docs list a run of new items joined
   let before: ListParagraph | null = null;
   let joined: string | null = null;
-  return paragraphs.map((p) => {
+  const labels = paragraphs.map((p) => {
+    lists.push(null);
     // Any other paragraph ends a list made here; a list item's next line doesn't. Either way new items
     // after it make a list of their own in Docs (createParagraphBullets joins the paragraph right before)
     if (!p.list) { if (!p.listCont) { runType = null; joined = null; } before = null; return null; }
     if (p.listId) {
+      lists[lists.length - 1] = p.listId;
       runType = null;
       joined = null;
       before = p;
@@ -120,11 +132,13 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
     const key = `local:${preset}`;
     if (runType !== key) {
       runType = key;
+      runs++;
       byList.delete(key);
       joined = before && joins(preset, before) ? before.listId! : null;
     }
     before = null;
     const countKey = joined ?? key;
+    lists[lists.length - 1] = joined ?? `${key}#${runs}`;
     const counts = byList.get(countKey) ?? [];
     counts[level] = (counts[level] ?? 0) + 1;
     counts.length = level + 1;
@@ -134,6 +148,7 @@ export function listLabels(paragraphs: ListParagraph[]): (string | null)[] {
     if (typeof g === "string") return g;
     return g.format.replace(/%(\d)/g, (_, d: string) => glyphNumber(counts[Number(d)] ?? 1, Number(d) === level ? g.type : "DECIMAL"));
   });
+  return { labels, lists };
 }
 
 const presetKind = (preset: string) => (preset === "BULLET_CHECKBOX" ? "check" : preset.startsWith("BULLET") ? "bullet" : "ordered");
