@@ -295,6 +295,102 @@ test.describe("typing line breaks", () => {
     await expect.poll(async () => (await lines(app)).map((l) => l.text)).toEqual(["First lineSecond line", "Next paragraph"]);
     const [joined] = await lines(app);
     expect([joined.above, joined.below].map((v) => Math.round((v ?? 0) / pt * 10) / 10)).toEqual([12, 18]);
+
+    // Shift+Backspace (or Ctrl+Backspace) at a line's start takes the break out the same way
+    await page.keyboard.press("End");
+    await caretAt(page, "First lineSecond line", "end");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("Again");
+    await caretAt(page, "Again", "end");
+    await page.keyboard.press("Home");
+    await caretAt(page, "Again", "start");
+    await page.keyboard.press("Shift+Backspace");
+    await expect.poll(async () => (await lines(app)).map((l) => l.text)).toEqual(["First lineSecond lineAgain", "Next paragraph"]);
+    const [again] = await lines(app);
+    expect([again.above, again.below].map((v) => Math.round((v ?? 0) / pt * 10) / 10)).toEqual([12, 18]);
+  });
+
+  test("Shift+Enter makes only its own line break a line: the document's own line breaks stay as they are", async ({ app, page }) => {
+    const box = { start: 0, first: 0, above: 0, below: 0 };
+    const t = (text: string) => ({ type: "text", text });
+    await app.open({ plain: [
+      { type: "paragraph", attrs: { box }, content: [t("Line one"), { type: "hardBreak" }, t("Line two")] },
+      { type: "paragraph", attrs: { box }, content: [t("Next A"), { type: "hardBreak" }, t("Next B")] },
+    ] });
+    await app.caretAtEnd("Line two");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("typed");
+    await expect.poll(async () => (await paragraphsOf(app)).map((p) => (p.content ?? []).map((c) => c.text ?? `<${c.type}>`).join(""))).toEqual(["Line one<hardBreak>Line two", "typed", "Next A<hardBreak>Next B"]);
+    expect((await paragraphsOf(app))[1].attrs?.softBreak).toBe(true);
+  });
+
+  test("a line made a list item is an item of its own: Backspace takes its bullet off, and a copy keeps it an item", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused)).toBe(true);
+    await page.keyboard.press("Control+Shift+7");
+    await page.keyboard.type("Alpha");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("beta");
+    await page.keyboard.press("Control+Shift+7");
+    await expect.poll(async () => (await lines(app)).map((l) => [l.text, l.label])).toEqual([["Alpha", "1."], ["beta", "2."]]);
+    expect((await paragraphsOf(app))[1].attrs?.softBreak ?? null).toBe(null);
+    const copied = await page.evaluate(() => { const v = window.ssEditor!.view; return v.serializeForClipboard(v.state.doc.slice(0, v.state.doc.content.size)).dom.innerHTML; });
+    expect(copied.match(/<li\b/g)).toHaveLength(2);
+    expect(copied).not.toContain("<br>");
+    await page.keyboard.press("Home");
+    await caretAt(page, "beta", "start");
+    await page.keyboard.press("Backspace");
+    await expect.poll(async () => (await lines(app)).map((l) => [l.text, l.label])).toEqual([["Alpha", "1."], ["beta", null]]);
+    // Made an item by typing "* " at its start (Docs' list detection): an item of its own too
+    await page.keyboard.press("End");
+    await caretAt(page, "beta", "end");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("* gamma");
+    await expect.poll(async () => (await lines(app)).map((l) => [l.text, l.list])).toEqual([["Alpha", "ordered"], ["beta", null], ["gamma", "bullet"]]);
+    expect((await paragraphsOf(app))[2].attrs?.softBreak ?? null).toBe(null);
+  });
+
+  test("Enter at the end of a heading's line after a line break starts Normal text, as at the end of any heading", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused)).toBe(true);
+    await page.keyboard.press("Control+Alt+1");
+    await page.keyboard.type("Title");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("second line");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Body text");
+    await expect.poll(async () => (await paragraphsOf(app)).filter((p) => p.content?.length).map((p) => [(p.content ?? []).map((c) => c.text).join(""), p.attrs?.styleName])).toEqual([["Title", "h1"], ["second line", "h1"], ["Body text", "normal"]]);
+  });
+
+  test("an empty last line copies as Docs copies one (<br><br>), with a line per paragraph in the text, and pastes back as one empty line", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused)).toBe(true);
+    await page.keyboard.type("Words");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("After");
+    await expect.poll(async () => (await paragraphsOf(app)).map((p) => (p.content ?? []).map((c) => c.text).join(""))).toEqual(["Words", "", "After"]);
+    const copied = await page.evaluate(() => {
+      const ed = window.ssEditor!;
+      const size = ed.state.doc.content.size;
+      ed.commands.setTextSelection({ from: 0, to: size });
+      const v = ed.view;
+      const data = new DataTransfer();
+      v.dom.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
+      return { html: data.getData("text/html"), text: data.getData("text/plain") };
+    });
+    expect(copied.html).toMatch(/Words(<\/span>)?<br><br><\/p>/);
+    expect(copied.text).toBe("Words\n\nAfter");
+    // Pasted back (and Docs' own copy of a paragraph ending with a line break): one empty line, not two
+    await page.evaluate(() => window.ssEditor!.chain().setContent({ type: "doc", content: [{ type: "paragraph" }] }).focus().setTextSelection(1).run());
+    await app.paste({ html: copied.html, text: copied.text });
+    const summary = async () => (await paragraphsOf(app)).map((p) => [(p.content ?? []).map((c) => c.text).join(""), !!p.attrs?.softBreak]);
+    await expect.poll(summary).toEqual([["Words", false], ["", true], ["After", false]]);
+    // Docs writes the two line breaks in a span of the paragraph's (a paragraph that ends with a line break)
+    await page.evaluate(() => window.ssEditor!.chain().setContent({ type: "doc", content: [{ type: "paragraph" }] }).focus().setTextSelection(1).run());
+    const sp = `style="font-size:11pt;font-family:Arial,sans-serif;color:#000000;white-space:pre-wrap;"`;
+    await app.paste({ html: `<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1"><p dir="ltr" style="line-height:1.38;margin-top:0pt;margin-bottom:0pt;"><span ${sp}>No Nicole Kidman.</span><span ${sp}><br /><br /></span></p><p dir="ltr" style="line-height:1.38;margin-top:0pt;margin-bottom:0pt;"><span ${sp}>Next</span></p></b>`, text: "No Nicole Kidman.\n\nNext" });
+    await expect.poll(summary).toEqual([["No Nicole Kidman.", false], ["", true], ["Next", false]]);
   });
 });
 

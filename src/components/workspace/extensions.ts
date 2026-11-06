@@ -251,6 +251,22 @@ const DocParagraph = Paragraph.extend({
       state: { init: (_c, state) => lineSizes(state.doc), apply: (tr, old) => (tr.docChanged ? lineSizes(tr.doc) : old) },
       props: { decorations(state) { return this.getState(state); } },
     }), new Plugin({
+      // A list item is never a line break's line (softBreak): a line made a list item (toggleList, "1. ",
+      // the list menus) is a paragraph of its own, which Backspace un-bullets and a copy keeps an item
+      appendTransaction: (trs, _old, state) => {
+        if (!trs.some((tr) => tr.docChanged)) return null;
+        const fix: number[] = [];
+        state.doc.nodesBetween(0, state.doc.content.size, (node, pos) => {
+          if (!node.isTextblock) return true;
+          if (node.attrs.softBreak && node.attrs.list) fix.push(pos);
+          return false;
+        });
+        if (!fix.length) return null;
+        const tr = state.tr;
+        for (const pos of fix) tr.setNodeMarkup(pos, undefined, { ...state.doc.nodeAt(pos)!.attrs, softBreak: null });
+        return tr;
+      },
+    }), new Plugin({
       // The caret in an empty line with a look of its own (nl): text typed there takes it, as in Docs
       appendTransaction: (trs, _old, state) => {
         if (!trs.some((tr) => tr.selectionSet || tr.docChanged) || state.storedMarks || !state.selection.empty) return null;
@@ -532,7 +548,7 @@ function paragraphsInSelection(editor: { state: Editor["state"] }, from: number,
 }
 
 /** Leaving a list, or starting a new one: Docs makes a new list, with default indents */
-const NO_LIST = { list: null, listId: null, level: null, glyph: null, preset: null, box: null, listCont: null };
+const NO_LIST = { list: null, listId: null, level: null, glyph: null, preset: null, box: null, listCont: null, softBreak: null };
 
 /** Whether two list items are of one list: one Docs list, or a list made here in one Docs list style */
 function sameList(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
@@ -892,17 +908,36 @@ const DocFormat = Extension.create({
  * including at the end of the copy; other pages get one from the browser
  * after the copied content. Each of Docs' becomes an empty paragraph (which
  * syncs as a new line); the browser's trailing one is dropped.
+ *
+ * A line break that ends a paragraph draws no line of its own (browsers and Docs leave it out), so a
+ * paragraph that ends with a line break comes with a second one (Docs copies one as <br><br>).
+ * ProseMirror drops such a last one when it sits right in the paragraph; one inside a span (as Docs
+ * writes it) is dropped here, so the paragraph has the one empty line it shows.
  */
 export function pastedEmptyLines(html: string): string {
   if (typeof DOMParser === "undefined" || !/<br\b/i.test(html)) return html;
   const fromDocs = /id="docs-internal-guid-/.test(html);
   const doc = new DOMParser().parseFromString(html, "text/html");
+  const BLOCK = "p, h1, h2, h3, h4, h5, h6, div, ul, ol, table, blockquote";
+  const ENDS = `${BLOCK}, li, td, th, body`;
+  // Whether nothing follows `br` in its block: no text or element after it, out to the block
+  const endsBlock = (br: Element) => {
+    for (let n: globalThis.Node = br; n.parentElement; n = n.parentElement) {
+      for (let s = n.nextSibling; s; s = s.nextSibling) if (s.nodeType === 1 || (s.textContent ?? "").trim()) return false;
+      if (n.parentElement.matches(ENDS)) return true;
+    }
+    return false;
+  };
   for (const br of Array.from(doc.querySelectorAll("br"))) {
     const parent = br.parentElement;
     if (!parent) continue;
-    const BLOCK = "p, h1, h2, h3, h4, h5, h6, div, ul, ol, table, blockquote";
     const blocks = Array.from(parent.children).some((c) => c.matches(BLOCK) || c.querySelector(BLOCK));
-    if (!blocks) continue; // a line break inside a paragraph
+    if (!blocks) {
+      // A line break inside a paragraph; the one ending it draws nothing (ProseMirror drops it when the
+      // paragraph is its parent, not when a span is)
+      if (!parent.matches(ENDS) && endsBlock(br)) br.remove();
+      continue;
+    }
     const last = !br.nextElementSibling && !(br.nextSibling?.textContent ?? "").trim();
     if ((last && !fromDocs) || br.classList.contains("Apple-interchange-newline")) br.remove();
     else br.replaceWith(doc.createElement("p"));
@@ -1290,15 +1325,23 @@ const ClipboardHTML = Extension.create({
         let shown = 0;
         let carried = 0;
         let lastItem: Record<string, unknown> | null = null;
-        // The last paragraph written, which a line after a line break goes back into
+        // The last paragraph written, which a line after a line break goes back into, and the line break
+        // that shows its empty last line
         let lastBlock: HTMLElement | null = null;
+        let filler: HTMLElement | null = null;
+        // Lists opened only to hold a deeper item
+        const wrappers = new WeakSet<HTMLElement>();
         fragment.forEach((node) => {
           // The line after a line break (see breaksAsParagraphs) is the break in the paragraph before, for
           // other apps (Docs pastes it as one), with the space below it had
-          if (node.type.name === "paragraph" && node.attrs.softBreak && lastBlock) {
+          if (node.type.name === "paragraph" && node.attrs.softBreak && !node.attrs.list && lastBlock) {
             const el = serializer.serializeNode(node, options) as HTMLElement;
+            filler?.remove();
+            filler = null;
             lastBlock.appendChild(doc.createElement("br"));
             while (el.firstChild) lastBlock.appendChild(el.firstChild);
+            // An empty last line: a line break that ends a paragraph draws nothing, so a second one shows it (as Docs copies it)
+            if (!node.content.size) { filler = doc.createElement("br"); lastBlock.appendChild(filler); }
             const below = (node.attrs.box as { below?: number | null } | null)?.below;
             if (typeof below === "number") lastBlock.style.marginBottom = `${below}pt`;
             return;
@@ -1309,10 +1352,12 @@ const ClipboardHTML = Extension.create({
             stack = stack.slice(0, level + 1);
             for (let i = stack.length; i <= level; i++) {
               const list = doc.createElement(i === level ? tag : "ul");
-              // A list that goes on after its next lines starts where it left off, as Docs copies it
+              if (i < level) wrappers.add(list);
+              // A list that goes on after its next lines starts where it left off, as Docs copies it (one
+              // opened for a deeper item only holds it: the count goes on to the items after it)
               if (i === 0) {
                 shown = carried && lastItem && sameList(lastItem, node.attrs) ? carried : 0;
-                if (shown && tag === "ol") list.setAttribute("start", String(shown + 1));
+                if (shown && i === level && tag === "ol") list.setAttribute("start", String(shown + 1));
               }
               if (i === 0) out.appendChild(list);
               else {
@@ -1324,10 +1369,14 @@ const ClipboardHTML = Extension.create({
             }
             if (stack[level].tagName.toLowerCase() !== tag) {
               const list = doc.createElement(tag);
+              const held = wrappers.has(stack[level]);
               stack[level].parentNode?.insertBefore(list, stack[level].nextSibling);
               stack[level] = list;
               stack = stack.slice(0, level + 1);
-              if (level === 0) shown = 0;
+              if (level === 0) {
+                if (held && shown && tag === "ol" && lastItem && sameList(lastItem, node.attrs)) list.setAttribute("start", String(shown + 1));
+                else shown = 0;
+              }
             }
             const li = doc.createElement("li");
             li.setAttribute("aria-level", String(level + 1));
@@ -1335,17 +1384,19 @@ const ClipboardHTML = Extension.create({
             const el = serializer.serializeNode(node, options);
             li.appendChild(el);
             lastBlock = el instanceof HTMLElement ? el : null;
+            filler = null;
             stack[level].appendChild(li);
             if (level === 0 && tag === "ol") { shown++; lastItem = node.attrs; }
             carried = 0;
           } else {
             // A list item's next line: the numbered list goes on after it
-            if (node.type.name === "paragraph" && node.attrs.listCont) { if (stack[0]?.tagName.toLowerCase() === "ol") carried = shown; }
+            if (node.type.name === "paragraph" && node.attrs.listCont) { if (stack[0] && (stack[0].tagName.toLowerCase() === "ol" || wrappers.has(stack[0]))) carried = shown; }
             else carried = 0;
             stack = [];
             const el = serializer.serializeNode(node, options);
             out.appendChild(el);
             lastBlock = node.type.name === "paragraph" && el instanceof HTMLElement ? el : null;
+            filler = null;
           }
         });
         return out;

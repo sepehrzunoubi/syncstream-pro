@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, FIXTURE_DOC_ID, FIXTURE_DOC_NAME } from "./fixtures";
 import { importDoc } from "../src/lib/doc-import";
 import { EMPTY_DOC } from "./fixtures/empty-doc";
 
@@ -45,8 +45,70 @@ test.describe("copies of the page", () => {
       document.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
       return { html: data.getData("text/html"), text: data.getData("text/plain") };
     });
-    expect(copied.text).toBe("Plain words in Courier\n\nSecond");
+    // One line per paragraph, as Docs copies them
+    expect(copied.text).toBe("Plain words in Courier\nSecond");
     expect(copied.html).toContain("Courier New");
+    expect(copied.html).not.toContain("SS Space");
+  });
+
+  test("a copy of a numbered list counts on after a sub-item that follows a paragraph between items", async ({ app, page }) => {
+    const box = { start: 0, first: 0, above: 0, below: 0 };
+    const p = (text: string, attrs: Record<string, unknown>) => ({ type: "paragraph", attrs: { box, ...attrs }, content: [{ type: "text", text }] });
+    await app.open({ plain: [p("Item A", { list: "ordered", level: 0 }), p("Between", { listCont: true }), p("Sub item", { list: "ordered", level: 1 }), p("Item B", { list: "ordered", level: 0 })] });
+    await expect.poll(async () => (await app.paragraphs()).map((x) => x.label)).toEqual(["1.", null, "a.", "2."]);
+    const html = await page.evaluate(() => { const v = window.ssEditor!.view; return v.serializeForClipboard(v.state.doc.slice(0, v.state.doc.content.size)).dom.innerHTML; });
+    const lists = await page.evaluate((h) => { const d = document.createElement("div"); d.innerHTML = h; return Array.from(d.children).filter((e) => /^(OL|UL)$/.test(e.tagName)).map((e) => ({ tag: e.tagName, start: e.getAttribute("start"), text: e.textContent })); }, html);
+    expect(lists.find((l) => l.text?.includes("Item B"))).toMatchObject({ tag: "OL", start: "2" });
+    expect(lists.every((l) => l.tag === "OL" || l.start == null)).toBe(true);
+  });
+
+  test("Ctrl+A while a header is edited selects the header, even after a click on the page", async ({ app, api, page }) => {
+    const doc = { ...EMPTY_DOC, documentStyle: { ...EMPTY_DOC.documentStyle, defaultHeaderId: "kix.header" }, headers: { "kix.header": { headerId: "kix.header", content: [{ startIndex: 0, endIndex: 12, paragraph: { elements: [{ startIndex: 0, endIndex: 12, textRun: { content: "Header text\n", textStyle: {} } }], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } }] } } };
+    api.content = importDoc(doc as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    await page.locator(".ss-hf-header").first().dblclick();
+    await expect(page.locator(".ss-hf-editing")).toHaveCount(1);
+    // A click somewhere that takes no focus
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("Control+A");
+    const header = await page.evaluate(() => {
+      const ed = (document.querySelector(".ss-hf-editing .ProseMirror") as HTMLElement & { editor?: { state: { selection: { from: number; to: number }; doc: { content: { size: number }; textBetween(a: number, b: number): string } } } }).editor!;
+      const { from, to } = ed.state.selection;
+      return ed.state.doc.textBetween(from, to);
+    });
+    expect(header).toBe("Header text");
+    await expect(page.locator(".ss-hf-editing")).toHaveCount(1);
+  });
+
+  test("while a sync shows, Ctrl+A selects what it is typing and a copy of it is the editor's own", async ({ app, page, api }) => {
+    const now = Date.now();
+    api.jobs = [{
+      id: "sync_existing", userId: api.user.id, documentId: FIXTURE_DOC_ID, documentName: FIXTURE_DOC_NAME, status: "running",
+      createdAt: now - 60_000, startAt: now - 60_000, startedAt: now - 60_000, currentAction: 4, totalActions: 20, charsSent: 12, totalChars: 40,
+      typoSubStep: 0, typoCharsInDoc: 0, generation: 0, failures: 0, activity: "Typing", etaTargetAt: now + 600_000, nextActionAt: now + 3000, wpm: 30,
+      baselineWordCount: 0, breaks: [], completedBreaks: [], lastUpdate: now, sourceText: "Already being typed in.", context: null,
+    }];
+    await app.page.context().addCookies([{ name: "google_access_token", value: "e2e-token", domain: "localhost", path: "/" }]);
+    await api.install(page);
+    await page.addInitScript((id: string) => { localStorage.setItem("ss_debug", "1"); localStorage.setItem("syncstream_draft_v2", JSON.stringify({ selectedDocId: id })); }, FIXTURE_DOC_ID);
+    await page.goto("/dashboard");
+    const viewer = page.locator("[aria-label='Text being typed into Google Docs']");
+    await expect(viewer).toBeVisible();
+    await expect(viewer).toContainText("Already being typed in");
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("Control+A");
+    const copied = await page.evaluate(() => {
+      const sel = document.getSelection()!;
+      const view = document.querySelector("[aria-label='Text being typed into Google Docs']")!;
+      const inside = sel.rangeCount > 0 && view.contains(sel.getRangeAt(0).commonAncestorContainer);
+      const data = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
+      return { inside, html: data.getData("text/html"), text: data.getData("text/plain") };
+    });
+    expect(copied.inside).toBe(true);
+    expect(copied.text).toContain("Already being typed in");
+    expect(copied.html).toContain("Already being typed in");
     expect(copied.html).not.toContain("SS Space");
   });
 

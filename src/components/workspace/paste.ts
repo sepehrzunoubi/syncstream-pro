@@ -152,9 +152,10 @@ const NOT_LISTED = { list: null, listId: null, level: null, glyph: null, glyphSt
  * does (a list item's after its glyph, with no glyph of its own), with no first-line indent and no
  * space between the lines; the paragraph's space above stays with its first line and its space
  * below with its last. A list item that had no space next to the item after it still has none. So
- * the page shows the paragraphs the Doc will have, as Docs will draw them.
+ * the page shows the paragraphs the Doc will have, as Docs will draw them. With `only`, just the break
+ * at that position.
  */
-export function breaksAsParagraphs(tr: Transaction, from: number, to: number, defaults: DocDefaults): Transaction {
+export function breaksAsParagraphs(tr: Transaction, from: number, to: number, defaults: DocDefaults, only?: number): Transaction {
   const paragraph = tr.doc.type.schema.nodes.paragraph;
   const found: { pos: number; node: PMNode; breaks: number[] }[] = [];
   tr.doc.nodesBetween(from, to, (node, pos) => {
@@ -162,7 +163,7 @@ export function breaksAsParagraphs(tr: Transaction, from: number, to: number, de
     const breaks: number[] = [];
     node.forEach((child, offset) => {
       const at = pos + 1 + offset;
-      if (child.type.name === "hardBreak" && at >= from && at < to) breaks.push(at);
+      if (child.type.name === "hardBreak" && at >= from && at < to && (only == null || at === only)) breaks.push(at);
     });
     if (breaks.length && !node.attrs.locked) found.push({ pos, node, breaks });
     return false;
@@ -213,7 +214,7 @@ export const DroppedBreaks = Extension.create({
   },
 });
 
-const isBreakLine = (n: PMNode | null | undefined): n is PMNode => !!n && n.type.name === "paragraph" && n.attrs.softBreak === true && !n.attrs.locked;
+const isBreakLine = (n: PMNode | null | undefined): n is PMNode => !!n && n.type.name === "paragraph" && n.attrs.softBreak === true && !n.attrs.locked && !n.attrs.list;
 
 /** A Shift+Enter line break, made the paragraph the sync will make of it and drawn as the break (breaksAsParagraphs) */
 function typeLineBreak(view: EditorView): boolean {
@@ -226,9 +227,10 @@ function typeLineBreak(view: EditorView): boolean {
   const $at = tr.selection.$from;
   const pos = $at.before($at.depth);
   const end = pos + $at.parent.nodeSize;
-  // The paragraph after it too: a list item there keeps the no space above it had
+  // The paragraph after it too: a list item there keeps the no space above it had. Only this break: the
+  // line breaks the document has of its own (Docs' U+000B, read as they are) stay as they are
   const after = tr.doc.resolve(end).nodeAfter;
-  breaksAsParagraphs(tr, pos, end + (after?.nodeSize ?? 0), destinationDefaults(view));
+  breaksAsParagraphs(tr, pos, end + (after?.nodeSize ?? 0), destinationDefaults(view), $at.pos - 1);
   if (marks.length) tr.setStoredMarks(marks);
   view.dispatch(tr.scrollIntoView());
   return true;
@@ -263,9 +265,14 @@ function enterInBrokenParagraph(view: EditorView): boolean {
   // Two list items next to each other: no space between them, as their mode says
   const listed = !!a.list && collapses(a, destinationDefaults(view));
   const marks = state.storedMarks ?? $from.marks();
+  // Enter at the end of a title or heading opens a Normal text paragraph, as in Docs (and DocFormat's Enter)
+  const atEnd = !more && $to.parentOffset === node.content.size;
+  const toNormal = atEnd && !a.list && typeof a.styleName === "string" && a.styleName !== "normal";
   const tr = state.tr.deleteSelection();
   const at = tr.selection.from;
-  tr.split(at, 1, [{ type: head.type, attrs: withSpace({ ...a, ...NOT_SPLIT }, listed ? 0 : above, more ? 0 : below) }]);
+  const box = a.box as Box | null;
+  const next = toNormal ? { ...a, ...NOT_SPLIT, styleName: "normal", box: box ? { ...box, above: null, below: null } : null } : withSpace({ ...a, ...NOT_SPLIT }, listed ? 0 : above, more ? 0 : below);
+  tr.split(at, 1, [{ type: head.type, attrs: next }]);
   const leftPos = tr.doc.resolve(at).before();
   const left = tr.doc.nodeAt(leftPos)!;
   tr.setNodeMarkup(leftPos, undefined, withSpace(left.attrs as Attrs, onLine ? 0 : above, listed ? 0 : below));
@@ -317,8 +324,14 @@ export const LineBreaks = Extension.create({
     return {
       "Shift-Enter": () => typeLineBreak(this.editor.view),
       Enter: () => enterInBrokenParagraph(this.editor.view),
+      // With a modifier too (a word back or on, Shift+Backspace): at a line break each takes it out
       Backspace: () => joinLine(this.editor.view, -1),
+      "Shift-Backspace": () => joinLine(this.editor.view, -1),
+      "Mod-Backspace": () => joinLine(this.editor.view, -1),
+      "Alt-Backspace": () => joinLine(this.editor.view, -1),
       Delete: () => joinLine(this.editor.view, 1),
+      "Mod-Delete": () => joinLine(this.editor.view, 1),
+      "Alt-Delete": () => joinLine(this.editor.view, 1),
     };
   },
 });
