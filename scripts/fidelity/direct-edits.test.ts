@@ -5,6 +5,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { getSchema } from "@tiptap/core";
+import { EditorState, TextSelection, type Command } from "@tiptap/pm/state";
+import { addColumnAfter, addRowAfter, deleteColumn, deleteRow } from "@tiptap/pm/tables";
+import { editorExtensions } from "../../src/components/workspace/extensions";
 import { importDoc } from "../../src/lib/doc-import";
 import { additions, adoptStructure, directEdits } from "../../src/lib/doc-model";
 import { EDIT_REQUESTS } from "../../src/lib/docs-requests";
@@ -143,10 +147,12 @@ test("a pasted table with merged cells is made once, merged as the editor has it
 /** Saves as the autosave does until nothing is left: a table's shape first, read back and adopted, then the rest */
 async function autosave(docs: ReturnType<typeof createStrictStubDocs>, id: string, base: EditorNode, editor: EditorNode) {
   const rounds: string[][] = [];
+  const structural: boolean[] = [];
   for (let round = 0; round < 5; round++) {
     const out = directEdits(base, editor);
     if (!out.requests.length) break;
     rounds.push(out.requests.map((r) => Object.keys(r)[0]));
+    structural.push(!!out.structural);
     for (const r of out.requests) assert.ok(EDIT_REQUESTS.has(Object.keys(r)[0]), `${Object.keys(r)[0]} is an edit the route takes`);
     await docs.batchUpdate(id, out.requests as never);
     if (out.structural) {
@@ -154,7 +160,78 @@ async function autosave(docs: ReturnType<typeof createStrictStubDocs>, id: strin
       editor = adoptStructure(base, editor);
     } else base = out.saved;
   }
-  return { base, editor, rounds };
+  return { base, editor, rounds, structural };
+}
+
+test("a table's columns read back as Docs gives them: evenly distributed ones with no width, a fixed one with its own", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("columns");
+  await docs.batchUpdate(id, [{ insertTable: { rows: 1, columns: 2, location: { index: 1 } } }] as never);
+  const columns = async () => (await docs.get(id)).body!.content!.find((e) => e.table)!.table!.tableStyle!.tableColumnProperties;
+  const widths = async () => importDoc(await docs.get(id)).nodes.find((n) => n.type === "table")!.content![0].content!.map((c) => c.attrs?.colwidth ?? null);
+  assert.deepEqual(await columns(), [{ widthType: "EVENLY_DISTRIBUTED" }, { widthType: "EVENLY_DISTRIBUTED" }]);
+  assert.deepEqual(await widths(), [null, null]);
+  await docs.batchUpdate(id, [{ updateTableColumnProperties: { tableStartLocation: { index: 2 }, columnIndices: [1], tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: 150, unit: "PT" } }, fields: "widthType,width" } }] as never);
+  assert.deepEqual(await columns(), [{ widthType: "EVENLY_DISTRIBUTED" }, { widthType: "FIXED_WIDTH", width: { magnitude: 150, unit: "PT" } }]);
+  assert.deepEqual(await widths(), [null, [200]]);
+});
+
+const schema = getSchema(editorExtensions);
+type Cell = [text: string, colspan?: number, rowspan?: number];
+
+/** A document with a table of these rows, made and filled as a pasted one is (its text typed by a sync), as read back */
+async function docWithTable(rows: Cell[][]) {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("table");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "Intro\nAfter" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  const cell = ([t, colspan = 1, rowspan = 1]: Cell): EditorNode => ({ type: "tableCell", attrs: { colspan, rowspan }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text: t, marks: [{ type: "syncAdd" }] }] }] });
+  const table: EditorNode = { type: "table", attrs: {}, content: rows.map((r) => ({ type: "tableRow", attrs: {}, content: r.map(cell) })) };
+  const { base, editor } = await autosave(docs, id, start, { type: "doc", content: [start.content![0], table, start.content![1]] });
+  const typed = additions(base, editor).segments.slice().sort((a, b) => b.at - a.at).map((x) => ({ insertText: { location: { index: x.at }, text: x.text } }));
+  await docs.batchUpdate(id, typed as never);
+  return { docs, id, base: { type: "doc", content: importDoc(await docs.get(id)).nodes } as EditorNode };
+}
+
+/** The editor's document after one of the table menu's commands, with the caret in the cell that says `text` */
+function withCommand(doc: EditorNode, text: string, command: Command): EditorNode {
+  const node = schema.nodeFromJSON(doc);
+  let pos = -1;
+  node.descendants((n, p) => { if (pos < 0 && n.isText && n.text === text) pos = p; });
+  let state = EditorState.create({ schema, doc: node, selection: TextSelection.create(node, pos) });
+  assert.ok(command(state, (tr) => { state = state.apply(tr); }), "the command runs");
+  return state.doc.toJSON() as EditorNode;
+}
+
+/** A document's first table: each row's cells, as text and spans */
+const tableOf = (doc: EditorNode) => (doc.content ?? []).find((n) => n.type === "table")!.content!.map((r) => (r.content ?? []).map((c) => {
+  const t = (c.content ?? []).map((p) => (p.content ?? []).map((x) => x.text ?? "").join("")).join("|");
+  const spans = (c.attrs?.colspan as number ?? 1) > 1 || (c.attrs?.rowspan as number ?? 1) > 1 ? `[${c.attrs?.colspan ?? 1}x${c.attrs?.rowspan ?? 1}]` : "";
+  return t + spans;
+}));
+
+for (const [name, rows, at, command, want] of [
+  ["a row added below", [[["A"], ["B"]], [["C"], ["D"]]], "A", addRowAfter, [["A", "B"], ["", ""], ["C", "D"]]],
+  ["a row added at the end (Tab in the last cell)", [[["A"], ["B"]], [["C"], ["D"]]], "D", addRowAfter, [["A", "B"], ["C", "D"], ["", ""]]],
+  ["a column added to the right", [[["A"], ["B"]], [["C"], ["D"]]], "A", addColumnAfter, [["A", "", "B"], ["C", "", "D"]]],
+  ["the first row taken out", [[["A"], ["B"]], [["C"], ["D"]], [["E"], ["F"]]], "A", deleteRow, [["C", "D"], ["E", "F"]]],
+  ["a middle row taken out", [[["A"], ["B"]], [["C"], ["D"]], [["E"], ["F"]]], "C", deleteRow, [["A", "B"], ["E", "F"]]],
+  ["the first column taken out", [[["A"], ["B"]], [["C"], ["D"]]], "A", deleteColumn, [["B"], ["D"]]],
+  // Docs takes out every row a merged reference cell spans
+  ["the rows of a cell two rows tall and two wide taken out", [[["A"], ["B"]], [["Big", 2, 2]], [], [["C"], ["D"]]], "Big", deleteRow, [["A", "B"], ["C", "D"]]],
+  ["the top row of a cell two rows tall taken out", [[["Big", 1, 2], ["B"]], [["C"]], [["D"], ["E"]]], "B", deleteRow, [["Big", "C"], ["D", "E"]]],
+  ["a column inside a cell two columns wide taken out", [[["Wide", 2], ["X"]], [["P"], ["Q"], ["R"]]], "Q", deleteColumn, [["Wide", "X"], ["P", "R"]]],
+  ["a row added inside a cell two rows tall", [[["Tall", 1, 2], ["B"]], [["C"]], [["D"], ["E"]]], "B", addRowAfter, [["Tall[1x3]", "B"], [""], ["C"], ["D", "E"]]],
+] as [string, Cell[][], string, Command, string[][]][]) {
+  test(`a table the document has, with ${name}, is saved once, in place, and the rest of the table stays`, async () => {
+    const { docs, id, base } = await docWithTable(rows);
+    const editor = withCommand(base, at, command);
+    assert.deepEqual(tableOf(editor), want, "the page");
+    const saved = await autosave(docs, id, base, editor);
+    assert.deepEqual(saved.structural.filter(Boolean), [true], "one structural save");
+    assert.deepEqual(tableOf({ type: "doc", content: importDoc(await docs.get(id)).nodes }), want, "the document");
+    assert.equal(directEdits(saved.base, saved.editor).requests.length, 0, "nothing left to save");
+  });
 }
 
 test("a pasted table with a row a merge covers whole (Docs' HTML writes it as an empty <tr>) is made once, and stays made", async () => {

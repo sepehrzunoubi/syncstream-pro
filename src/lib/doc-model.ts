@@ -435,10 +435,28 @@ function tablesOf(tokens: Tok[], index?: number[]): TableShape[] {
   return out;
 }
 
-/** Column identities of a table: the first cell with an id in each column */
+/**
+ * Column identities of a table, by grid column: the first cell with an id that starts in it, or in a
+ * column no cell starts in, the merged cell's across it (its id and how far in)
+ */
 function columnIds(shape: TableShape): (string | null)[] {
-  const n = Math.max(0, ...shape.rows.map((r) => r.cells.length));
-  return Array.from({ length: n }, (_, c) => shape.rows.map((r) => r.cells[c]?.cid ?? null).find((x) => x) ?? null);
+  const grid = cellGrid(shape.rows.map((r) => r.cells));
+  const ids: (string | null)[] = Array.from({ length: grid.width }, () => null);
+  for (const across of [false, true]) shape.rows.forEach((r, ri) => r.cells.forEach((c, ci) => {
+    for (let k = across ? 1 : 0; k < (across ? c.colspan : 1); k++) {
+      const at = grid.columns[ri][ci] + k;
+      if (c.cid && ids[at] == null) ids[at] = k ? `${c.cid}+${k}` : c.cid;
+    }
+  }));
+  return ids;
+}
+
+/** A table's merged cells: where each starts in its grid, and its spans */
+function mergedCells(shape: TableShape): { row: number; column: number; rowSpan: number; columnSpan: number }[] {
+  const grid = cellGrid(shape.rows.map((r) => r.cells));
+  return shape.rows.flatMap((r, ri) => r.cells.flatMap((c, ci) => (c.colspan > 1 || c.rowspan > 1
+    ? [{ row: ri, column: grid.columns[ri][ci], rowSpan: Math.min(c.rowspan, shape.rows.length - ri), columnSpan: c.colspan }]
+    : [])));
 }
 
 /**
@@ -502,6 +520,16 @@ function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): Do
       reqs.push({ insertTableRow: { ...loc(Math.max(0, idx), 0), insertBelow: !!prev } });
       keptRows = prev ? [...keptRows.slice(0, idx + 1), rid ?? `row${r}`, ...keptRows.slice(idx + 1)] : [rid ?? `row${r}`, ...keptRows];
     });
+    // A row or column whose reference cell is merged goes with every one the merge spans (and a new
+    // one goes past the merge): with merged cells, they're unmerged first and merged again as the
+    // editor has them once the table has the editor's rows and columns
+    const merged = mergedCells(b);
+    const merges = mergedCells(t);
+    if (reqs.length && (merged.length || merges.length)) {
+      const range = (m: (typeof merged)[number]) => ({ tableCellLocation: loc(m.row, m.column).tableCellLocation, rowSpan: m.rowSpan, columnSpan: m.columnSpan });
+      reqs.unshift(...merged.map((m) => ({ unmergeTableCells: { tableRange: range(m) } })));
+      reqs.push(...merges.map((m) => ({ mergeTableCells: { tableRange: range(m) } })));
+    }
     if (reqs.length) changes.push({ at: b.at, requests: reqs });
   }
   for (const b of baseTables) if (!targetTables.some((t) => t.id === b.id)) changes.push({ at: b.at, requests: [{ deleteContentRange: { range: { startIndex: b.at, endIndex: b.endAt } } }] });
@@ -1063,24 +1091,33 @@ function adoptTables(base: Tok[], target: Tok[]): Tok[] {
     });
     return out;
   };
-  const mine = tablesIn(target).filter((t) => t.id.startsWith("new"));
+  const out = target.slice();
+  // The document's ids and index spans; the editor's look stays (a pasted cell's background and column
+  // widths), for the next save to write. A column the editor gives no width has the document's
+  const adopt = (m: { at: number[] }, b: { at: number[] }) => m.at.forEach((pos, n) => {
+    const doc = base[b.at[n]] as St;
+    const own = (target[pos] as St).attrs;
+    const width = own.colwidth == null && doc.attrs.colwidth != null ? { colwidth: doc.attrs.colwidth } : {};
+    out[pos] = { ...doc, attrs: { ...own, ...width, ...Object.fromEntries(STRUCTURE_IDS.filter((key) => key in doc.attrs).map((key) => [key, doc.attrs[key]])) } };
+  });
+  const all = tablesIn(target);
+  const read = tablesIn(base);
+  // The document has the editor's tables, in order (a structural save makes it so): each takes the
+  // document's by place. The document's row and column ids are by position, so a row or column added
+  // or removed gives every one after it another id, and a table added before a table gives it another
+  if (all.length === read.length) {
+    all.forEach((m, k) => { if (m.kinds.join() === read[k].kinds.join()) adopt(m, read[k]); });
+    return out;
+  }
+  const mine = all.filter((t) => t.id.startsWith("new"));
   if (!mine.length) return target;
   const known = new Set(target.filter((t): t is St => t.k === "st").map((t) => t.id));
-  const theirs = tablesIn(base).filter((t) => !known.has(t.id));
-  const out = target.slice();
+  const theirs = read.filter((t) => !known.has(t.id));
   let k = 0;
   for (const m of mine) {
     while (k < theirs.length && theirs[k].kinds.join() !== m.kinds.join()) k++;
     if (k >= theirs.length) break;
-    const b = theirs[k++];
-    // The document's ids and index spans; the editor's look stays (a pasted cell's background and column
-    // widths), for the next save to write. A column the editor gives no width has the document's
-    m.at.forEach((pos, n) => {
-      const doc = base[b.at[n]] as St;
-      const own = (target[pos] as St).attrs;
-      const width = own.colwidth == null && doc.attrs.colwidth != null ? { colwidth: doc.attrs.colwidth } : {};
-      out[pos] = { ...doc, attrs: { ...own, ...width, ...Object.fromEntries(STRUCTURE_IDS.filter((key) => key in doc.attrs).map((key) => [key, doc.attrs[key]])) } };
-    });
+    adopt(m, theirs[k++]);
   }
   return out;
 }
@@ -1144,11 +1181,14 @@ function columnWidthRequests(base: Tok[], target: Tok[], match: number[], index:
     const want = columnWidths(t.rows);
     const have = columnWidths(b.rows);
     if (want.length !== have.length) continue;
+    // A width in points, at least Docs' least, and in pixels as the document reads it back. The base is
+    // the document's (read back) or what the editor had (after a save that didn't read it back)
+    const points = (px: number) => Math.max(MIN_COLUMN_PT, Math.round(px * 0.75 * 100) / 100);
+    const asRead = (px: number) => Math.round(points(px) / 0.75);
     want.forEach((w, c) => {
       if (w == null) return;
-      // (in points, at least Docs' least: a width under it is what the document reads back as its least)
-      const pt = Math.max(MIN_COLUMN_PT, Math.round(w * 0.75 * 100) / 100);
-      if (have[c] != null && Math.abs(have[c]! - Math.round(pt / 0.75)) < 1) return;
+      const pt = points(w);
+      if (have[c] != null && Math.abs(asRead(have[c]!) - asRead(w)) < 1) return;
       requests.push({ updateTableColumnProperties: {
         tableStartLocation: { index: index[b.at] },
         columnIndices: [c],
