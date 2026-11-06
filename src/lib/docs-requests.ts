@@ -26,4 +26,6 @@ export const EDIT_REQUESTS: ReadonlySet<string> = new Set([
   "insertTableColumn",
   "deleteTableRow",
   "deleteTableColumn",
+  // A cell's background (a pasted table's)
+  "updateTableCellStyle",
 ]);

@@ -6,7 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { importDoc } from "../../src/lib/doc-import";
-import { directEdits } from "../../src/lib/doc-model";
+import { additions, adoptStructure, directEdits } from "../../src/lib/doc-model";
+import { EDIT_REQUESTS } from "../../src/lib/docs-requests";
 import type { EditorNode } from "../../src/lib/rich-text";
 import { labelsOf, STRICT } from "./fidelity";
 import { createStrictStubDocs } from "./strict-stub";
@@ -56,4 +57,35 @@ test("a new numbered item after a Docs list's answer starts a list of its own, a
   assert.deepEqual(labelsOf(after), ["1.", "1.", "2."], "the document");
   assert.equal(after[0].attrs?.listId, after[3].attrs?.listId, "Q2 stays in Q1's list");
   assert.notEqual(after[2].attrs?.listId, after[0].attrs?.listId, "the new item is a list of its own");
+});
+
+test("a pasted table's cell backgrounds reach the document once the table is in it, and stay in the editor", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("cells");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "Intro\nAfter" } }] as never);
+  let base: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  const cell = (text: string, background: string | null = null): EditorNode => ({ type: "tableCell", attrs: { background }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text, marks: [{ type: "syncAdd" }] }] }] });
+  const table: EditorNode = { type: "table", attrs: {}, content: [
+    { type: "tableRow", attrs: {}, content: [cell("Name", "#fff2cc"), cell("Score")] },
+    { type: "tableRow", attrs: {}, content: [cell("Ada"), cell("90", "#d9ead3")] },
+  ] };
+  let editor: EditorNode = { type: "doc", content: [base.content![0], table, base.content![1]] };
+  // As the autosave goes: a table's shape first, read back and adopted, then the rest
+  for (let round = 0; round < 4; round++) {
+    const { requests, structural, saved } = directEdits(base, editor);
+    if (!requests.length) break;
+    for (const r of requests) assert.ok(EDIT_REQUESTS.has(Object.keys(r)[0]), `${Object.keys(r)[0]} is an edit the route takes`);
+    await docs.batchUpdate(id, requests as never);
+    if (structural) {
+      base = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+      editor = adoptStructure(base, editor);
+    } else base = saved;
+  }
+  const backgrounds = (doc: EditorNode) => (doc.content ?? []).filter((n) => n.type === "table").flatMap((t) => (t.content ?? []).map((r) => (r.content ?? []).map((c) => c.attrs?.background ?? null)));
+  const read = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  assert.deepEqual(backgrounds(read), [["#fff2cc", null], [null, "#d9ead3"]], "the document");
+  assert.deepEqual(backgrounds(editor), [["#fff2cc", null], [null, "#d9ead3"]], "the editor, after the table was adopted");
+  assert.equal(directEdits(base, editor).requests.length, 0, "nothing left to save");
+  // The cells' text is the sync's to type
+  assert.deepEqual(additions(base, editor).segments.map((x) => x.text), ["Name", "Score", "Ada", "90"]);
 });

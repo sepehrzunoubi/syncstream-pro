@@ -304,6 +304,28 @@ test("deleting across a section break removes the text on both sides and keeps t
   assert.deepEqual(directEdits(base2, target2).saved, target2);
 });
 
+test("a cell's background is one updateTableCellStyle at its table, row and column; white is none", async () => {
+  const { directEdits, adoptStructure } = await import("./doc-model");
+  const p = (text: string) => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] });
+  const cell = (cid: string, text: string, background: string | null = null) => ({ type: "tableCell", attrs: { cid, span: 1, background }, content: [p(text)] });
+  const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  const doc = (bg: (string | null)[]) => ({ type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t1", span: 1 }, content: [row("r0", cell("c0", "A", bg[0]), cell("c1", "B", bg[1])), row("r1", cell("c0", "C", bg[2]), cell("c1", "D", bg[3]))] }, p("After")] });
+  const base = doc([null, null, "#ffffff", "#ff0000"]);
+  const { requests } = directEdits(base, doc(["#FFF2CC", null, null, null]));
+  const at = (rowIndex: number, columnIndex: number) => ({ tableCellLocation: { tableStartLocation: { index: 7 }, rowIndex, columnIndex }, rowSpan: 1, columnSpan: 1 });
+  assert.deepEqual(requests, [
+    { updateTableCellStyle: { tableRange: at(0, 0), tableCellStyle: { backgroundColor: { color: { rgbColor: { red: 1, green: 242 / 255, blue: 204 / 255 } } } }, fields: "backgroundColor" } },
+    // Taken off: the field with no value
+    { updateTableCellStyle: { tableRange: at(1, 1), tableCellStyle: {}, fields: "backgroundColor" } },
+  ]);
+  // A table the editor made, adopted once the document has it: the document's ids and spans, the editor's backgrounds
+  const mine = { type: "doc", content: [p("Intro"), { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [{ type: "tableCell", attrs: { background: "#d9ead3" }, content: [p("")] }] }] }, p("After")] };
+  const theirs = { type: "doc", content: [p("Intro"), { type: "table", attrs: { tid: "t9", span: 1, endSpan: 1 }, content: [{ type: "tableRow", attrs: { rid: "t9r0", span: 1 }, content: [{ type: "tableCell", attrs: { cid: "t9c0", span: 2, background: null, colwidth: [624] }, content: [p("")] }] }] }, p("After")] };
+  const adopted = adoptStructure(theirs, mine) as { content: { content?: { content?: { attrs: Record<string, unknown> }[] }[]; attrs?: Record<string, unknown> }[] };
+  assert.equal(adopted.content[1].attrs?.tid, "t9");
+  assert.deepEqual(adopted.content[1].content?.[0].content?.[0].attrs, { background: "#d9ead3", cid: "t9c0", span: 2 });
+});
+
 test("deleting across a table removes the text on both sides and keeps the table as it is", () => {
   const cell = (cid: string, text: string) => ({ type: "tableCell", attrs: { cid, span: 1 }, content: [p(text)] });
   const row = (rid: string, ...cells: Record<string, unknown>[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });

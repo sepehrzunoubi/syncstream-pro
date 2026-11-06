@@ -819,7 +819,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     listRequests.push(...bulletRequests(run, preset));
   }
 
-  const requests = [...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
+  // Cell backgrounds change no index: at the document's indices as they are, before the rest
+  const requests = [...cellStyleRequests(base, target, match, index), ...sectionRequests, ...styleRequests, ...contentRequests, ...listRequests, ...paraRequests];
   return { requests, saved: untokenize(saved) };
 }
 
@@ -992,6 +993,9 @@ export function rebase(newBase: EditorNode, oldTarget: EditorNode): EditorNode {
  * (typed before the table existed in the document) is kept as additions and
  * the next save carries on instead of seeing a different table.
  */
+/** What a table, row or cell token takes from the document when the editor's table is adopted */
+const STRUCTURE_IDS = ["tid", "rid", "cid", "span", "endSpan"];
+
 function adoptTables(base: Tok[], target: Tok[]): Tok[] {
   type St = Extract<Tok, { k: "st" }>;
   const tablesIn = (tokens: Tok[]) => {
@@ -1017,9 +1021,53 @@ function adoptTables(base: Tok[], target: Tok[]): Tok[] {
     while (k < theirs.length && theirs[k].kinds.join() !== m.kinds.join()) k++;
     if (k >= theirs.length) break;
     const b = theirs[k++];
-    m.at.forEach((pos, n) => { out[pos] = base[b.at[n]]; });
+    // The document's ids and index spans; the editor's look stays (a pasted cell's background), for the next save to write
+    m.at.forEach((pos, n) => {
+      const doc = base[b.at[n]] as St;
+      const own = (target[pos] as St).attrs;
+      out[pos] = { ...doc, attrs: { ...own, ...Object.fromEntries(STRUCTURE_IDS.filter((key) => key in doc.attrs).map((key) => [key, doc.attrs[key]])) } };
+    });
   }
   return out;
+}
+
+/** A cell's background as Docs reads it: white is none */
+const cellBackground = (attrs: Record<string, unknown>): string | null => {
+  const bg = typeof attrs.background === "string" ? attrs.background.toLowerCase() : null;
+  return bg && bg !== "#ffffff" ? bg : null;
+};
+
+/**
+ * Cells whose background the editor has and the document doesn't (a pasted table's, once the table is
+ * in the document), or the other way round: one updateTableCellStyle each, at the cell's table, row and
+ * column in the document.
+ */
+function cellStyleRequests(base: Tok[], target: Tok[], match: number[], index: number[]): DocsRequest[] {
+  const where = new Map<number, { start: number; row: number; column: number }>();
+  let start = 0;
+  let row = -1;
+  let column = -1;
+  base.forEach((t, i) => {
+    if (t.k !== "st") return;
+    if (t.kind === "table") { start = index[i]; row = -1; }
+    else if (t.kind === "row") { row++; column = -1; }
+    else if (t.kind === "cell") where.set(i, { start, row, column: ++column });
+  });
+  const requests: DocsRequest[] = [];
+  target.forEach((t, j) => {
+    if (t.k !== "st" || t.kind !== "cell") return;
+    const at = where.get(match[j]);
+    const b = base[match[j]];
+    if (!at || b?.k !== "st") return;
+    const want = cellBackground(t.attrs);
+    if (want === cellBackground(b.attrs)) return;
+    requests.push({ updateTableCellStyle: {
+      tableRange: { tableCellLocation: { tableStartLocation: { index: at.start }, rowIndex: at.row, columnIndex: at.column }, rowSpan: 1, columnSpan: 1 },
+      tableCellStyle: want ? { backgroundColor: rgb(want) } : {},
+      fields: "backgroundColor",
+    } });
+  });
+  return requests;
 }
 
 /** After tables were created in the document: the editor's content with the document's ids and spans */

@@ -28,7 +28,7 @@ type Item =
   | { k: "nl"; ts: TextStyle; ps: ParagraphStyle; bullet?: Bullet }
   | { k: "tbl"; columns: number }
   | { k: "row" }
-  | { k: "cell" }
+  | { k: "cell"; style?: docs_v1.Schema$TableCellStyle }
   | { k: "tend" };
 
 const STRUCTURAL = new Set(["sb", "tbl", "row", "cell", "tend"]);
@@ -79,6 +79,7 @@ interface Request {
   updateParagraphStyle?: { range: { startIndex: number; endIndex: number }; paragraphStyle: ParagraphStyle; fields: string };
   createParagraphBullets?: { range: { startIndex: number; endIndex: number }; bulletPreset: string };
   deleteParagraphBullets?: { range: { startIndex: number; endIndex: number } };
+  updateTableCellStyle?: docs_v1.Schema$UpdateTableCellStyleRequest;
 }
 
 export class StubDocument {
@@ -168,6 +169,7 @@ export class StubDocument {
       const rowStart = i++;
       const tableCells: docs_v1.Schema$TableCell[] = [];
       while (this.items[i]?.k === "cell") {
+        const cellItem = this.items[i] as Extract<Item, { k: "cell" }>;
         const cellStart = i++;
         const content: docs_v1.Schema$StructuralElement[] = [];
         while (this.items[i] && !["cell", "row", "tend"].includes(this.items[i].k)) {
@@ -176,7 +178,7 @@ export class StubDocument {
           content.push(p.element);
           i = p.end;
         }
-        tableCells.push({ startIndex: cellStart, endIndex: i, content, tableCellStyle: {} });
+        tableCells.push({ startIndex: cellStart, endIndex: i, content, tableCellStyle: clone(cellItem.style ?? {}) });
       }
       tableRows.push({ startIndex: rowStart, endIndex: i, tableCells });
     }
@@ -260,6 +262,7 @@ export class StubDocument {
     if (r.updateParagraphStyle) return this.updateParagraphStyle(r.updateParagraphStyle.range.startIndex, r.updateParagraphStyle.range.endIndex, r.updateParagraphStyle.paragraphStyle, r.updateParagraphStyle.fields);
     if (r.createParagraphBullets) return this.createParagraphBullets(r.createParagraphBullets.range.startIndex, r.createParagraphBullets.range.endIndex, r.createParagraphBullets.bulletPreset);
     if (r.deleteParagraphBullets) return this.deleteParagraphBullets(r.deleteParagraphBullets.range.startIndex, r.deleteParagraphBullets.range.endIndex);
+    if (r.updateTableCellStyle) return this.updateTableCellStyle(r.updateTableCellStyle);
     throw bad(`The stub does not model ${key} requests`);
   }
 
@@ -298,6 +301,30 @@ export class StubDocument {
     }
     fresh.push({ k: "tend" });
     this.items.splice(index, 0, ...fresh);
+  }
+
+  /** One cell's style (the stub models a range of one cell, and its background) */
+  updateTableCellStyle(u: docs_v1.Schema$UpdateTableCellStyleRequest): void {
+    const loc = u.tableRange?.tableCellLocation;
+    const at = loc?.tableStartLocation?.index;
+    if (at == null || this.items[at]?.k !== "tbl") throw bad(`Invalid table start location ${at}: there is no table there`);
+    if ((u.tableRange?.rowSpan ?? 1) !== 1 || (u.tableRange?.columnSpan ?? 1) !== 1) throw bad("The stub models one cell at a time");
+    const fields = (u.fields ?? "").split(",").filter(Boolean);
+    if (!fields.length) throw bad("fields is required");
+    if (fields.some((f) => f !== "backgroundColor")) throw bad(`The stub does not model table cell fields ${fields.join(",")}`);
+    let row = -1;
+    let column = -1;
+    for (let i = at + 1; i < this.items.length && this.items[i].k !== "tend"; i++) {
+      const it = this.items[i];
+      if (it.k === "row") { row++; column = -1; continue; }
+      if (it.k !== "cell" || ++column !== loc?.columnIndex || row !== loc?.rowIndex) continue;
+      const style = { ...(it.style ?? {}) };
+      if (u.tableCellStyle?.backgroundColor) style.backgroundColor = clone(u.tableCellStyle.backgroundColor);
+      else delete style.backgroundColor;
+      it.style = style;
+      return;
+    }
+    throw bad(`Invalid table cell location: row ${loc?.rowIndex}, column ${loc?.columnIndex}`);
   }
 
   deleteContentRange(start: number, end: number): void {
