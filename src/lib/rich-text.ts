@@ -46,16 +46,17 @@ const LIST_TYPES = new Set<string>(["bullet", "ordered", "check"]);
 /** Docs' default link colour */
 export const LINK_COLOR = "#1155cc";
 
-export const NAMED_STYLES: Record<NamedStyle, { label: string; size: number; docs: string }> = {
-  normal: { label: "Normal text", size: 11, docs: "NORMAL_TEXT" },
-  title: { label: "Title", size: 26, docs: "TITLE" },
-  subtitle: { label: "Subtitle", size: 15, docs: "SUBTITLE" },
-  h1: { label: "Heading 1", size: 20, docs: "HEADING_1" },
-  h2: { label: "Heading 2", size: 16, docs: "HEADING_2" },
-  h3: { label: "Heading 3", size: 14, docs: "HEADING_3" },
-  h4: { label: "Heading 4", size: 12, docs: "HEADING_4" },
-  h5: { label: "Heading 5", size: 11, docs: "HEADING_5" },
-  h6: { label: "Heading 6", size: 11, docs: "HEADING_6" },
+/** Google's named styles: size, and space above and below in points (docs.css draws the same) */
+export const NAMED_STYLES: Record<NamedStyle, { label: string; size: number; docs: string; space: [number, number] }> = {
+  normal: { label: "Normal text", size: 11, docs: "NORMAL_TEXT", space: [0, 0] },
+  title: { label: "Title", size: 26, docs: "TITLE", space: [0, 3] },
+  subtitle: { label: "Subtitle", size: 15, docs: "SUBTITLE", space: [0, 16] },
+  h1: { label: "Heading 1", size: 20, docs: "HEADING_1", space: [20, 6] },
+  h2: { label: "Heading 2", size: 16, docs: "HEADING_2", space: [18, 6] },
+  h3: { label: "Heading 3", size: 14, docs: "HEADING_3", space: [16, 4] },
+  h4: { label: "Heading 4", size: 12, docs: "HEADING_4", space: [14, 4] },
+  h5: { label: "Heading 5", size: 11, docs: "HEADING_5", space: [12, 4] },
+  h6: { label: "Heading 6", size: 11, docs: "HEADING_6", space: [12, 4] },
 };
 export const NAMED_STYLE_ORDER: NamedStyle[] = ["normal", "title", "subtitle", "h1", "h2", "h3", "h4", "h5", "h6"];
 
@@ -361,8 +362,12 @@ export function paragraphFromAttrs(attrs: Record<string, unknown> | undefined): 
   const box = a.box as { start?: unknown; first?: unknown; above?: unknown; below?: unknown } | null | undefined;
   const exact = a.exact as { start?: unknown; first?: unknown } | null | undefined;
   const rawSpace = (box && typeof box === "object" ? box : (a.space as { above?: unknown; below?: unknown } | null | undefined)) ?? null;
+  // A side it doesn't give is its named style's, as the page draws it
   const space = rawSpace && (typeof rawSpace.above === "number" || typeof rawSpace.below === "number")
-    ? { above: Math.max(0, num(rawSpace.above)), below: Math.max(0, num(rawSpace.below)) }
+    ? {
+      above: Math.max(0, typeof rawSpace.above === "number" ? num(rawSpace.above) : NAMED_STYLES[style].space[0]),
+      below: Math.max(0, typeof rawSpace.below === "number" ? num(rawSpace.below) : NAMED_STYLES[style].space[1]),
+    }
     : undefined;
   const extras: Partial<ParagraphFormat> = {};
   if (space) extras.space = space;

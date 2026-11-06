@@ -9,11 +9,12 @@
  */
 
 import { Fragment, Slice, type Mark, type Node as PMNode, type ResolvedPos } from "@tiptap/pm/model";
-import { TextSelection } from "@tiptap/pm/state";
+import { Plugin, TextSelection, type Transaction } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
+import { Extension } from "@tiptap/core";
 import { namedStyleText, type DocDefaults } from "@/lib/doc-import";
 import { DOCS_SLICE_TYPE, readDocsSlice, sliceParagraphs, sliceText } from "@/lib/docs-slice";
-import { cssColorToHex, cssFontToFamily, DEFAULT_FONT, NAMED_STYLES, type NamedStyle } from "@/lib/rich-text";
+import { cssColorToHex, cssFontToFamily, DEFAULT_FONT, effectiveIndent, INDENT_PT, NAMED_STYLES, paragraphFromAttrs, type NamedStyle } from "@/lib/rich-text";
 import { flattenPastedLists, inlinePastedStyles, pastedEmptyLines } from "./extensions";
 
 export const imageFilesOf = (list: FileList | null | undefined) => Array.from(list ?? []).filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
@@ -111,6 +112,106 @@ export function restyleText(content: Fragment, from: NamedStyle, to: NamedStyle,
 
 const styleOf = (p: PMNode) => ((p.attrs.styleName as NamedStyle | undefined) ?? "normal") as NamedStyle;
 
+type Attrs = Record<string, unknown>;
+type Box = { start?: number; first?: number; marker?: number; above?: number | null; below?: number | null };
+
+/** A paragraph's space above and below as the page draws it: its own, or its named style's */
+function spaceOf(a: Attrs): [number, number] {
+  const box = a.box as Box | null;
+  const named = NAMED_STYLES[typeof a.styleName === "string" && a.styleName in NAMED_STYLES ? (a.styleName as NamedStyle) : "normal"].space;
+  return [typeof box?.above === "number" ? box.above : named[0], typeof box?.below === "number" ? box.below : named[1]];
+}
+
+/** Whether a list item has no space next to another list item (Docs' COLLAPSE_LISTS; see docs.css) */
+const collapses = (a: Attrs, defaults: DocDefaults) =>
+  !!a.list && a.spacingMode !== "NEVER_COLLAPSE" && (a.spacingMode === "COLLAPSE_LISTS" || defaults.spacingMode !== "NEVER_COLLAPSE");
+
+/** Where a paragraph's text starts (a list item's, after its glyph), in points */
+function textStart(a: Attrs): number {
+  const p = paragraphFromAttrs(a);
+  return p.list ? (p.exact?.start ?? INDENT_PT * ((p.level ?? 0) + 1)) : effectiveIndent(p).start;
+}
+
+/** The same paragraph with this space above and below, its indents as they are */
+function withSpace(a: Attrs, above: number, below: number): Attrs {
+  const box = a.box as Box | null;
+  if (a.list) return { ...a, box: { start: textStart(a), marker: typeof box?.marker === "number" ? box.marker : -18, above, below } };
+  if (box) return { ...a, box: { ...box, above, below } };
+  const { start, first } = effectiveIndent(paragraphFromAttrs(a));
+  return { ...a, indent: 0, firstLine: false, box: { start, first: first - start, above, below } };
+}
+
+/** What a paragraph split from another doesn't take with it (the paragraph's keepOnSplit: false attributes) */
+const NOT_SPLIT = { locked: false, span: null, bid: null, kind: null, sectionType: null, first: null, columns: null, spacing: null, line: null, textWidth: null };
+const NOT_LISTED = { list: null, listId: null, level: null, glyph: null, glyphStyle: null, preset: null };
+
+/**
+ * Docs drops a soft line break sent through its API, so the sync types each line break that is
+ * pasted as a new paragraph (see segmentText in doc-model). Each one between from and to becomes
+ * that paragraph here, drawn as the break was: the line after it starts where the paragraph's text
+ * does (a list item's after its glyph, with no glyph of its own), with no first-line indent and no
+ * space between the lines; the paragraph's space above stays with its first line and its space
+ * below with its last. A list item that had no space next to the item after it still has none. So
+ * the page shows the paragraphs the Doc will have, as Docs will draw them.
+ */
+export function breaksAsParagraphs(tr: Transaction, from: number, to: number, defaults: DocDefaults): Transaction {
+  const paragraph = tr.doc.type.schema.nodes.paragraph;
+  const found: { pos: number; node: PMNode; breaks: number[] }[] = [];
+  tr.doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type !== paragraph) return !node.isTextblock;
+    const breaks: number[] = [];
+    node.forEach((child, offset) => {
+      const at = pos + 1 + offset;
+      if (child.type.name === "hardBreak" && at >= from && at < to) breaks.push(at);
+    });
+    if (breaks.length && !node.attrs.locked) found.push({ pos, node, breaks });
+    return false;
+  });
+  const start = tr.steps.length;
+  // From the last, so the positions before each change stay as they were
+  for (const { pos, node, breaks } of found.reverse()) {
+    const a = node.attrs as Attrs;
+    const [above, below] = spaceOf(a);
+    const steps = tr.steps.length;
+    // A list item next to another in the body (as docs.css draws them): each has no space there, as its mode says
+    const next = tr.doc.resolve(pos + node.nodeSize).nodeAfter;
+    const listed = !!a.list && !!next?.attrs.list && tr.doc.resolve(pos).depth === 0;
+    const last = listed && collapses(a, defaults) ? 0 : below;
+    const line = (b: number): Attrs => ({ ...a, ...NOT_SPLIT, ...NOT_LISTED, indent: 0, firstLine: false, box: { start: textStart(a), first: 0, above: 0, below: b } });
+    breaks.slice().reverse().forEach((at, k) => {
+      tr.delete(at, at + 1);
+      tr.split(at, 1, [{ type: paragraph, attrs: line(k === 0 ? last : 0) }]);
+    });
+    tr.setNodeMarkup(pos, undefined, withSpace(a, above, 0));
+    // Its last line isn't a list item: the item after it keeps the no space above it had (if it was pasted too)
+    if (listed && next && collapses(next.attrs as Attrs, defaults)) {
+      const at = tr.mapping.slice(steps).map(pos + node.nodeSize, 1);
+      if (at < tr.mapping.slice(start).map(to, 1)) tr.setNodeMarkup(at, undefined, withSpace(next.attrs as Attrs, 0, spaceOf(next.attrs as Attrs)[1]));
+    }
+  }
+  return tr;
+}
+
+/**
+ * Content dropped on the page (dragged from elsewhere, or moved within it, which types it again) has
+ * its line breaks made the paragraphs the sync will make, as pasted content does. ProseMirror selects
+ * what it dropped.
+ */
+export const DroppedBreaks = Extension.create({
+  name: "droppedBreaks",
+  addProseMirrorPlugins() {
+    let view: EditorView | null = null;
+    return [new Plugin({
+      view: (v) => { view = v; return {}; },
+      appendTransaction: (trs, _old, state) => {
+        if (!view || !trs.some((tr) => tr.getMeta("uiEvent") === "drop")) return null;
+        const tr = breaksAsParagraphs(state.tr, state.selection.from, state.selection.to, destinationDefaults(view));
+        return tr.docChanged ? tr : null;
+      },
+    })];
+  },
+});
+
 /**
  * Put pasted paragraphs where the selection is, the way Docs does. In Docs
  * a paragraph's format belongs to its newline: the paragraph the paste
@@ -182,6 +283,7 @@ export function insertParagraphs(view: EditorView, paragraphs: PMNode[], endsWit
       tr.setNodeMarkup(pos, undefined, own);
       tr.setSelection(TextSelection.create(tr.doc, pos + 1 + (tail?.content.size ?? 0)));
     }
+    breaksAsParagraphs(tr, tr.mapping.map($from.pos, -1), tr.mapping.map($to.pos, 1), defaults);
   } catch (err) {
     console.error("Couldn't paste these paragraphs as Docs would:", err);
     return false;
@@ -258,6 +360,12 @@ function docsGlyph(p: PMNode, defaults: DocDefaults): PMNode {
   return p.type.create({ ...p.attrs, glyphStyle: g }, p.content, p.marks);
 }
 
+function hasBreak(content: Fragment): boolean {
+  let found = false;
+  content.descendants((n) => { if (n.type.name === "hardBreak") found = true; return !found; });
+  return found;
+}
+
 export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slice, onImageFiles: (files: File[]) => void): boolean {
   const data = event.clipboardData;
   const files = imageFilesOf(data?.files);
@@ -294,10 +402,16 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
   // Docs' spaces as the document has them (see docsSpaces)
   const read = slice;
   if (docs) { const content = mapText(slice.content, docsText); if (content !== slice.content) slice = new Slice(content, slice.openStart, slice.openEnd); }
+  // The selection replaced with a slice, its line breaks the paragraphs the sync makes of them
+  const replaced = (content: Slice) => {
+    const { from, to } = view.state.selection;
+    const tr = view.state.tr.replaceSelection(content);
+    return breaksAsParagraphs(tr, tr.mapping.map(from, -1), tr.mapping.map(to, 1), destinationDefaults(view)).scrollIntoView().setMeta("paste", true).setMeta("preventAutolink", true);
+  };
   // ProseMirror's own paste, of the slice as read here
   const pmPaste = () => {
-    if (slice === read) return false;
-    view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView().setMeta("paste", true).setMeta("uiEvent", "paste").setMeta("preventAutolink", true));
+    if (slice === read && !hasBreak(slice.content)) return false;
+    view.dispatch(replaced(slice).setMeta("uiEvent", "paste"));
     event.preventDefault();
     return true;
   };
@@ -329,7 +443,7 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
   if (paragraphs.every((p, i) => p.eq(parsed[i]))) return pmPaste();
   // ProseMirror's own paste, with the spaces put right
   const fixed = new Slice(Fragment.from(paragraphs), slice.openStart, slice.openEnd);
-  view.dispatch(view.state.tr.replaceSelection(fixed).scrollIntoView().setMeta("paste", true).setMeta("preventAutolink", true));
+  view.dispatch(replaced(fixed));
   event.preventDefault();
   return true;
 }

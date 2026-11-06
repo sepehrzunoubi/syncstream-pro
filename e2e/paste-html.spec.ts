@@ -37,7 +37,7 @@ test.describe("pasting Google Docs' HTML", () => {
     await expect.poll(() => app.text()).toBe("Ends with a space. \na   b, 10 km");
   });
 
-  test("a copy that ends inside a paragraph joins the text after the caret", async ({ app, page }) => {
+  test("a copy that ends inside a paragraph joins the text after the caret", async ({ app }) => {
     await app.open();
     await app.caretBefore("the whole program.");
     // text/plain ends with a newline whenever more than one paragraph is copied, even mid-paragraph
@@ -45,7 +45,7 @@ test.describe("pasting Google Docs' HTML", () => {
     await expect.poll(async () => (await app.paragraphs()).map((p) => p.text).filter((t) => /copied|whole program/.test(t))).toEqual(["Closing thoughts on First copied", "and the start of the nextthe whole program."]);
   });
 
-  test("Docs' own copy, even one that can't be read, says whether the last newline was copied", async ({ app, page }) => {
+  test("Docs' own copy, even one that can't be read, says whether the last newline was copied", async ({ app }) => {
     await app.open();
     await app.caretBefore("the whole program.");
     // A copy with a table: the slice reader leaves it to the HTML, but its text still ends with the newline
@@ -125,6 +125,61 @@ test.describe("pasting Google Docs' HTML", () => {
     await app.paste({ html: docs(span("plain words")), text: "plain words" });
     await expect.poll(() => app.text()).toBe("plain words");
     expect(marksOf((await paragraphsOf(app))[0].content?.[0])).toEqual([]);
+  });
+
+  test("a line break is pasted as the paragraph the sync will make of it, each line where the break put it", async ({ app, api, page }) => {
+    await openEmpty(app, api, page);
+    const br = `<span style="${RUN}white-space:pre-wrap;"><br /></span>`;
+    const li = (inner: string, level: number) => `<li dir="ltr" style="list-style-type:disc;${RUN}" aria-level="${level}"><p dir="ltr" style="line-height:1.38;margin-top:0pt;margin-bottom:0pt;" role="presentation">${inner}</p></li>`;
+    const html = docs(
+      list(li(span("Item one") + br + span("its second line"), 1) + list(li(span("Nested") + br + span("nested next line"), 2)) + li(span("Item two"), 1)) +
+      para(span("Indented first line") + br + span("and its next line"), "line-height:1.38;margin-left:36pt;text-indent:18pt;margin-top:10pt;margin-bottom:12pt;") +
+      para(span("After")),
+    );
+    const lines = ["Item one", "its second line", "Nested", "nested next line", "Item two", "Indented first line", "and its next line", "After"];
+    await app.paste({ html, text: "Item one\u000bits second line\nNested\u000bnested next line\nItem two\nIndented first line\u000band its next line\nAfter\n" });
+    await expect.poll(async () => (await paragraphsOf(app)).map((p) => p.content?.map((c) => c.text ?? `[${c.type}]`).join("") ?? "")).toEqual(lines);
+    // The lines after the breaks are no list items: the sync types each as a paragraph, and gives it no glyph
+    expect((await paragraphsOf(app)).map((p) => p.attrs?.list ?? null)).toEqual(["bullet", null, "bullet", null, "bullet", null, null, null]);
+    /** Where each line's first character is drawn, from the page's top left corner */
+    const drawn = () => page.evaluate((texts) => {
+      const doc = document.querySelector(".ss-doc")!;
+      const origin = doc.getBoundingClientRect();
+      return texts.map((t) => {
+        const walk = document.createTreeWalker(doc, NodeFilter.SHOW_TEXT);
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+          const i = n.textContent!.indexOf(t);
+          if (i < 0) continue;
+          const r = document.createRange();
+          r.setStart(n, i);
+          r.setEnd(n, i + 1);
+          const b = r.getBoundingClientRect();
+          return [Math.round((b.left - origin.left) * 100) / 100, Math.round((b.top - origin.top) * 100) / 100];
+        }
+        return null;
+      });
+    }, lines);
+    const pasted = await drawn();
+    // The same content with its line breaks, as the page drew a paste before (and as Docs draws the copy)
+    await page.evaluate((after) => {
+      const ed = window.ssEditor!;
+      const out: { type?: string; attrs?: Record<string, unknown>; content?: { type?: string; text?: string }[] }[] = [];
+      for (const n of (ed.getJSON().content ?? []) as typeof out) {
+        const prev = out[out.length - 1];
+        const text = (n.content ?? []).map((c) => c.text ?? "").join("");
+        if (after.includes(text) && prev) {
+          prev.content = [...(prev.content ?? []), { type: "hardBreak" }, ...(n.content ?? [])];
+          prev.attrs = { ...prev.attrs, box: { ...(prev.attrs?.box as object), below: (n.attrs?.box as { below: number }).below } };
+        } else out.push(n);
+      }
+      ed.commands.setContent({ type: "doc", content: out });
+    }, ["its second line", "nested next line", "and its next line"]);
+    await expect(app.doc.locator("br:not(.ProseMirror-trailingBreak)")).toHaveCount(3);
+    const broken = await drawn();
+    for (let k = 0; k < lines.length; k++) {
+      expect(Math.abs(pasted[k]![0] - broken[k]![0]), `${lines[k]}: x ${pasted[k]![0]} vs ${broken[k]![0]}`).toBeLessThan(0.05);
+      expect(Math.abs(pasted[k]![1] - broken[k]![1]), `${lines[k]}: y ${pasted[k]![1]} vs ${broken[k]![1]}`).toBeLessThan(0.05);
+    }
   });
 });
 

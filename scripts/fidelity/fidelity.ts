@@ -14,14 +14,14 @@ import { EditorState, TextSelection, type Transaction } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import type { docs_v1 } from "googleapis";
 import { editorExtensions } from "../../src/components/workspace/extensions";
-import { insertParagraphs } from "../../src/components/workspace/paste";
+import { breaksAsParagraphs, insertParagraphs } from "../../src/components/workspace/paste";
 import { importDoc } from "../../src/lib/doc-import";
 import { readDocsSlice, sliceParagraphs } from "../../src/lib/docs-slice";
 import { additions, PENDING_MARK } from "../../src/lib/doc-model";
 import { buildDripPlan } from "../../src/lib/drip-engine";
 import { snapshotOf } from "../../src/lib/google";
 import { listLabels } from "../../src/lib/list-labels";
-import { effectiveKeep, paragraphFromAttrs, parseFormat, plainFormat, richFromEditorJSON, styleFromMarks, type EditorNode } from "../../src/lib/rich-text";
+import { effectiveKeep, NAMED_STYLES, paragraphFromAttrs, parseFormat, plainFormat, richFromEditorJSON, styleFromMarks, type EditorNode } from "../../src/lib/rich-text";
 import { buildSyncRecords, parseSegments, segmentBoundaries, spotsFor } from "../../src/lib/sync-plan";
 import { runJobWindow, type RunnerDeps } from "../../src/lib/sync-runner";
 import { createMemoryStore } from "../../src/lib/sync-store";
@@ -45,6 +45,7 @@ export const P = (attrs: Record<string, unknown>, ...pieces: Piece[]): EditorNod
 });
 export const box0 = { start: 0, first: 0, above: 0, below: 0 };
 export const H1 = (text: string, extra: Marks = []) => P({ styleName: "h1", box: { start: 0, first: 0, above: 20, below: 6 } }, [text, [ts(20), ...extra]]);
+const BR = { type: "hardBreak" } as EditorNode;
 export const LI = (level: number, list: "bullet" | "ordered" = "bullet", ...pieces: Piece[]) => P({ list, level }, ...pieces);
 export const EMPTY = (attrs: Record<string, unknown> = {}): EditorNode => ({ type: "paragraph", attrs: { ...PARA, ...attrs }, content: [] });
 
@@ -145,22 +146,15 @@ export async function syncInto(c: SyncCase, opts: SyncOptions = {}) {
 // ── Comparing ───────────────────────────────────────────────────────────────
 
 const SIZES: Record<string, number> = { normal: 11, title: 26, subtitle: 15, h1: 20, h2: 16, h3: 14, h4: 12, h5: 11, h6: 11 };
-const SPACE: Record<string, [number, number]> = { normal: [0, 0], title: [0, 3], subtitle: [0, 16], h1: [20, 6], h2: [18, 6], h3: [16, 4], h4: [14, 4], h5: [12, 4], h6: [12, 4] };
+const SPACE: Record<string, [number, number]> = Object.fromEntries(Object.entries(NAMED_STYLES).map(([k, v]) => [k, v.space]));
 
 /**
- * Line breaks inside a paragraph are typed as new paragraphs: Docs drops U+000B sent through its API
- * (commit 5675618). The comparison holds the sync to that: each line is a paragraph of its own.
+ * Content as the paste leaves it in the editor: each line break in it the paragraph the sync will
+ * make of it (Docs drops U+000B sent through its API, commit 5675618), drawn as the break was
  */
-function splitLines(nodes: EditorNode[]): EditorNode[] {
-  return nodes.flatMap((n) => {
-    if (!n.content?.some((c) => c.type === "hardBreak")) return [n];
-    const out: EditorNode[] = [{ ...n, content: [] }];
-    for (const c of n.content) {
-      if (c.type === "hardBreak") out.push({ ...n, content: [] });
-      else out[out.length - 1].content!.push(c);
-    }
-    return out;
-  });
+export function asPasted(nodes: EditorNode[]): EditorNode[] {
+  const state = EditorState.create({ schema, doc: schema.nodeFromJSON({ type: "doc", content: nodes }) });
+  return (breaksAsParagraphs(state.tr, 0, state.doc.content.size, EMPTY_DOC_DEFAULTS).doc.toJSON() as EditorNode).content ?? [];
 }
 
 /** JSON with each object's keys in order, so the same values compare the same */
@@ -194,7 +188,8 @@ export function differences(target: EditorNode, out: docs_v1.Schema$Document): s
     }
     return { p, chars };
   });
-  const shown = splitLines(target.content ?? []);
+  // The page as it is: a line break it shows must be one in the document too
+  const shown = target.content ?? [];
   const want = paras(shown);
   const got = paras(after.nodes);
   const diffs: string[] = [];
@@ -337,8 +332,29 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     name: "soft-break-in-list",
-    what: "a list item with a line break (Shift+Enter) inside it, typed as two items",
-    target: () => [LI(0, "bullet", "Line one of the item", { type: "hardBreak" } as EditorNode, "line two of the same item"), LI(0, "bullet", "Next item")],
+    what: "a list item with a line break inside it, pasted: the line after it a paragraph where the item's text starts",
+    target: () => asPasted([LI(0, "bullet", "Line one of the item", BR, "line two of the same item"), LI(0, "bullet", "Next item")]),
+  },
+  {
+    name: "soft-break-in-paragraph",
+    what: "a paragraph indented its own way, with a first-line indent and space above and below, and two line breaks, pasted",
+    target: () => asPasted([P({ box: { start: 36, first: 18, above: 10, below: 12 } }, "First line", BR, "second line", BR, "third line"), P({ box: box0 }, "After")]),
+  },
+  {
+    name: "soft-break-in-heading",
+    what: "a Heading 2 (18pt above, 6pt below by its style) with a line break, pasted",
+    target: () => asPasted([P({ styleName: "h2" }, ["Heading line one", [ts(16)]], BR, ["line two", [ts(16)]]), P({ box: box0 }, "Body")]),
+  },
+  {
+    name: "soft-break-spaced-items",
+    what: "items with 6pt above and below that leave it out next to each other, then ones that keep it, each first one with a line break, pasted",
+    target: () => asPasted([
+      P({ list: "bullet", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 } }, "Tight one", BR, "its second line"),
+      P({ list: "bullet", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 } }, "Tight two"),
+      P({ box: box0 }, "Between"),
+      P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced one", BR, "its second line"),
+      P({ list: "ordered", level: 0, box: { start: 36, marker: -18, above: 6, below: 6 }, spacingMode: "NEVER_COLLAPSE" }, "Spaced two"),
+    ]),
   },
   {
     name: "list-custom-indent-space",
