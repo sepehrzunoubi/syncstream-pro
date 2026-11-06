@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditorState, type Editor, type JSONContent } from "@tiptap/react";
 import type { EditorNode } from "@/lib/rich-text";
 import { DEFAULT_GEOMETRY, PAGE_GAP, paginationKey } from "./pagination";
@@ -31,6 +31,26 @@ export interface HeaderFooters {
 }
 
 /** The editor on white sheets of the document's paper size, or one continuous sheet when pageless. */
+/**
+ * The screen's pixels per CSS pixel (browser zoom included), kept up to date: the browser lays text out in
+ * them, so what is drawn to match it rounds to them too (docs.css)
+ */
+function useDevicePixelRatio(): number {
+  const [dpr, setDpr] = useState(1);
+  useEffect(() => {
+    let query: MediaQueryList | null = null;
+    const update = () => {
+      setDpr(window.devicePixelRatio || 1);
+      query?.removeEventListener("change", update);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query.addEventListener("change", update);
+    };
+    update();
+    return () => query?.removeEventListener("change", update);
+  }, []);
+  return dpr;
+}
+
 export function PagedSurface({
   editor,
   pageless,
@@ -87,6 +107,7 @@ export function PagedSurface({
     for (const el of Object.values(areaRefs.current)) if (el) ro.observe(el);
     return () => ro.disconnect();
   }, [editor, pageless, pages, footnoteOrder, scale]);
+  const dpr = useDevicePixelRatio();
   const g = st?.geometry ?? DEFAULT_GEOMETRY;
   const stride = g.h + PAGE_GAP;
   const px = (pt: number) => Math.round((pt * 96) / 72);
@@ -98,8 +119,9 @@ export function PagedSurface({
     "--ss-m-left": `${g.left}px`,
     "--ss-m-right": `${g.right}px`,
     "--ss-page-color": pageColor ?? "#fff",
-    // The browser rounds text metrics in zoomed pixels; what is drawn to match text rounds the same (docs.css)
+    // The browser rounds text metrics in the screen's pixels at the page's zoom; what is drawn to match text rounds the same (docs.css)
     "--ss-zoom": String(scale),
+    "--ss-dpr": String(dpr),
   } as React.CSSProperties;
 
   return (

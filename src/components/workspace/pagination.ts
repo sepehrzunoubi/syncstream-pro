@@ -180,11 +180,14 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
   const toLocal = (clientY: number) => (clientY - box.top) / scale;
   const gapSize = (el: Element) => parseFloat((el as HTMLElement).dataset.gap || "0");
   /**
-   * How far a paragraph is drawn above (or below) where it is laid out: Docs puts a line's spacing beyond
-   * single below its text (docs.css). Its text, drawn so, is what has to fit a page; where the page breaks
-   * is where it is laid out.
+   * How far a paragraph's text is drawn above (or below) where it is laid out: Docs puts a line's spacing
+   * beyond single below its text (docs.css, .ss-text). Its text, drawn so, is what has to fit a page; where
+   * the page breaks is where it is laid out. The paragraph's own box is where it is laid out.
    */
-  const shiftOf = (el: Element | null | undefined) => (el instanceof HTMLElement && el.tagName === "P" ? parseFloat(getComputedStyle(el).top) || 0 : 0);
+  const shiftOf = (el: Element | null | undefined) => {
+    const text = el instanceof HTMLElement && el.tagName === "P" ? el.querySelector(":scope > .ss-text") : null;
+    return text ? parseFloat(getComputedStyle(text).top) || 0 : 0;
+  };
   /**
    * A block's space above and the space below the block before it (our gaps aside), in layout px. They
    * collapse into one in the flow; a page starting at the block keeps its space above (Docs does).
@@ -250,7 +253,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
         const el = view.nodeDOM($pos.before(1));
         if (!(el instanceof HTMLElement)) continue;
         const y = toLocal(el.getBoundingClientRect().top);
-        const flowTop = y - gapsAbove(y) - shiftOf(el);
+        const flowTop = y - gapsAbove(y);
         if (flowTop <= pageStart + 1 || !breakAtBlock(el, $pos.before(1), flowTop)) continue;
         pinnedUntil = pos;
         nextPage();
@@ -298,7 +301,7 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     const inner = Array.from(el.querySelectorAll(":scope > .ss-page-gap"));
     const innerGaps = inner.map((g) => ({ top: toLocal(g.getBoundingClientRect().top), size: gapSize(g) }));
     // Flow position inside the section: the layout less our own gaps
-    const flowTopOf = (node: Element) => { const y = toLocal(node.getBoundingClientRect().top); return y - removed - innerGaps.filter((g) => g.top < y).reduce((s, g) => s + g.size, 0) - shiftOf(node); };
+    const flowTopOf = (node: Element) => { const y = toLocal(node.getBoundingClientRect().top); return y - removed - innerGaps.filter((g) => g.top < y).reduce((s, g) => s + g.size, 0); };
     const blocks: { pos: number; size: number; el: HTMLElement; flow: FlowBlock }[] = [];
     secNode.forEach((node, offset) => {
       const pos = secPos + 1 + offset;
@@ -351,10 +354,10 @@ function measure(view: EditorView, geom: PageGeometry, reserves: number[] = [], 
     const innerSize = (g: Element) => (g.tagName === "TR" ? g.getBoundingClientRect().height / scale : gapSize(g));
     const innerTotal = inner.reduce((s, g) => s + innerSize(g), 0);
     const r = child.getBoundingClientRect();
-    // Its top where it is laid out; its bottom as drawn (what has to fit, see shiftOf)
+    // Its top where it is laid out; its bottom as its text is drawn (what has to fit, see shiftOf)
     const shift = shiftOf(child);
-    const top = toLocal(r.top) - removed - shift;
-    const bottom = toLocal(r.bottom) - removed - innerTotal;
+    const top = toLocal(r.top) - removed;
+    const bottom = toLocal(r.bottom) - removed - innerTotal + shift;
     flowTop.set(child, top);
     // What Google already paginated is left alone; measuring starts after the last pin
     if (pinnedUntil >= 0) {

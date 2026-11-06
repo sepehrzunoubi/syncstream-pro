@@ -355,9 +355,24 @@
 .ss-doc .ss-nobreak { white-space: nowrap; }
 .ss-doc p { margin: 0; }
 /* Docs puts a line's spacing beyond single (1.15 here) below its text, where CSS splits it above and below:
-   a paragraph spaced wider is drawn that much higher, its text where a 1.15-spaced line's would sit in the
-   same line (layout is unchanged; pagination reads the shift back, see pagination.ts) */
-.ss-doc p { position: relative; top: calc((1.15 - var(--ss-spacing, 1.15)) * var(--ss-nlh, 1.15) * 0.5em); }
+   the text of a paragraph spaced wider is drawn that much higher, where a 1.15-spaced line's would sit in
+   the same line, by the size of its largest text (--ss-line-size, see extensions.ts). Only the text moves
+   (its span, and a list item's glyph): the paragraph's box, its shading and borders and where a click
+   lands stay where it is laid out (pagination reads the shift back, see pagination.ts). Registered as a
+   length so the glyph, in a size of its own, moves as far as the text. */
+@property --ss-shift { syntax: "<length>"; inherits: true; initial-value: 0px; }
+.ss-doc p { position: relative; --ss-shift: calc((1.15 - var(--ss-spacing, 1.15)) * var(--ss-nlh, 1.15) * 0.5 * var(--ss-line-size, 1em)); }
+/* Exactly: the browser puts text below its line's top by half the leading rounded down to a pixel (of the
+   zoomed page), over the font's ascent and descent each rounded to one; the shift is the 1.15-spaced
+   line's offset less this line's, so the text sits where a 1.15-spaced line's does to the pixel */
+@supports (width: round(1.5px, 1px)) {
+  .ss-doc p {
+    --ss-px: calc(1px / (var(--ss-zoom, 1) * var(--ss-dpr, 1)));
+    --ss-ad: calc(round(calc(var(--ss-asc, 0.9053) * var(--ss-line-size, 1em)), var(--ss-px)) + round(calc(var(--ss-desc, 0.2119) * var(--ss-line-size, 1em)), var(--ss-px)));
+    --ss-shift: calc(round(down, calc((1.15 * var(--ss-nlh, 1.15) * var(--ss-line-size, 1em) - var(--ss-ad)) / 2), var(--ss-px)) - round(down, calc((var(--ss-spacing, 1.15) * var(--ss-nlh, 1.15) * var(--ss-line-size, 1em) - var(--ss-ad)) / 2), var(--ss-px)));
+  }
+}
+.ss-doc p > .ss-text { position: relative; top: var(--ss-shift); }
 /* Named styles: the document's own sizes, fonts and colours when it sets them, else Docs' defaults */
 .ss-doc p[data-style="title"] { font-size: var(--ss-size-title, 26pt); font-family: var(--ss-font-title, inherit); color: var(--ss-color-title, inherit); margin-bottom: 3pt; }
 .ss-doc p[data-style="subtitle"] { font-size: var(--ss-size-subtitle, 15pt); font-family: var(--ss-font-subtitle, inherit); color: var(--ss-color-subtitle, #666); margin-bottom: 16pt; }
@@ -383,6 +398,8 @@
 .ss-doc p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
+  position: relative;
+  top: var(--ss-shift);
   height: 0;
   color: #80868b;
   pointer-events: none;
@@ -397,7 +414,7 @@
 .ss-doc p[data-list] { position: relative; margin-inline-start: 36pt !important; text-indent: 0 !important; }
 .ss-doc p[data-list]::before {
   position: absolute;
-  top: 0;
+  top: var(--ss-shift);
   inset-inline-start: -18pt;
   width: 18pt;
   text-indent: 0;
@@ -416,7 +433,7 @@
    rounded down */
 @supports (width: round(1.5px, 1px)) {
   .ss-doc p[data-list]::before {
-    --ss-px: calc(1px / var(--ss-zoom, 1));
+    --ss-px: calc(1px / (var(--ss-zoom, 1) * var(--ss-dpr, 1)));
     --ss-g-c: calc(round(calc(var(--ss-asc, 0.9053) * 1em), var(--ss-px)) + round(calc(var(--ss-desc, 0.2119) * 1em), var(--ss-px)));
     background-size: 100% var(--ss-g-c);
     background-position: 0 round(down, calc((var(--ss-spacing, 1.15) * var(--ss-nlh, 1.15) * 1em - var(--ss-g-c)) / 2), var(--ss-px));
@@ -432,7 +449,7 @@
 .ss-doc p[data-list="check"]::before {
   content: "";
   inset-inline-start: -20pt;
-  top: 0.22em;
+  top: calc(0.22em + var(--ss-shift));
   width: 0.78em;
   height: 0.78em;
   border: 1.5px solid #5f6368;

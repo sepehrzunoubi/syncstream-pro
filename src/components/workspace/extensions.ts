@@ -1,4 +1,4 @@
-import { Extension, InputRule, Mark, Node, type Editor } from "@tiptap/core";
+import { Extension, InputRule, Mark, mergeAttributes, Node, type Editor } from "@tiptap/core";
 import { Plugin, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { DOMSerializer, type DOMOutputSpec, type Node as PMNode } from "@tiptap/pm/model";
@@ -170,7 +170,51 @@ function pastedBox(el: HTMLElement): PastedBox | null {
 }
 
 /** Paragraphs carry the Google Docs paragraph properties we support. */
+/**
+ * The largest size a paragraph's text has, as a length (max(1em, …) when some of it is the paragraph's own
+ * size): Docs puts a line's spacing beyond single below its text, by the text's size (see docs.css,
+ * --ss-shift), not the paragraph style's. Only paragraphs with text of a size of its own get one.
+ */
+export function lineSize(node: PMNode): string | null {
+  const sizes = new Set<number>();
+  let own = false;
+  node.forEach((c) => {
+    if (!c.isText) return;
+    const size = c.marks.find((m) => m.type.name === "textStyle")?.attrs.fontSize;
+    if (typeof size === "number" && size > 0) sizes.add(size);
+    else own = true;
+  });
+  if (!sizes.size) return null;
+  const list = [...(own ? ["1em"] : []), ...Array.from(sizes).sort((a, b) => b - a).map((v) => `${v}pt`)];
+  return list.length > 1 ? `max(${list.join(", ")})` : list[0];
+}
+
+function lineSizes(doc: PMNode): DecorationSet {
+  const decorations: Decoration[] = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name !== "paragraph") return true;
+    const size = lineSize(node);
+    if (size) decorations.push(Decoration.node(pos, pos + node.nodeSize, { style: `--ss-line-size: ${size}` }));
+    return false;
+  });
+  return DecorationSet.create(doc, decorations);
+}
+
 const DocParagraph = Paragraph.extend({
+  /**
+   * The paragraph's text is in a span of its own, which draws it where Docs puts it in its lines (see
+   * docs.css, .ss-text): the paragraph's box, its shading and borders, and where a click lands stay where
+   * the paragraph is laid out
+   */
+  renderHTML({ HTMLAttributes }) {
+    return ["p", mergeAttributes(this.options.HTMLAttributes, HTMLAttributes), ["span", { class: "ss-text" }, 0]];
+  },
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      state: { init: (_c, state) => lineSizes(state.doc), apply: (tr, old) => (tr.docChanged ? lineSizes(tr.doc) : old) },
+      props: { decorations(state) { return this.getState(state); } },
+    })];
+  },
   addKeyboardShortcuts() {
     // Docs' Ctrl+Alt+0: Normal text (the stock paragraph shortcut would only keep the node a paragraph)
     return { "Mod-Alt-0": () => this.editor.commands.setNamedStyle("normal") };
@@ -1083,7 +1127,9 @@ const ClipboardHTML = Extension.create({
     const paragraph = (node: PMNode): DOMOutputSpec => {
       const spec = base.nodes.paragraph(node);
       if (!Array.isArray(spec)) return spec;
-      const [, attrs, ...rest] = spec as [string, Record<string, string>, ...unknown[]];
+      const [, attrs, ...inner] = spec as [string, Record<string, string>, ...unknown[]];
+      // The text's own span is the page's (see DocParagraph): a copy has the text right in the paragraph
+      const rest = inner.map((c) => (Array.isArray(c) && c[0] === "span" && (c[1] as { class?: string })?.class === "ss-text" ? 0 : c));
       const style = node.attrs.styleName as string;
       const out = { ...attrs };
       const spacing = typeof node.attrs.lineSpacing === "number" ? node.attrs.lineSpacing : 115;

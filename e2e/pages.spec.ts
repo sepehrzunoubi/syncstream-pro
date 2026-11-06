@@ -259,18 +259,71 @@ test.describe("lines as Docs draws them", () => {
         const range = document.createRange();
         range.selectNodeContents(p.firstChild!);
         const text = range.getClientRects()[0];
+        // The paragraph's box is where it is laid out: only its text is drawn higher
         const box = p.getBoundingClientRect();
-        // Where the paragraph is laid out: as drawn, less how far it is drawn above that
-        const shift = (parseFloat(getComputedStyle(p).top) || 0) * zoom;
-        return { textTop: text.top / zoom, top: (box.top - shift) / zoom, bottom: (box.bottom - shift) / zoom };
+        return { textTop: text.top / zoom, top: box.top / zoom, bottom: box.bottom / zoom };
       });
     }, DOC);
     // Text below the top of its line by as much as single-spaced text is, whatever the spacing
     const single = got[0].textTop - got[0].top;
-    for (const p of got) expect(Math.abs(p.textTop - p.top - single), JSON.stringify(got)).toBeLessThanOrEqual(0.6);
+    for (const p of got) expect(Math.abs(p.textTop - p.top - single), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
     // Laid out as before: each paragraph starts where the one above ends, the double-spaced one twice as tall
     for (let i = 1; i < got.length; i++) expect(Math.abs(got[i].top - got[i - 1].bottom)).toBeLessThanOrEqual(0.6);
     expect((got[1].bottom - got[1].top) / (got[0].bottom - got[0].top)).toBeCloseTo(200 / 115, 1);
+  });
+
+  test("a wider-spaced paragraph draws only its text higher: its shading, border and clicks stay in its box", async ({ app, page }) => {
+    const run = (text: string) => [{ type: "text", text }];
+    await app.open({ plain: [
+      { type: "paragraph", attrs: { box: { start: 0, first: 0, above: 0, below: 0 } }, content: run("Plain line above, with descenders: gjpqy") },
+      { type: "paragraph", attrs: { lineSpacing: 200, shading: "#fff2cc", box: { start: 0, first: 0, above: 0, below: 0 }, borders: { top: { width: 1, color: "#000000", dash: "SOLID", padding: 0 } } }, content: run("Shaded and double spaced") },
+    ] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      const [a, b] = Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`));
+      const textOf = (p: HTMLElement) => { const r = document.createRange(); r.selectNodeContents(p.querySelector(".ss-text")!); return r.getClientRects()[0]; };
+      const ta = textOf(a);
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      // Just above the bottom of the line above's text: its descenders
+      const hit = document.elementFromPoint(ta.left + 4, ta.bottom - 1);
+      return {
+        gap: (rb.top - ra.bottom) / zoom,
+        // Each paragraph's text below the top of its box by as much (Docs puts the extra spacing below the text)
+        aText: (ta.top - ra.top) / zoom,
+        bText: (textOf(b).top - rb.top) / zoom,
+        hitsAbove: !!hit && a.contains(hit),
+        shading: getComputedStyle(b).backgroundColor,
+        border: parseFloat(getComputedStyle(b).borderTopWidth),
+      };
+    }, DOC);
+    expect(got.gap, JSON.stringify(got)).toBeGreaterThanOrEqual(-0.05);
+    expect(got.hitsAbove, JSON.stringify(got)).toBe(true);
+    // The border's width aside, the text sits where the plain paragraph's does
+    expect(Math.abs(got.bText - got.border - got.aText), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
+    expect(got.shading).toBe("rgb(255, 242, 204)");
+    // A copy has the text right in its paragraphs: the span is the page's
+    const copied = await page.evaluate(() => { const v = window.ssEditor!.view; return v.serializeForClipboard(v.state.doc.slice(0, v.state.doc.content.size)).dom.innerHTML; });
+    expect(copied).not.toContain("ss-text");
+    expect(copied).toContain("Shaded and double spaced");
+  });
+
+  test("a wider-spaced paragraph's text sits by the size of its text, not its paragraph style's", async ({ app, page }) => {
+    const big = (text: string) => ({ type: "text", text, marks: [{ type: "textStyle", attrs: { fontSize: 24 } }] });
+    const P = (lineSpacing: number, ...content: object[]) => ({ type: "paragraph", attrs: { lineSpacing, box: { start: 0, first: 0, above: 0, below: 0 } }, content });
+    await app.open({ plain: [P(115, big("Big, single spaced")), P(200, big("Big, double spaced")), P(200, { type: "text", text: "small then " }, big("BIG")), P(150, big("Big, one and a half"))] });
+    const got = await page.evaluate((sel) => {
+      const zoom = parseFloat(getComputedStyle(document.querySelector(".ss-pages")!).zoom) || 1;
+      return Array.from(document.querySelectorAll<HTMLElement>(`${sel} > p`)).map((p) => {
+        // The 24pt text: the paragraph's last run
+        const spans = p.querySelectorAll(".ss-text [style*='font-size']");
+        const r = document.createRange();
+        r.selectNodeContents(spans[spans.length - 1]);
+        return (r.getClientRects()[0].top - p.getBoundingClientRect().top) / zoom;
+      });
+    }, DOC);
+    // Below the top of its line by as much as single-spaced text of its size is, to the pixel the browser rounds to
+    for (const top of got) expect(Math.abs(top - got[0]), JSON.stringify(got)).toBeLessThanOrEqual(0.05);
   });
 
   test("text kerns the pairs inside a word but not a pair with a space, as Docs does", async ({ app, page }) => {
@@ -356,8 +409,8 @@ test.describe("lines as Docs draws them", () => {
         const mark = p.querySelector("mark")!.getClientRects()[0];
         const g = getComputedStyle(p, "::before");
         const height = parseFloat(g.backgroundSize.split(" ")[1]);
-        const top = parseFloat(g.backgroundPositionY);
-        // The glyph box sits at the paragraph's top
+        // The glyph box sits at the paragraph's top, moved as far as its text is (docs.css, --ss-shift)
+        const top = parseFloat(g.top) + parseFloat(g.backgroundPositionY);
         return { glyph: [Math.round(top * 100) / 100, Math.round(height * 100) / 100], text: [Math.round(((mark.top - p.getBoundingClientRect().top) / zoom) * 100) / 100, Math.round((mark.height / zoom) * 100) / 100] };
       });
     }, DOC);
