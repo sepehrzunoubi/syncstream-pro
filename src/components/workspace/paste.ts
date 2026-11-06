@@ -71,16 +71,26 @@ const styleOf = (p: PMNode) => ((p.attrs.styleName as NamedStyle | undefined) ??
  * a paragraph's format belongs to its newline: the paragraph the paste
  * starts in takes the format of the first pasted paragraph (its newline is
  * the pasted one), and the text after the selection stays in its own
- * paragraph with its own format. Pasting over whole paragraphs (or into an
- * empty one) replaces them, so a whole document pasted into an empty one
- * comes out the same paragraph for paragraph, the last one included.
+ * paragraph with its own format, even when there is none: a copy that ends
+ * with a paragraph's newline leaves the paragraph it went into after it,
+ * as Docs does (Ctrl+A of a document that ends with an empty paragraph,
+ * pasted into an empty one, comes out the same paragraph for paragraph).
+ * A copy whose last paragraph is partly copied, pasted over whole
+ * paragraphs (or into an empty one), replaces them: that last paragraph
+ * keeps its own format.
  *
  * Only pasted content is inserted: text already there is left in place (it
  * would otherwise count as an addition and be typed into the Doc again).
  * The text goes in as copied: no paste rules, and no URL turned into a link
  * that wasn't one. False when the selection isn't plain paragraphs side by side.
+ *
+ * `endKnown` is false when the copy can't say whether its last paragraph's
+ * newline was copied (HTML: Docs' text/plain ends with a newline whenever
+ * a copy spans paragraphs). Pasted into an empty paragraph (or over whole
+ * ones), such a copy replaces them, its last paragraph in its own format,
+ * whichever it was.
  */
-export function insertParagraphs(view: EditorView, paragraphs: PMNode[], endsWithParagraph: boolean, defaults = destinationDefaults(view)): boolean {
+export function insertParagraphs(view: EditorView, paragraphs: PMNode[], endsWithParagraph: boolean, defaults = destinationDefaults(view), endKnown = true): boolean {
   const { state } = view;
   const { $from, $to } = state.selection;
   const paragraph = state.schema.nodes.paragraph;
@@ -99,7 +109,7 @@ export function insertParagraphs(view: EditorView, paragraphs: PMNode[], endsWit
     if (!complete.length) {
       // Text within one paragraph: the paragraph keeps its own format
       tr.replaceSelection(new Slice(joined, 0, 0));
-    } else if ($from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size) {
+    } else if ((tail || !endKnown) && $from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size) {
       // Nothing of the paragraphs pasted over is left: a last, partly copied paragraph keeps its own format
       const out = tail ? [...complete, tail] : complete;
       const start = $from.before();
@@ -216,8 +226,9 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
   // Values that repeat what each paragraph's style gives aren't formatting of their own
   const defaults = destinationDefaults(view);
   const paragraphs = plainSpaces(parsed, plain).map((p) => (p.type.name === "paragraph" ? p.copy(restyleText(p.content, styleOf(p), styleOf(p), defaults)) : p));
-  // Docs' HTML: paragraphs go in as Docs pastes them; its text says whether the last newline was copied
-  if (isDocsHTML(data.getData("text/html")) && insertParagraphs(view, paragraphs, /\n$/.test(plain.replace(/\r\n?/g, "\n")))) {
+  // Docs' HTML: paragraphs go in as Docs pastes them. Whether the last newline was copied is the
+  // slice's to say: its text ends with one whenever the copy spans paragraphs
+  if (isDocsHTML(data.getData("text/html")) && insertParagraphs(view, paragraphs, /\n$/.test(plain.replace(/\r\n?/g, "\n")), defaults, false)) {
     event.preventDefault();
     return true;
   }
@@ -225,7 +236,7 @@ export function handlePaste(view: EditorView, event: ClipboardEvent, slice: Slic
   // formatting, as Docs does; ProseMirror would merge the first into the paragraph being replaced
   const { $from, $to } = view.state.selection;
   const wholeParagraphs = $from.parentOffset === 0 && $to.parentOffset === $to.parent.content.size;
-  if (wholeParagraphs && slice.openStart > 0 && insertParagraphs(view, paragraphs, true)) {
+  if (wholeParagraphs && slice.openStart > 0 && insertParagraphs(view, paragraphs, true, defaults, false)) {
     event.preventDefault();
     return true;
   }

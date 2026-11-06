@@ -45,12 +45,14 @@ test.describe("pasting from Google Docs", () => {
     await openEmpty(app, api, page);
     await app.paste({ slice: SLICE, html: HTML, text: TEXT });
     const want = sliceParagraphs(readDocsSlice(SLICE, TEXT)!, api.content.defaults);
-    await expect.poll(async () => ((await app.json()).content as EditorNode[]).length).toBe(45);
+    // Ctrl+A leaves out the document's last, empty paragraph; the one pasted into takes its place, as in Docs
+    await expect.poll(async () => ((await app.json()).content as EditorNode[]).length).toBe(46);
     const got = (await app.json()).content as EditorNode[];
     for (let i = 0; i < want.length; i++) {
       expect(attrsOf(got[i]), `paragraph ${i + 1} format`).toEqual(attrsOf(want[i]));
       expect(runsOf(got[i]), `paragraph ${i + 1} text`).toEqual(runsOf(want[i]));
     }
+    expect(got[45].content ?? []).toEqual([]);
     // All of it is new: it glows, and every character is typed by the sync
     expect((await app.pending()).join("")).toBe(TEXT.replace(/\n/g, ""));
     // The page shows the heading's highlight and the list's glyphs as Docs does

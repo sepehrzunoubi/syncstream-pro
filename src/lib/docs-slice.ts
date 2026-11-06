@@ -62,6 +62,8 @@ const HEADING: Record<number, string> = { 0: "NORMAL_TEXT", 1: "HEADING_1", 2: "
 const ALIGNMENT: Record<number, string> = { 0: "START", 1: "CENTER", 2: "END", 3: "JUSTIFIED" };
 /** List glyph codes: 9 draws the level's symbol; the others number it */
 const GLYPH: Record<number, string> = { 10: "DECIMAL", 11: "ZERO_DECIMAL", 12: "UPPER_ALPHA", 13: "ALPHA", 14: "UPPER_ROMAN", 15: "ROMAN" };
+/** A checklist level; the Docs API gives a checkbox no glyph type of its own or symbol (doc-import reads it so) */
+const CHECKBOX = 17;
 const DASH: Record<number, string> = { 0: "SOLID", 1: "DOT", 2: "DASH" };
 
 /** Kinds of content the slice can hold that this reader doesn't turn into paragraphs */
@@ -188,6 +190,7 @@ function listOf(entity: Style | undefined): docs_v1.Schema$List | undefined {
       textStyle: textStyleOf(b.b_ts as Style | undefined),
     };
     if (numbered) level.glyphType = numbered;
+    else if (code === CHECKBOX) level.glyphType = "GLYPH_TYPE_UNSPECIFIED";
     else if (symbol) level.glyphSymbol = symbol;
     else level.glyphType = code === 9 ? "NONE" : "DECIMAL";
     nestingLevels.push(level);
@@ -266,29 +269,33 @@ export function readDocsSlice(raw: unknown, plain?: string | null): DocsSlice | 
  * its own glyphs, numbered from one: what a sync can create (the API makes
  * lists only in Docs' list styles, and can't set where numbering starts),
  * so the page shows what Docs will.
+ *
+ * A Docs list can number some levels and bullet others; a list style can't.
+ * Its numbered items, its bulleted ones and its checkboxes each become a
+ * list of their own kind, as a sync makes them.
  */
 export function sliceParagraphs(slice: DocsSlice, defaults: DocDefaults): EditorNode[] {
   const nodes = importDoc(slice.doc, { defaults }).nodes;
-  // Per list: its levels' glyphs and how many items use each level
-  const used = new Map<string, number[]>();
+  const key = (n: EditorNode) => `${n.attrs?.listId as string}\u0000${n.attrs?.list as string}`;
+  // Per list and kind of item: how many items use each level
+  const used = new Map<string, { id: string; kind: string; weights: number[] }>();
   for (const n of nodes) {
     const id = n.attrs?.listId as string | null | undefined;
-    if (!id) continue;
-    const w = used.get(id) ?? [];
-    const level = (n.attrs?.level as number | null) ?? 0;
-    w[level] = (w[level] ?? 0) + 1;
-    used.set(id, w);
+    if (!id || !n.attrs?.list) continue;
+    const u = used.get(key(n)) ?? { id, kind: n.attrs.list as string, weights: [] };
+    const level = (n.attrs.level as number | null) ?? 0;
+    u.weights[level] = (u.weights[level] ?? 0) + 1;
+    used.set(key(n), u);
   }
   const presets = new Map<string, string>();
-  for (const [id, weights] of used) {
+  for (const [k, { id, kind, weights }] of used) {
     const levels = slice.doc.lists?.[id]?.listProperties?.nestingLevels ?? [];
-    const kind = nodes.find((n) => n.attrs?.listId === id)?.attrs?.list as string;
     const glyphs: Glyph[] = levels.map((l) => ({ type: l.glyphType ?? null, format: l.glyphFormat ?? null, symbol: l.glyphSymbol ?? null }));
-    presets.set(id, presetForLevels(kind, glyphs, weights));
+    presets.set(k, presetForLevels(kind, glyphs, weights));
   }
   return nodes.map((n) => {
     const id = n.attrs?.listId as string | null | undefined;
     if (!id || !n.attrs) return n;
-    return { ...n, attrs: { ...n.attrs, listId: null, glyph: null, preset: presets.get(id) ?? null } };
+    return { ...n, attrs: { ...n.attrs, listId: null, glyph: null, preset: presets.get(key(n)) ?? null } };
   });
 }

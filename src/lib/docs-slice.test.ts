@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { readDocsSlice, sliceParagraphs } from "./docs-slice";
-import { presetForLevels } from "./list-labels";
+import { listLabels, presetForLevels } from "./list-labels";
 import type { DocDefaults } from "./doc-import";
 import type { EditorNode } from "./rich-text";
 
@@ -181,6 +181,37 @@ test("pasted lists take the closest Docs list style, numbered from one", () => {
     ["bullet", 0, "BULLET_STAR_CIRCLE_SQUARE", null, null],
     ["bullet", 0, "BULLET_STAR_CIRCLE_SQUARE", null, null],
   ]);
+});
+
+test("a list that numbers one level and bullets the others, and a checklist, each pasted as Docs draws them", () => {
+  const level = (gt: number, gf: string, gs = "") => ({ b_gt: gt, b_gf: gf, b_gs: gs, b_sn: 1, b_il: 36, b_ifl: 18, b_a: 0 });
+  const entity = (levels: object[]) => ({ le_nb: Object.fromEntries(levels.map((l, i) => [`nl_${i}`, l])) });
+  // As the corpus's "lists" document has them: a bulleted list whose level 3 is numbered, and a checklist (glyph type 17)
+  const text = "a\nb\nc\nd\nnumbered\ne\ntodo one\ntodo two\n";
+  const ends = [...text].flatMap((ch, i) => (ch === "\n" ? [i] : []));
+  const nest = [0, 1, 2, 2, 3, 0];
+  const list: Record<number, object> = {};
+  ends.forEach((at, k) => { list[at] = k < 6 ? { ls_id: "kix.mixed", ls_nest: nest[k] } : { ls_id: "kix.check", ls_nest: 0 }; });
+  const slice = readDocsSlice(clip(text, { list }, {
+    dsl_entitymap: {
+      "kix.mixed": entity([level(9, "%0", "●"), level(9, "%1", "○"), level(9, "%2", "■"), level(10, "%3."), level(9, "%4", "○")]),
+      "kix.check": entity([level(17, "%0"), level(17, "%1"), level(17, "%2")]),
+    },
+    dsl_entitytypemap: { "kix.mixed": "list", "kix.check": "list" },
+  }))!;
+  const nodes = sliceParagraphs(slice, ARIAL);
+  assert.deepEqual(nodes.map((n) => [n.attrs?.list, n.attrs?.level, n.attrs?.preset]), [
+    ["bullet", 0, "BULLET_DISC_CIRCLE_SQUARE"],
+    ["bullet", 1, "BULLET_DISC_CIRCLE_SQUARE"],
+    ["bullet", 2, "BULLET_DISC_CIRCLE_SQUARE"],
+    ["bullet", 2, "BULLET_DISC_CIRCLE_SQUARE"],
+    // Its own kind of list, in the style that numbers level 3 "1.", as the copy does
+    ["ordered", 3, "NUMBERED_DECIMAL_ALPHA_ROMAN"],
+    ["bullet", 0, "BULLET_DISC_CIRCLE_SQUARE"],
+    ["check", 0, "BULLET_CHECKBOX"],
+    ["check", 0, "BULLET_CHECKBOX"],
+  ]);
+  assert.deepEqual(listLabels(nodes.map((n) => n.attrs ?? {})), ["●", "○", "■", "■", "1.", "●", null, null]);
 });
 
 test("presetForLevels weighs the levels a list uses", () => {

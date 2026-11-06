@@ -35,14 +35,21 @@ const styles = (doc: PMNode) => { const out: string[] = []; doc.forEach((p) => o
 /** The text the transaction's replace steps put in: what the sync would see as additions */
 const inserted = (trs: Transaction[]) => trs.flatMap((tr) => tr.steps.filter((s): s is ReplaceStep => s instanceof ReplaceStep).map((s) => s.slice.content.textBetween(0, s.slice.content.size, "|")));
 
-test("a whole copied document replaces the empty paragraph it's pasted into", () => {
+test("a whole copied document goes in before the empty paragraph it's pasted into, as in Docs", () => {
   const plain = fs.readFileSync(path.join(FIXTURES, "web-structured-data.txt"), "utf8");
   const slice = readDocsSlice(fs.readFileSync(path.join(FIXTURES, "web-structured-data.slice.json"), "utf8"), plain)!;
+  // Ctrl+A leaves out the document's last, empty paragraph: the copy ends with the newline before it
+  assert.equal(slice.endsWithParagraph, true);
   const nodes = sliceParagraphs(slice, ARIAL).map((n) => schema.nodeFromJSON(n));
-  const view = viewOf(schema.node("doc", null, [para("")]), 1);
-  assert.equal(insertParagraphs(view, nodes, true, ARIAL), true);
-  assert.equal(view.state.doc.childCount, 45);
-  assert.equal(texts(view.state.doc).join("\n") + "\n", plain);
+  const view = viewOf(schema.node("doc", null, [para("", { lineSpacing: 200 })]), 1);
+  assert.equal(insertParagraphs(view, nodes, slice.endsWithParagraph, ARIAL), true);
+  // Its 45 paragraphs, then the one pasted into, still empty and as it was: 46, as the copied document has
+  assert.equal(view.state.doc.childCount, 46);
+  assert.equal(texts(view.state.doc).join("\n"), plain);
+  assert.equal(view.state.doc.lastChild!.attrs.lineSpacing, 200);
+  for (let k = 0; k < 45; k++) assert.deepEqual(view.state.doc.child(k).attrs, nodes[k].attrs, `paragraph ${k}`);
+  // The caret ends in that last paragraph
+  assert.equal(view.state.selection.from, view.state.doc.content.size - 1);
 });
 
 test("pasted into a paragraph: the first part takes the pasted format, the rest keeps its own", () => {
