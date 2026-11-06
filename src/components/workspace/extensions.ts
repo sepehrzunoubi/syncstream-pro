@@ -10,6 +10,7 @@ import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
 import { DocSync, SyncAdd } from "./doc-sync";
 import { DocsLineBreaks } from "./line-breaks";
+import { LinkLook } from "./link-look";
 import { Find } from "./find";
 import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
 import TextAlign from "@tiptap/extension-text-align";
@@ -23,6 +24,7 @@ import {
   FONT_SIZES,
   INDENT_PT,
   LINE_SPACINGS,
+  LINK_COLOR,
   MAX_INDENT,
   MAX_LIST_LEVEL,
   NAMED_STYLES,
@@ -1059,6 +1061,7 @@ export const segmentExtensions = () => [
   TextAlign.configure({ types: ["paragraph"], alignments: ["left", "center", "right", "justify"] }),
   DocFormat,
   ClipboardHTML,
+  LinkLook,
 ];
 
 export const editorExtensions = [
@@ -1101,6 +1104,7 @@ export const editorExtensions = [
   ClipboardHTML,
   Find,
   DocsLineBreaks,
+  LinkLook,
 ];
 
 type InlineStyle = { fontFamily?: string; fontSize?: string; color?: string; backgroundColor?: string; fontWeight?: string; fontStyle?: string; textDecoration?: string; verticalAlign?: string };
@@ -1162,6 +1166,12 @@ export function inlinePastedStyles(html: string): string {
     for (let el: HTMLElement | null = text.parentElement; el && el !== doc.body; el = el.parentElement) {
       const own = ownStyle(el);
       for (const k of keys) if (style[k] == null && own[k] != null) style[k] = own[k];
+      // A link with no colour or underline of its own (from inside it) looks as a link does: Docs'
+      // copies always say how theirs look; other pages' bare links get the look Docs gives a new link
+      if (el.tagName === "A" && el.hasAttribute("href")) {
+        style.color ??= LINK_COLOR;
+        style.textDecoration ??= "underline";
+      }
     }
     const decl = keys.filter((k) => style[k] != null).map((k) => `${css[k]}: ${style[k]}`).join("; ");
     if (!decl) continue;

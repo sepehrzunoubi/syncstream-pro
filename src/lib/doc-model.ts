@@ -17,7 +17,6 @@
 import {
   bulletRequests,
   DEFAULT_PARAGRAPH,
-  LINK_COLOR,
   OBJ,
   PAGE_BREAK,
   presetOf,
@@ -503,10 +502,10 @@ function textStyleDiff(a: RunStyle, b: RunStyle): { textStyle: DocsRequest; fiel
       if (!b.u && !fields.includes("underline")) { textStyle.underline = false; fields.push("underline"); }
       if (!b.color && !fields.includes("foregroundColor")) fields.push("foregroundColor");
     }
-    // Links look like links in Docs only with the colour and underline set
+    // A link set without its colour and underline gets Docs' blue and underline: set it with the look it has here
     if (b.link && !a.link) {
-      if (!b.color && !fields.includes("foregroundColor")) { textStyle.foregroundColor = rgb(LINK_COLOR); fields.push("foregroundColor"); }
-      if (!fields.includes("underline")) { textStyle.underline = true; fields.push("underline"); }
+      if (!fields.includes("foregroundColor")) { if (b.color) textStyle.foregroundColor = rgb(b.color); fields.push("foregroundColor"); }
+      if (!fields.includes("underline")) { textStyle.underline = !!b.u; fields.push("underline"); }
     }
   }
   return fields.length ? { textStyle, fields } : null;

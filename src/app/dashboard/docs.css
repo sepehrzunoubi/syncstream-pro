@@ -488,7 +488,10 @@
 @media (prefers-reduced-motion: reduce) { .ss-doc.ss-glow .ss-add { animation: none; } }
 
 /* Links and images */
-.ss-doc a { color: #1155cc; text-decoration: underline; cursor: text; }
+/* A link looks as its text is styled (Docs gives a new link its blue and underline as marks) */
+.ss-doc a { color: inherit; text-decoration: none; cursor: text; }
+/* Docs draws underlines and strikethroughs straight through descenders */
+.ss-doc :is(u, s) { text-decoration-skip-ink: none; -webkit-text-decoration-skip: none; }
 /* Tables, as Docs draws them: 1pt black borders, 5pt cell padding, full text width */
 .ss-doc .tableWrapper { margin: 0; overflow: visible; }
 .ss-doc table.ss-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }

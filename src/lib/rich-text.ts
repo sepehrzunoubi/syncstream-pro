@@ -1040,17 +1040,17 @@ export function resolveTextStyle(run: RunStyle): DocsRequest {
   const style: DocsRequest = {
     bold: !!run.b,
     italic: !!run.i,
-    underline: !!run.u || !!run.link,
+    underline: !!run.u,
     strikethrough: !!run.s,
     baselineOffset: run.sup ? "SUPERSCRIPT" : run.sub ? "SUBSCRIPT" : "NONE",
     smallCaps: !!run.sc,
   };
   // Fields listed in the mask but left unset are reset to their defaults: text with no size or
   // font of its own takes the document's named style, as text typed in Docs does
+  // A link is set with its own look: Docs only colours and underlines a link set without them
   if (run.size) style.fontSize = { magnitude: run.size, unit: "PT" };
   if (run.font) style.weightedFontFamily = { fontFamily: run.font, weight: run.w ?? 400 };
-  const color = run.color ?? (run.link ? LINK_COLOR : undefined);
-  if (color) style.foregroundColor = rgb(color);
+  if (run.color) style.foregroundColor = rgb(run.color);
   if (run.bg) style.backgroundColor = rgb(run.bg);
   if (run.link) style.link = { url: run.link };
   return style;

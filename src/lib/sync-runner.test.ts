@@ -459,24 +459,33 @@ test("lists: bullets start once, items join the same list across writes, and pla
   assert.equal(job.docList ?? null, null);
 });
 
-test("images are inserted inline in the same batch, and links get Docs' link colour", async () => {
+test("images are inserted inline in the same batch, and links are set with the look they have", async () => {
   const { h, batches } = await formattedHarness(
     [{ type: "paragraph", content: [
       { type: "text", text: "See " },
       { type: "image", attrs: { src: "https://example.com/a.png", width: 200, height: 100 } },
-      { type: "text", text: " site", marks: [{ type: "link", attrs: { href: "example.com" } }] },
+      // A link as the editor makes one (Docs' blue, underlined), then one copied plain
+      { type: "text", text: " site", marks: [{ type: "link", attrs: { href: "example.com" } }, { type: "textStyle", attrs: { color: "#1155cc" } }, { type: "underline" }] },
+      { type: "text", text: " plain", marks: [{ type: "link", attrs: { href: "example.org" } }] },
     ] }],
     [
       { kind: "insert", text: "See \uFFFC", delayMs: 0, activity: "Typing" },
-      { kind: "insert", text: " site", delayMs: 400, activity: "Typing" },
+      { kind: "insert", text: " site plain", delayMs: 400, activity: "Typing" },
     ]
   );
-  assert.equal(h.doc.text, "See \uFFFC site");
-  const linkReq = batches[1].reqs.find((r) => r.updateTextStyle && (r.updateTextStyle.textStyle as { link?: unknown }).link)!;
-  const ts = linkReq.updateTextStyle.textStyle as { link: { url: string }; underline: boolean; foregroundColor: { color: { rgbColor: { blue: number } } } };
-  assert.equal(ts.link.url, "https://example.com");
-  assert.equal(ts.underline, true);
-  assert.ok(ts.foregroundColor.color.rgbColor.blue > 0.7);
+  assert.equal(h.doc.text, "See \uFFFC site plain");
+  type Look = { link: { url: string }; underline: boolean; foregroundColor?: { color: { rgbColor: { blue: number } } } };
+  const links = batches[1].reqs.filter((r) => r.updateTextStyle && (r.updateTextStyle.textStyle as { link?: unknown }).link).map((r) => r.updateTextStyle as unknown as { textStyle: Look; fields: string });
+  assert.equal(links.length, 2);
+  const [site, plain] = links;
+  assert.equal(site.textStyle.link.url, "https://example.com");
+  assert.equal(site.textStyle.underline, true);
+  assert.ok(site.textStyle.foregroundColor!.color.rgbColor.blue > 0.7);
+  // Docs colours and underlines a link only when the request leaves those fields out: they are always in it
+  assert.equal(plain.textStyle.link.url, "https://example.org");
+  assert.equal(plain.textStyle.underline, false);
+  assert.equal(plain.textStyle.foregroundColor, undefined);
+  for (const l of links) assert.ok(/(^|,)underline(,|$)/.test(l.fields) && /(^|,)foregroundColor(,|$)/.test(l.fields));
 });
 
 test("image batches carry insertInlineImage with the image address and size", async () => {

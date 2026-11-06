@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as PO from "@radix-ui/react-popover";
 import type { Editor } from "@tiptap/react";
-import { normalizeLink } from "@/lib/rich-text";
+import { LINK_COLOR, normalizeLink } from "@/lib/rich-text";
 import { Icon } from "./icon";
 
 /** Insert or edit a link, like Docs' link box. Opens from the toolbar or Ctrl+K. */
@@ -37,7 +37,9 @@ export function LinkPopover({ editor, disabled, active }: { editor: Editor | nul
     if (!url) { setError("Enter a web address (https://…) or an email link (mailto:…)"); return; }
     if (needsText) {
       const label = text.trim() || url;
-      editor.chain().focus().insertContent({ type: "text", text: label, marks: [{ type: "link", attrs: { href: url } }] }).run();
+      // A new link looks as Docs makes one: in its link colour, underlined, in the text's font and size
+      const ts = editor.getAttributes("textStyle");
+      editor.chain().focus().insertContent({ type: "text", text: label, marks: [{ type: "link", attrs: { href: url } }, { type: "textStyle", attrs: { ...ts, color: LINK_COLOR } }, { type: "underline" }] }).run();
     } else {
       editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
     }

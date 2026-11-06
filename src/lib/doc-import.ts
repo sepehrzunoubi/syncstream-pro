@@ -297,7 +297,8 @@ export function importDoc(doc: Doc, opts: { defaults?: DocDefaults } = {}): Impo
         unsupported = true;
       } else if (pe.richLink?.richLinkProperties) {
         const rl = pe.richLink.richLinkProperties;
-        content.push(textNode(rl.title || rl.uri || "link", rl.uri ? [{ type: "link", attrs: { href: rl.uri } }] : []));
+        // Shown as a link looks (the editor has no chips): Docs' link colour, underlined
+        content.push(textNode(rl.title || rl.uri || "link", rl.uri ? [{ type: "link", attrs: { href: rl.uri } }, { type: "textStyle", attrs: { fontFamily: null, fontSize: null, color: "#1155cc" } }, { type: "underline" }] : []));
         hasContent = true;
         unsupported = true;
       } else if (pe.pageBreak) {
