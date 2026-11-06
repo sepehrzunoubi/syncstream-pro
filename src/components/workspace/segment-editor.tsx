@@ -35,7 +35,7 @@ export function SegmentView({ editor, live, className }: { editor: Editor | null
   const html = useEditorState({ editor, selector: ({ editor: e }) => (e ? e.getHTML() : "") }) ?? "";
   if (!editor) return null;
   if (live) return <div className={className}><EditorContent editor={editor} /></div>;
-  return <div className={className} aria-hidden="true"><div className="ss-doc ss-segment-doc" dangerouslySetInnerHTML={{ __html: html }} /></div>;
+  return <div className={`${className} ss-static-copy`} aria-hidden="true"><div className="ss-doc ss-segment-doc" dangerouslySetInnerHTML={{ __html: html }} /></div>;
 }
 
 /** One footnote: its number and an editor for its text */

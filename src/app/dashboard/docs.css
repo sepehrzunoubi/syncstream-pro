@@ -498,6 +498,8 @@
 .ss-hf-zone { position: absolute; left: 0; right: 0; z-index: 1; pointer-events: auto; }
 .ss-hf { position: absolute; z-index: 2; pointer-events: auto; min-height: 20px; cursor: text; }
 .ss-hf-body .ss-segment-doc { min-height: 0; padding: 0; }
+/* The header and footer drawn on the other pages: a picture of the live one, not text to select (as in Docs, and a copy of it would name the page's own font faces, see page-copy.ts) */
+.ss-static-copy, .ss-static-copy .ss-doc { user-select: none; -webkit-user-select: none; }
 .ss-hf-editing { outline: 1px dashed #c4c7c5; outline-offset: 4px; }
 .ss-hf:not(.ss-hf-editing) .ss-segment-doc { color: #5f6368; }
 .ss-hf .ProseMirror { outline: none; }

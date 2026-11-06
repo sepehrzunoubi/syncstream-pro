@@ -27,6 +27,7 @@ import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { countWords } from "@/lib/format";
 import { bodyEditorProps, bodyExtensions, DOCS_RULES, useEditorDebugHook, viewerEditorProps, viewerExtensions, type ImageFilesHandler } from "./editor-config";
+import { usePageCopy } from "./page-copy";
 import { useDocRefs, type DocContent } from "./doc-state";
 import { Snackbar, useSnack } from "./snack";
 import { useDocsList } from "./use-docs-list";
@@ -116,6 +117,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
   const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
   useEditorDebugHook(editor);
+  usePageCopy(editor);
   // Any font the document or a paste uses is loaded, so the page draws it as Docs will
   const defaultFonts = docContent?.status === "ready" ? docContent.defaults : undefined;
   useEffect(() => {
