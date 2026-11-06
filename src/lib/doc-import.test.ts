@@ -54,6 +54,19 @@ test("imports paragraphs as editable nodes, numbering questions across the answe
   assert.deepEqual(out.nodes[0].content, [{ type: "text", text: "Logistics:", marks: [{ type: "underline" }] }]);
 });
 
+test("a checklist is a level with no glyph of its own; a list the document doesn't describe is bulleted, not a checklist", () => {
+  const checks = { c: { listProperties: { nestingLevels: [{ glyphType: "GLYPH_TYPE_UNSPECIFIED" }, {}] } } };
+  const out = importDoc(makeDoc([
+    { text: "To do", bullet: { listId: "c" } },
+    { text: "Nested to do", bullet: { listId: "c", nestingLevel: 1 } },
+    { text: "Undescribed", bullet: { listId: "missing" } },
+    { text: "Undescribed level", bullet: { listId: "b", nestingLevel: 2 } },
+  ], { lists: { ...lists, ...checks } }));
+  assert.deepEqual(out.nodes.map((n) => n.attrs?.list), ["check", "check", "bullet", "bullet"]);
+  // With no lists at all (a tab read without its lists), every bullet is still a bullet
+  assert.deepEqual(importDoc(makeDoc([{ text: "One", bullet: { listId: "x" } }, { text: "Two", bullet: { listId: "x", nestingLevel: 1 } }])).nodes.map((n) => n.attrs?.list), ["bullet", "bullet"]);
+});
+
 test("an empty document imports as empty", () => {
   const out = importDoc(makeDoc([{ text: "" }, { text: "  " }]));
   assert.equal(out.empty, true);

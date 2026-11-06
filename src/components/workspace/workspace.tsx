@@ -7,7 +7,7 @@ import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
-import { Header, type HeaderUser } from "./header";
+import { docsUrl, Header, type HeaderUser } from "./header";
 import { WorkspaceTabs } from "./workspace-tabs";
 import { SyncRail } from "./sync-rail";
 import { SyncPanel } from "./sync-panel";
@@ -16,6 +16,7 @@ import { PagedSurface } from "./paged-surface";
 import { fontMetrics, installLineMetrics } from "./line-metrics";
 import { FindBar } from "./find-bar";
 import { Outline } from "./outline";
+import { DocTabsPanel } from "./doc-tabs-panel";
 import { ContextMenu } from "./context-menu";
 import { pageSize } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
@@ -45,7 +46,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [snack, setSnack] = useSnack();
   const [scopeError, setScopeError] = useState(false);
   // Documents
-  const { docs, selectedDocId, setSelectedDocId, isCreatingDoc, renameDoc, fetchDocs, createDoc } = useDocsList({ setSnack, setScopeError });
+  const { docs, selectedDocId, setSelectedDocId, selectedTabId, setSelectedTabId, isCreatingDoc, renameDoc, fetchDocs, createDoc } = useDocsList({ setSnack, setScopeError });
   const [docJSON, setDocJSON] = useState<JSONContent | null>(null);
   const dialogs = useDialogs();
   const [editingHf, setEditingHf] = useState<"header" | "footer" | null>(null);
@@ -114,9 +115,9 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor });
   const page = usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent });
   const { zoom, setZoom, canvasRef, pageless, pageSetup, geometry, textWidthPt, scale, effectivePageless } = page;
-  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON, setSnack });
+  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON, setSnack });
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
-  const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
+  const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
   useEditorDebugHook(editor);
   usePageCopy(focusedJob ? viewer : segmentEditor ?? editor);
   // Any font the document or a paste uses is loaded, so the page draws it as Docs will
@@ -206,6 +207,14 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   const rail = (
     <div className="flex h-full flex-col">
+    {!focusedJob && docContent?.tabs && (
+      <DocTabsPanel
+        tabs={docContent.tabs}
+        current={docContent.tabId}
+        disabled={docContent.status === "loading"}
+        onSelect={(id) => { setSelectedTabId(id); if (!wide) setRailOpen(false); }}
+      />
+    )}
     {dialogs.outlineOpen && !focusedJob && <Outline editor={editor} />}
     <SyncRail
       jobs={jobs}
@@ -218,6 +227,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   );
 
   const docUrlId = focusedJob ? focusedJob.documentId : selectedDocId;
+  // The tab, in a document with more than one: the sync's, or the one shown
+  const shownTabInfo = docContent?.docId === selectedDocId && (docContent.tabs?.length ?? 0) > 1 ? docContent.tabs!.find((t) => t.id === docContent.tabId) : undefined;
+  const headerTab = focusedJob
+    ? (focusedJob.tabId && focusedJob.tabTitle ? { id: focusedJob.tabId, title: focusedJob.tabTitle } : null)
+    : shownTabInfo ? { id: shownTabInfo.id, title: shownTabInfo.title } : null;
   const refreshDocs = () => {
     fetchDocs();
     if (selectedDocId && !focusedJob && editor && docContent?.status === "ready") {
@@ -252,6 +266,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         isCreatingDoc={isCreatingDoc}
         jobDocName={focusedJob?.documentName}
         jobDocId={focusedJob?.documentId}
+        tab={headerTab}
         subtitle={subtitle}
         primary={primary}
         onToggleRail={() => setRailOpen((o) => !o)}
@@ -271,7 +286,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onCreateDoc={createDoc}
             onRefreshDocs={refreshDocs}
             onOpenStyle={() => router.push("/dashboard/style")}
-            docUrl={docUrlId ? `https://docs.google.com/document/d/${docUrlId}/edit` : null}
+            docUrl={docUrlId ? docsUrl(docUrlId, headerTab?.id) : null}
             onSignOut={onSignOut}
             onPageSetup={() => dialogs.setPageSetupOpen(true)}
             onCustomSpacing={() => dialogs.setSpacingOpen(true)}

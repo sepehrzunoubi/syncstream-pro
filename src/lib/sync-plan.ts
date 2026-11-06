@@ -100,6 +100,8 @@ export interface SyncRecordsInput {
   userId: string;
   documentId: string;
   documentName: string;
+  /** The tab typed into */
+  tab?: { id: string; title: string } | null;
   plan: DripPlan;
   /** Formatting of the whole source (plans without segments) */
   format: RichFormat;
@@ -136,6 +138,7 @@ export function buildSyncRecords(input: SyncRecordsInput): { plan: SyncPlan; job
     userId: input.userId,
     documentId: input.documentId,
     documentName: input.documentName,
+    ...(input.tab ? { tabId: input.tab.id, ...(input.tab.title ? { tabTitle: input.tab.title } : {}) } : {}),
     status: startInMinutes > 0 ? "scheduled" : "pending",
     createdAt: now,
     startAt,

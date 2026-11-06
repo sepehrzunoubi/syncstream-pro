@@ -21,7 +21,7 @@ import type { BreaksMode } from "./sync-panel";
 import { postJson } from "./api";
 import { markAllAdded } from "./doc-json";
 import { writeAdditions } from "./storage";
-import type { Doc, DocContent, DocRefs, Setter, Source } from "./doc-state";
+import { shownTab, type Doc, type DocContent, type DocRefs, type Setter, type Source } from "./doc-state";
 import { isUploadingImage } from "./pasted-images";
 
 function useNow(active: boolean, intervalMs = 1000): number {
@@ -60,7 +60,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
   setComposing: Setter<boolean>;
   docs: Doc[];
   selectedDocId: string;
-  setSelectedDocId: Setter<string>;
+  setSelectedDocId: (id: string | ((cur: string) => string), tabId?: string) => void;
   docContent: DocContent | null;
   docBusy: boolean;
   docJSON: JSONContent | null;
@@ -185,10 +185,13 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
         source = { text: current.text, format: current.format };
       }
       const doc = docs.find((d) => d.id === selectedDocId);
+      // The tab shown, or (the document couldn't be read) the one asked for
+      const tabId = (docContent?.docId === selectedDocId ? docContent.tabId : null) || refs.tabRef.current || undefined;
       const { ok, status, data } = await postJson<{ job: PublicJob; code?: string }>("/api/sync/start", {
         ...payload,
         documentId: selectedDocId,
         documentName: doc?.name,
+        tabId,
         targetMinutes: durationMinutes,
         breaks: breaksMode === "auto" ? "auto" : breaksMode === "none" ? [] : customBreaks,
         typoFrequency,
@@ -204,7 +207,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       setComposing(false);
       // The additions now belong to the sync; the editor shows the document without them
       if (inDoc) {
-        writeAdditions(selectedDocId, null);
+        writeAdditions(selectedDocId, null, shownTab(docContent));
         loadDocument(editor, baseRef.current!, true);
         contentStale.current = true;
       } else {
@@ -219,7 +222,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     } finally {
       setBusy(false);
     }
-  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
+  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, refs.tabRef, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
 
   const jobAction = useCallback(async (path: "pause" | "resume" | "cancel", jobId: string) => {
     if (busy) return;
@@ -248,8 +251,8 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
   const editAsNew = useCallback(async (job: PublicJob) => {
     const src = sources[job.id];
     setComposing(true);
-    if (!src || !editor) { setSelectedDocId(job.documentId); return; }
-    const sameDoc = job.documentId === selectedDocId && docContent?.status === "ready" && baseRef.current;
+    if (!src || !editor) { setSelectedDocId(job.documentId, job.tabId ?? ""); return; }
+    const sameDoc = job.documentId === selectedDocId && (!job.tabId || job.tabId === docContent?.tabId) && docContent?.status === "ready" && baseRef.current;
     if (sameDoc && src.context?.doc) {
       // Put the additions back where they were
       loadDocument(editor, rebase(baseRef.current!, src.context.doc), true);
@@ -260,8 +263,8 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       else {
         // Opening the other document adds this text at its end
         legacyTextRef.current = extra;
-        writeAdditions(job.documentId, null);
-        setSelectedDocId(job.documentId);
+        writeAdditions(job.documentId, null, { id: job.tabId ?? null, first: !!job.tabId && docContent?.docId === job.documentId && docContent.tabs?.[0]?.id === job.tabId });
+        setSelectedDocId(job.documentId, job.tabId ?? "");
       }
     }
     setDocJSON(editor.getJSON());

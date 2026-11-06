@@ -12,7 +12,7 @@ import { segmentEdits } from "@/lib/doc-model";
 import { useSegmentEditor } from "./segment-editor";
 import type { HeaderFooters } from "./paged-surface";
 import { postJson } from "./api";
-import type { DocRefs, Setter } from "./doc-state";
+import { tabFields, type DocRefs, type Setter } from "./doc-state";
 
 /** A header or footer: a Docs segment with the content as last saved */
 export type Segment = { id: string; base: EditorNode[] };
@@ -46,7 +46,7 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     const target = doc as EditorNode;
     const { requests } = segmentEdits({ type: "doc", content: seg.base }, target, seg.id);
     if (!requests.length) return;
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
     if (ok) {
       if (data.revisionId) revisionRef.current = data.revisionId;
       setSegments((s) => (s[key] && s[key]!.id === seg.id ? { ...s, [key]: { id: seg.id, base: target.content ?? [] } } : s));
@@ -67,7 +67,7 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     if (!base || content?.status !== "ready") return;
     const { requests } = segmentEdits({ type: "doc", content: base }, doc as EditorNode, id);
     if (!requests.length) return;
-    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
     if (ok) {
       if (data.revisionId) revisionRef.current = data.revisionId;
       setFootnotes((f) => (f[id] ? { ...f, [id]: (doc as EditorNode).content ?? [] } : f));
@@ -91,7 +91,7 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
     const content = docContentRef.current;
     if (content?.status !== "ready") { setSnack("Open a Google Doc first"); return null; }
     await saveNow();
-    const { ok, status, data } = await postJson<{ revisionId: string; replies?: Record<string, unknown>[] }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const { ok, status, data } = await postJson<{ revisionId: string; replies?: Record<string, unknown>[] }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
     if (!ok) {
       if (status === 401) setScopeError(true);
       setSnack(data.error || "Couldn't change the document");

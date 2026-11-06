@@ -22,11 +22,12 @@ import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan
 import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
 import { reportError } from "./monitor";
 
+/** The document's Docs calls, each in the job's tab (`tabId`: none for a document without tabs) */
 export interface DocsApi {
-  snapshot(accessToken: string, documentId: string): Promise<DocSnapshot>;
+  snapshot(accessToken: string, documentId: string, tabId?: string | null): Promise<DocSnapshot>;
   /** One atomic batchUpdate; refused by Google when the document moved past `requiredRevisionId` */
-  batch(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string): Promise<unknown>;
-  deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string): Promise<unknown>;
+  batch(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string, tabId?: string | null): Promise<unknown>;
+  deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string, tabId?: string | null): Promise<unknown>;
 }
 
 /** HTTP status of a Google API error */
@@ -275,7 +276,7 @@ export async function runJobWindow(
     }
     if (status === 404) {
       merged.status = "error";
-      merged.error = "The document was deleted or is no longer shared with you.";
+      merged.error = /tab of the document is gone/.test(message) ? `The tab ${merged.tabTitle ? `"${merged.tabTitle}" ` : ""}this sync types into was deleted.` : "The document was deleted or is no longer shared with you.";
       merged.activity = "Error";
       merged.finishedAt = now();
       merged.accessToken = "";
@@ -558,7 +559,7 @@ class Context {
 
   private async writeOnce(text: string, step: number, isSource: boolean): Promise<void> {
     const snapTimer = startTimer(this.now);
-    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, this.job.tabId));
     const snapshotMs = snapTimer();
     const marker = this.job.inFlight;
     const markerMatches =
@@ -613,7 +614,7 @@ class Context {
         }
       }
       const batchTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined));
+      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined, this.job.tabId));
       log.info("sync.write", { ...this.tag, action: this.job.currentAction, step, chars: text.length, requests: requests.length, docsMs: batchTimer(), snapshotMs, opened: open.length > 0, inPlace: !!place, charsSent: this.job.charsSent + (isSource ? text.length : 0), totalChars: this.job.totalChars });
       if (isSource && place?.repair) place.repaired();
       this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
@@ -685,7 +686,7 @@ class Context {
   }
 
   private async eraseOnce(wrong: string): Promise<void> {
-    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId));
+    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, this.job.tabId));
     const revision = snap.revisionId || undefined;
     const place = this.place();
     if (place) {
@@ -699,7 +700,7 @@ class Context {
         return;
       }
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end, revision));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end, revision, this.job.tabId));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: true });
       place.state.cursor = end - wrong.length;
       return;
@@ -709,7 +710,7 @@ class Context {
     const start = Math.max(1, end - wrong.length);
     if (start < end) {
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end, revision));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end, revision, this.job.tabId));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: false });
     }
   }

@@ -17,6 +17,8 @@ export interface Draft {
   /** Text typed with no document selected (all of it is to be typed) */
   doc?: JSONContent;
   selectedDocId?: string;
+  /** The tab of it shown (absent: its first) */
+  selectedTabId?: string;
   durationMinutes?: number | null;
   breaksMode?: BreaksMode;
   customBreaks?: number[];
@@ -41,21 +43,30 @@ export function writePageDefault(setup: PageSetup, pageless: boolean) {
   try { localStorage.setItem(PAGE_DEFAULT_KEY, JSON.stringify({ setup, pageless })); } catch { /* storage blocked */ }
 }
 
-/** Additions made to a document, kept per document until they are synced */
+/**
+ * Additions made to a document, kept per document tab until they are synced. A document without
+ * tabs (and, from before tabs, its first tab's) are kept under the document's id alone.
+ */
 const ADDITIONS_PREFIX = "syncstream_additions_";
 export interface SavedAdditions { revisionId: string; doc: EditorNode }
+/** Which tab: its id, and whether it is the document's first */
+export interface TabRef { id: string | null | undefined; first?: boolean }
 
-export function readAdditions(docId: string): SavedAdditions | null {
+const additionsKey = (docId: string, tabId?: string | null) => ADDITIONS_PREFIX + docId + (tabId ? `#${tabId}` : "");
+
+export function readAdditions(docId: string, tab?: TabRef): SavedAdditions | null {
   try {
-    const raw = localStorage.getItem(ADDITIONS_PREFIX + docId);
+    const raw = localStorage.getItem(additionsKey(docId, tab?.id)) ?? (tab?.id && tab.first ? localStorage.getItem(additionsKey(docId)) : null);
     return raw ? (JSON.parse(raw) as SavedAdditions) : null;
   } catch { return null; }
 }
 
-export function writeAdditions(docId: string, value: SavedAdditions | null) {
+export function writeAdditions(docId: string, value: SavedAdditions | null, tab?: TabRef) {
   try {
-    if (value) localStorage.setItem(ADDITIONS_PREFIX + docId, JSON.stringify(value));
-    else localStorage.removeItem(ADDITIONS_PREFIX + docId);
+    if (value) localStorage.setItem(additionsKey(docId, tab?.id), JSON.stringify(value));
+    else localStorage.removeItem(additionsKey(docId, tab?.id));
+    // The first tab's from before tabs are now under its own id
+    if (tab?.id && tab.first) localStorage.removeItem(additionsKey(docId));
   } catch { /* storage full or blocked */ }
 }
 

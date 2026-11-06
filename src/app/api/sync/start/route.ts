@@ -8,7 +8,8 @@ import {
 } from "@/lib/drip-engine";
 import { createJobId, getStore, hasRedis, toPublicJob, type SpotState, type SyncContext } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
-import { getDocument, snapshotOf } from "@/lib/google";
+import { getDocument, snapshotOf, TabGoneError } from "@/lib/google";
+import { isTabId } from "@/lib/doc-tabs";
 import { applyAuthCookies, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { normalizeText, parseFormat } from "@/lib/rich-text";
 import { buildSyncRecords, parseSegments, segmentBoundaries, spotsFor, type SegmentInput } from "@/lib/sync-plan";
@@ -27,6 +28,8 @@ interface StartBody {
   format?: unknown;
   documentId?: unknown;
   documentName?: unknown;
+  /** The tab to type into (none: the first) */
+  tabId?: unknown;
   targetMinutes?: unknown;
   breaks?: unknown;
   typoFrequency?: unknown;
@@ -81,6 +84,8 @@ export const POST = withRoute(async (req: NextRequest) => {
   const text = body.format != null ? rawText : normalizeText(rawText);
   const documentId = typeof body.documentId === "string" ? body.documentId : "";
   const documentName = typeof body.documentName === "string" && body.documentName.trim() ? body.documentName.trim().slice(0, 200) : "Untitled document";
+  if (body.tabId != null && !isTabId(body.tabId)) return NextResponse.json({ error: "Invalid tab" }, { status: 400 });
+  const tabId = typeof body.tabId === "string" && body.tabId ? body.tabId : null;
   if (!text.trim() || !documentId) {
     return NextResponse.json({ error: "Missing text or documentId" }, { status: 400 });
   }
@@ -139,8 +144,13 @@ export const POST = withRoute(async (req: NextRequest) => {
   // Read the target doc: baseline word count, proof we can open it, and where additions go
   let baselineWordCount = 0;
   let spots: SpotState[] | undefined;
+  // The tab it types into, kept by id: it stays that tab's if the tabs are reordered
+  let tab: { id: string; title: string } | null = null;
   try {
-    const doc = await withGoogleToken(user, (t) => getDocument(t, documentId));
+    const open = await withGoogleToken(user, (t) => getDocument(t, documentId, tabId));
+    const doc = open.doc;
+    // (named only in a document with more than one, where the running view shows it)
+    if (open.tabId) tab = { id: open.tabId, title: open.tabs.length > 1 ? open.tabs.find((x) => x.id === open.tabId)?.title ?? "" : "" };
     const snap = snapshotOf(doc);
     baselineWordCount = snap.wordCount;
     if (segments) {
@@ -152,6 +162,9 @@ export const POST = withRoute(async (req: NextRequest) => {
       spots = found;
     }
   } catch (err) {
+    if (err instanceof TabGoneError) {
+      return NextResponse.json({ error: "That tab of the document is gone. SyncStream reloaded the document: pick a tab and start again.", code: "tab_gone" }, { status: 409 });
+    }
     const code = (err as { code?: number })?.code;
     if (code === 403 || code === 404) {
       return NextResponse.json(
@@ -162,6 +175,8 @@ export const POST = withRoute(async (req: NextRequest) => {
     // Typing inside a document needs its current text
     if (segments) return NextResponse.json({ error: "Couldn't read the document. Try again." }, { status: 502 });
   }
+  // Unread (appending at the end), it still types into the tab asked for
+  if (!tab && tabId) tab = { id: tabId, title: "" };
 
   let context: SyncContext | null = null;
   if (segments && body.context && typeof body.context === "object") {
@@ -178,6 +193,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     userId: user.userId,
     documentId,
     documentName,
+    tab,
     plan,
     format: parsedFormat.format,
     segments,

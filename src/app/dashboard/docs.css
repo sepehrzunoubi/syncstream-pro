@@ -894,6 +894,14 @@ tr.ss-page-gap { display: table-row; }
 .ss-outline-item { display: block; width: 100%; padding: 4px 8px; border-radius: 9999px; font-size: 13px; line-height: 18px; text-align: left; color: var(--ss-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ss-outline li[data-level="0"] .ss-outline-item, .ss-outline li[data-level="1"] .ss-outline-item { font-weight: 500; color: var(--ss-text); }
 .ss-outline-item:hover { background: var(--ss-hover); }
+/* Document tabs in the left panel, as Docs lists them */
+.ss-doc-tabs { flex: none; max-height: 40%; overflow-y: auto; padding: 0 12px 8px; }
+.ss-doc-tabs ul { list-style: none; margin: 0; padding: 0; }
+.ss-doc-tab { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 12px; border-radius: 9999px; font-size: 14px; text-align: left; color: var(--ss-text-2); }
+.ss-doc-tab:hover:not(:disabled) { background: var(--ss-hover); }
+.ss-doc-tab[aria-current="page"] { background: var(--ss-pressed); color: var(--ss-on-pressed); font-weight: 500; }
+.ss-doc-tab:disabled { opacity: 0.5; cursor: default; }
+.ss-doc-tab-emoji { width: 18px; flex: none; text-align: center; font-size: 15px; line-height: 1; }
 /* Right-click menu and shortcuts */
 .ss-context-menu { min-width: 240px; padding: 8px 0; }
 .ss-context-menu .ss-menu-item { width: 100%; }

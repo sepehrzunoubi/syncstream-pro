@@ -8,6 +8,7 @@ import { test as base, expect, type Page, type Route } from "@playwright/test";
 import type { Editor } from "@tiptap/core";
 import type { ImportedDoc } from "../src/lib/doc-import";
 import { fixtureContent, fixtureDocument, FIXTURE_DOC_ID, FIXTURE_DOC_NAME, type Fixture } from "./fixtures/google-doc";
+import type { DocTab } from "../src/lib/doc-tabs";
 
 declare global {
   interface Window {
@@ -18,12 +19,14 @@ declare global {
 export { expect };
 /** The body editor (headers, footers and footnotes are `.ss-doc` editors of their own) */
 export const DOC = '.ss-doc[aria-label="Text to sync"]';
-export { CLOSING_TEXT, FIXTURE_DOC_ID, FIXTURE_DOC_NAME, LONG_BODY, plainParagraphs } from "./fixtures/google-doc";
+export { CLOSING_TEXT, FIXTURE_DOC_ID, FIXTURE_DOC_NAME, LONG_BODY, plainParagraphs, tabContent } from "./fixtures/google-doc";
 
 /** One batchUpdate the editor sent to `/api/docs/edit` */
 export interface EditBody {
   documentId: string;
   revisionId?: string;
+  tabId?: string;
+  firstTab?: boolean;
   requests: Record<string, Record<string, unknown>>[];
 }
 
@@ -31,6 +34,7 @@ export interface EditBody {
 export interface StartBody {
   documentId: string;
   documentName?: string;
+  tabId?: string;
   revisionId?: string;
   segments?: { at: number; mode: "inline" | "before"; text: string; format: unknown }[];
   text?: string;
@@ -45,6 +49,7 @@ export interface StartBody {
 interface Draft {
   doc?: { type: "doc"; content: Record<string, unknown>[] };
   selectedDocId?: string | null;
+  selectedTabId?: string;
   durationMinutes?: number | null;
   breaksMode?: "auto" | "none" | "custom";
   customBreaks?: number[];
@@ -78,6 +83,14 @@ export class FakeGoogle {
    */
   contentMode: "once" | "always" = "once";
   contentReads = 0;
+  /**
+   * The document's tabs, when it has them: the first is `content`, the others' content is in
+   * `tabContents`. Each content read records the tab asked for (null: none).
+   */
+  tabs: DocTab[] | null = null;
+  tabContents: Record<string, ImportedDoc> = {};
+  contentTabs: (string | null)[] = [];
+  pageTabs: (string | null)[] = [];
   edits: EditBody[] = [];
   renames: { documentId: string; name: string }[] = [];
   starts: StartBody[] = [];
@@ -126,12 +139,18 @@ export class FakeGoogle {
           return json(route, { docs: this.docs });
         case "/api/docs/content": {
           this.contentReads += 1;
+          const asked = url.searchParams.get("tab");
+          this.contentTabs.push(asked);
           if (this.contentMode === "once" && this.contentReads > 1) return json(route, { error: "Couldn't load this document" }, 502);
-          return json(route, { ...this.content, revisionId: this.revision });
+          if (!this.tabs) return json(route, { ...this.content, revisionId: this.revision });
+          const tab = this.tabs.find((t) => t.id === asked) ?? this.tabs[0];
+          const content = tab === this.tabs[0] ? this.content : this.tabContents[tab.id];
+          return json(route, { ...content, revisionId: this.revision, tabs: this.tabs, tabId: tab.id, ...(asked && tab.id !== asked ? { tabGone: true } : {}) });
         }
         case "/api/docs/revision":
           return json(route, { revisionId: this.revision });
         case "/api/docs/pages":
+          this.pageTabs.push(url.searchParams.get("tab"));
           return json(route, { pages: this.pages });
         case "/api/docs/edit": {
           const b = body() as unknown as EditBody;
@@ -162,6 +181,7 @@ export class FakeGoogle {
             userId: this.user.id,
             documentId: b.documentId,
             documentName: b.documentName ?? "Untitled document",
+            ...(b.tabId ? { tabId: b.tabId, tabTitle: this.tabs?.find((t) => t.id === b.tabId)?.title } : {}),
             status: "running",
             createdAt: now,
             startAt: now,

@@ -9,7 +9,7 @@ import type { EditorNode } from "@/lib/rich-text";
 import { adoptStructure, directEdits, groupColumns, rebase, signature } from "@/lib/doc-model";
 import { loadDocument } from "./doc-sync";
 import { postJson } from "./api";
-import type { DocContent, DocRefs, Setter } from "./doc-state";
+import { tabFields, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
 export type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -37,10 +37,12 @@ export function useAutosave({ editor, refs, docJSON, docContent, docBusy, setDoc
   /** The document as Google has it now, or null when it can't be read */
   const fetchFresh = useCallback(async (docId: string): Promise<EditorNode | null> => {
     try {
-      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}`);
+      const tabId = docContentRef.current?.tabId ?? null;
+      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}${tabId ? `&tab=${encodeURIComponent(tabId)}` : ""}`);
       if (!res.ok) return null;
-      const data = (await res.json()) as { nodes?: EditorNode[]; revisionId?: string };
-      if (!Array.isArray(data.nodes) || docContentRef.current?.docId !== docId) return null;
+      const data = (await res.json()) as { nodes?: EditorNode[]; revisionId?: string; tabId?: string | null; tabGone?: boolean };
+      // Another tab's content (this one is gone, or another is shown now) is no copy of this one
+      if (!Array.isArray(data.nodes) || data.tabGone || docContentRef.current?.docId !== docId || (docContentRef.current.tabId ?? null) !== (data.tabId ?? null)) return null;
       if (data.revisionId) revisionRef.current = data.revisionId;
       return { type: "doc", content: groupColumns(data.nodes) };
     } catch { return null; }
@@ -73,7 +75,7 @@ export function useAutosave({ editor, refs, docJSON, docContent, docBusy, setDoc
     if (!requests.length) return true;
     const run = (async () => {
       setSaveState("saving");
-      const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+      const { ok, status, data } = await postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
       if (ok) {
         if (data.revisionId) revisionRef.current = data.revisionId;
         if (structural) {

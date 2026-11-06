@@ -5,6 +5,7 @@ import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
 import { EDIT_REQUESTS } from "@/lib/docs-requests";
+import { isTabId } from "@/lib/doc-tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   if (limited) return limited;
   const big = tooLarge(req, 4_000_000);
   if (big) return big;
-  let body: { documentId?: unknown; revisionId?: unknown; requests?: unknown };
+  let body: { documentId?: unknown; revisionId?: unknown; requests?: unknown; tabId?: unknown; firstTab?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -38,9 +39,12 @@ export const POST = withRoute(async (req: NextRequest) => {
     if (keys.length !== 1 || !EDIT_REQUESTS.has(keys[0])) return NextResponse.json({ error: "Unsupported edit" }, { status: 400 });
   }
   const revisionId = typeof body.revisionId === "string" && body.revisionId ? body.revisionId : undefined;
+  // The tab the edits are in (none: a document read without its tabs, or an older page)
+  if (body.tabId != null && !isTabId(body.tabId)) return NextResponse.json({ error: "Invalid tab" }, { status: 400 });
+  const tab = body.tabId ? { id: body.tabId as string, first: body.firstTab === true } : null;
   const done = startTimer();
   try {
-    const next = await withGoogleToken(user, (token) => editDocumentWithReplies(token, documentId, requests as object[], revisionId));
+    const next = await withGoogleToken(user, (token) => editDocumentWithReplies(token, documentId, requests as object[], revisionId, tab));
     log.info("docs.edit", { uid: uidTag(user.userId), requests: requests.length, ms: done() });
     return applyAuthCookies(NextResponse.json({ revisionId: next.revisionId, replies: next.replies }), user);
   } catch (error) {

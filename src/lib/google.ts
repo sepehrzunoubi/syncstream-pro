@@ -1,6 +1,7 @@
 import { google, type docs_v1 } from "googleapis";
 import { indexedText } from "./doc-import";
 import { log } from "./log";
+import { inTab, openTab, type OpenTab } from "./doc-tabs";
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -107,11 +108,22 @@ export interface DocSnapshot {
   revisionId: string;
 }
 
-/** The whole document, as documents.get returns it */
-export async function getDocument(accessToken: string, documentId: string): Promise<docs_v1.Schema$Document> {
+/** A tab that isn't in the document (any more): what a deleted tab reads as */
+export class TabGoneError extends Error {
+  code = 404;
+  constructor() { super("Requested entity was not found: that tab of the document is gone"); }
+}
+
+/**
+ * The document with all its tabs, and one of them (`tabId`'s, or the first) where a document
+ * without tabs has its content. Throws TabGoneError when that tab isn't there.
+ */
+export async function getDocument(accessToken: string, documentId: string, tabId?: string | null): Promise<OpenTab> {
   const docs = docsClient(accessToken);
-  const doc = await withRetry(() => docs.documents.get({ documentId }));
-  return doc.data;
+  const res = await withRetry(() => docs.documents.get({ documentId, includeTabsContent: true }));
+  const open = openTab(res.data, tabId);
+  if (!open) throw new TabGoneError();
+  return open;
 }
 
 /** Just the document's revision id: a cheap way to notice changes made in Google Docs */
@@ -124,8 +136,8 @@ export async function getRevisionId(accessToken: string, documentId: string): Pr
 }
 
 /** One documents.get that yields everything the runner needs about the target doc. */
-export async function getDocSnapshot(accessToken: string, documentId: string, tailChars = 400): Promise<DocSnapshot> {
-  return snapshotOf(await getDocument(accessToken, documentId), tailChars);
+export async function getDocSnapshot(accessToken: string, documentId: string, tabId?: string | null): Promise<DocSnapshot> {
+  return snapshotOf((await getDocument(accessToken, documentId, tabId)).doc);
 }
 
 export function snapshotOf(data: docs_v1.Schema$Document, tailChars = 400): DocSnapshot {
@@ -155,13 +167,13 @@ function docsClient(accessToken: string) {
   return google.docs({ version: "v1", auth: client, timeout: 20_000 });
 }
 
-export async function deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string) {
+export async function deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string, tabId?: string | null) {
   const docs = docsClient(accessToken);
   await withRetry(() =>
     docs.documents.batchUpdate({
       documentId,
       requestBody: {
-        requests: [{ deleteContentRange: { range: { startIndex, endIndex } } }],
+        requests: inTab([{ deleteContentRange: { range: { startIndex, endIndex } } }], tabId),
         ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}),
       },
     })
@@ -176,15 +188,18 @@ export async function editDocument(accessToken: string, documentId: string, requ
   return (await editDocumentWithReplies(accessToken, documentId, requests, revisionId)).revisionId;
 }
 
+/** Which tab edits go to: its id, and whether it is the document's first */
+export interface EditTab { id: string; first: boolean }
+
 /** As editDocument, with each request's reply (ids of created headers, footers and footnotes) */
-export async function editDocumentWithReplies(accessToken: string, documentId: string, requests: object[], revisionId?: string): Promise<{ revisionId: string; replies: Record<string, unknown>[] }> {
+export async function editDocumentWithReplies(accessToken: string, documentId: string, requests: object[], revisionId?: string, tab?: EditTab | null): Promise<{ revisionId: string; replies: Record<string, unknown>[] }> {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
   const docs = google.docs({ version: "v1", auth: client });
   const res = await withRetry(() =>
     docs.documents.batchUpdate({
       documentId,
-      requestBody: { requests, ...(revisionId ? { writeControl: { targetRevisionId: revisionId } } : {}) },
+      requestBody: { requests: inTab(requests, tab?.id, tab?.first), ...(revisionId ? { writeControl: { targetRevisionId: revisionId } } : {}) },
     })
   );
   return { revisionId: res.data.writeControl?.requiredRevisionId ?? "", replies: (res.data.replies ?? []) as Record<string, unknown>[] };
@@ -199,8 +214,21 @@ export async function renameDoc(accessToken: string, documentId: string, name: s
   return res.data.name ?? name;
 }
 
-/** The document as Google lays it out: Drive's PDF export */
-export async function exportPdf(accessToken: string, documentId: string): Promise<Uint8Array> {
+/**
+ * The document as Google lays it out: Drive's PDF export. One tab of it: Docs' own export, as
+ * File > Download does it (Drive's has no way to pick a tab)
+ */
+export async function exportPdf(accessToken: string, documentId: string, tabId?: string | null): Promise<Uint8Array> {
+  if (tabId) {
+    const url = `https://docs.google.com/document/d/${encodeURIComponent(documentId)}/export?format=pdf&tab=${encodeURIComponent(tabId)}`;
+    const res = await withRetry(async () => {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(30_000) });
+      if (!r.ok) throw Object.assign(new Error(`Docs export failed: HTTP ${r.status}`), { code: r.status });
+      if (!/pdf/i.test(r.headers.get("content-type") ?? "")) throw Object.assign(new Error("Docs export didn't give a PDF"), { code: 415 });
+      return r;
+    });
+    return new Uint8Array(await res.arrayBuffer());
+  }
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
   const drive = google.drive({ version: "v3", auth: client });
@@ -213,10 +241,10 @@ export async function exportPdf(accessToken: string, documentId: string): Promis
  * Google refuses the batch (400) when the document changed since that
  * revision was read, so indices computed from it are never applied stale.
  */
-export async function batchUpdate(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string) {
+export async function batchUpdate(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string, tabId?: string | null) {
   if (requests.length === 0) return;
   const docs = docsClient(accessToken);
-  await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests, ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}) } }));
+  await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests: inTab(requests, tabId), ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}) } }));
 }
 
 export async function insertAtIndex(

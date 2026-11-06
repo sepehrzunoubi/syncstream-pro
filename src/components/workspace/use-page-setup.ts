@@ -15,7 +15,7 @@ import { tokenPositions } from "./pagination";
 import { postJson } from "./api";
 import { writePageDefault } from "./storage";
 import { screenStack } from "./space-faces";
-import type { DocContent, DocRefs, Setter } from "./doc-state";
+import { shownTab, tabFields, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
 export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent }: {
   editor: Editor | null;
@@ -70,13 +70,14 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
   // the preview pins its page breaks there and only measures what comes after
   const pagesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pagesRevision = useRef("");
-  const pinGooglePages = useCallback(async (docId: string) => {
+  const pinGooglePages = useCallback(async (docId: string, tab: { id: string | null; first: boolean }) => {
     if (!editor) return;
     let res: Response;
-    try { res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}`); } catch { return; } // pins are optional
+    const which = tab.id ? `&tab=${encodeURIComponent(tab.id)}${tab.first ? "&first=1" : ""}` : "";
+    try { res = await fetch(`/api/docs/pages?id=${encodeURIComponent(docId)}${which}`); } catch { return; } // pins are optional
     if (!res.ok) return;
     const data = (await res.json().catch(() => ({}))) as { pages?: string[] };
-    if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId) return;
+    if (!Array.isArray(data.pages) || docContentRef.current?.docId !== docId || (docContentRef.current.tabId ?? null) !== tab.id) return;
     // The saved text, token by token, so each offset maps to a document position
     const positions = tokenPositions(editor.state.doc);
     const all = tokenize(editor.getJSON() as EditorNode);
@@ -93,10 +94,12 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
   }, [editor, docContentRef]);
   useEffect(() => {
     const content = docContent;
-    if (content?.status !== "ready" || !content.revisionId || content.revisionId === pagesRevision.current) return;
-    pagesRevision.current = content.revisionId;
+    // Each tab is paginated on its own
+    const key = `${content?.revisionId}#${content?.tabId ?? ""}`;
+    if (content?.status !== "ready" || !content.revisionId || key === pagesRevision.current) return;
+    pagesRevision.current = key;
     if (pagesTimer.current) clearTimeout(pagesTimer.current);
-    pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId); }, 1500);
+    pagesTimer.current = setTimeout(() => { void pinGooglePages(content.docId, shownTab(content)); }, 1500);
   }, [docContent, pinGooglePages]);
   useEffect(() => () => { if (pagesTimer.current) clearTimeout(pagesTimer.current); }, []);
   useEffect(() => { if (docContent?.status !== "ready") editor?.commands.setPinnedBreaks([]); }, [docContent?.status, editor]);
@@ -137,7 +140,7 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
     const content = docContentRef.current;
     if (content?.status !== "ready") return;
     await saveNow();
-    const send = (requests: Record<string, unknown>[]) => postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests });
+    const send = (requests: Record<string, unknown>[]) => postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
     if (setupChanged) {
       const { ok, status, data } = await send([documentStyleRequest(next)]);
       if (!ok) {

@@ -157,7 +157,8 @@ function hex(c: docs_v1.Schema$OptionalColor | undefined | null): string | undef
 function listInfo(lists: Doc["lists"], bullet: docs_v1.Schema$Bullet) {
   const levelIdx = bullet.nestingLevel ?? 0;
   const level = lists?.[bullet.listId ?? ""]?.listProperties?.nestingLevels?.[levelIdx];
-  const type: ListType = level?.glyphSymbol ? "bullet" : level?.glyphType && ORDERED.has(level.glyphType) ? "ordered" : level?.glyphType === "NONE" ? "bullet" : "check";
+  // A checklist is a level with no glyph of its own; a list the document doesn't describe is a plain bulleted one
+  const type: ListType = !level || level.glyphSymbol ? "bullet" : level.glyphType && ORDERED.has(level.glyphType) ? "ordered" : level.glyphType === "NONE" ? "bullet" : "check";
   return {
     type,
     level,
