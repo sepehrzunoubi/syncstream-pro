@@ -403,3 +403,40 @@ test("a list item indented its own way keeps its indents through the format, and
   // And the editor shows them
   assert.deepEqual(richToEditorJSON("Item", { v: 1, paragraphs: [item], runs: [{ len: 4 }] }).content?.[0].attrs?.box, { start: 54, marker: -18, above: null, below: null });
 });
+
+test("a list that can only start at level 0 still puts each item's text where its level does", async () => {
+  const { bulletRequests } = await import("./rich-text");
+  const indents = (reqs: Record<string, unknown>[]) => reqs.slice(reqs.findIndex((r) => r.createParagraphBullets) + 1).map((r) => {
+    const u = r.updateParagraphStyle as { range: { startIndex: number }; paragraphStyle: { indentStart: { magnitude: number }; indentFirstLine: { magnitude: number } } };
+    return [u.range.startIndex, u.paragraphStyle.indentStart.magnitude, u.paragraphStyle.indentFirstLine.magnitude];
+  });
+  // On its own, an item lands at level 0 whatever its tabs: a level-2 item is indented as level 2 is
+  const solo = bulletRequests([{ start: 1, end: 9, level: 2 }], "BULLET_DISC_CIRCLE_SQUARE");
+  assert.equal(solo.filter((r) => r.insertText).length, 0);
+  assert.deepEqual(indents(solo), [[1, 108, 90]]);
+  // Items nest relative to each other: levels 1, 2, 1 come out 0, 1, 0, so each gets its own level's indents
+  assert.deepEqual(indents(bulletRequests([{ start: 1, end: 3, level: 1 }, { start: 3, end: 5, level: 2 }, { start: 5, end: 7, level: 1 }], "BULLET_DISC_CIRCLE_SQUARE")), [[1, 72, 54], [3, 108, 90], [5, 72, 54]]);
+  // A list starting at level 0 nests as it is: nothing more to set; an item's own indents still win
+  assert.deepEqual(indents(bulletRequests([{ start: 1, end: 3, level: 0 }, { start: 3, end: 5, level: 1 }], "BULLET_DISC_CIRCLE_SQUARE")), []);
+  assert.deepEqual(indents(bulletRequests([{ start: 1, end: 9, level: 1, indent: { start: 90, first: 72 } }], "BULLET_DISC_CIRCLE_SQUARE")), [[1, 90, 72]]);
+});
+
+test("the last list item of a segment is styled whole once its text is in, when its paragraph ends there", async () => {
+  const { SegmentFormat, DEFAULT_PARAGRAPH, paragraphFromAttrs } = await import("./rich-text");
+  // A numbered item whose numeral is bold, its text not, typed into the paragraph the document has
+  const item = paragraphFromAttrs({ list: "ordered", glyphStyle: { b: 1 } });
+  const text = "Restate the thesis";
+  const sf = new SegmentFormat(text, { v: 1, base: { ...DEFAULT_PARAGRAPH }, paragraphs: [item], runs: [{ len: text.length }] });
+  const whole = (closes: "newline" | "final" | null, start = 8) => sf.writeRequests(start, text.length, 1 + start, { type: "ordered", start: 0, level: 0 }, closes)
+    .requests.filter((r) => r.updateTextStyle).map((r) => r.updateTextStyle as { range: { startIndex: number; endIndex: number }; textStyle: Record<string, unknown> })
+    .find((u) => u.range.startIndex === 1);
+  // More of the paragraph follows the text: the item isn't finished, nothing restyles it
+  assert.equal(whole(null), undefined);
+  // The text ends at the paragraph's newline: the item, newline included, takes the glyph's style
+  assert.deepEqual(whole("newline")?.range, { startIndex: 1, endIndex: 1 + text.length + 1 });
+  assert.equal(whole("newline")?.textStyle.bold, true);
+  // ...but not the body's last newline, which no range may include
+  assert.deepEqual(whole("final")?.range, { startIndex: 1, endIndex: 1 + text.length });
+  // and only on the write that finishes the text
+  assert.equal(sf.writeRequests(0, 8, 1, null, "newline").requests.filter((r) => r.updateTextStyle && (r.updateTextStyle as { range: { endIndex: number } }).range.endIndex > 9).length, 0);
+});

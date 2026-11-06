@@ -627,6 +627,9 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
 
 export type DocsRequest = Record<string, unknown>;
 
+/** What follows text typed into a paragraph: its newline ("final": the body's last one), or more of the paragraph */
+export type ParagraphClose = "newline" | "final" | null;
+
 /** List state of the paragraph the next write appends to. A negative start is a list that is not ours. */
 export type DocListState = { type: ListType; start: number; level?: number; preset?: string } | null;
 
@@ -651,12 +654,18 @@ export function bulletRequests(paragraphs: { start: number; end: number; level: 
     }
   }
   requests.push({ createParagraphBullets: { range: { startIndex: paragraphs[0].start, endIndex: paragraphs[paragraphs.length - 1].end + tabs }, bulletPreset: preset } });
-  // Items indented their own way get their indents once the bullets exist (the tabs are gone by then)
+  // Items indented their own way get their indents once the bullets exist (the tabs are gone by then).
+  // So do items Docs puts at a shallower level than theirs (a list that starts nested): their text
+  // lands where their level puts it, as the page shows it
+  const top = paragraphs.length > 1 ? Math.min(...paragraphs.map((p) => p.level)) : Infinity;
   for (const p of paragraphs) {
-    if (p.indent) requests.push({ updateParagraphStyle: { range: { startIndex: p.start, endIndex: p.end }, paragraphStyle: { indentStart: { magnitude: p.indent.start, unit: "PT" }, indentFirstLine: { magnitude: p.indent.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
+    const indent = p.indent ?? (p.level > 0 && top > 0 ? levelIndent(p.level) : undefined);
+    if (indent) requests.push({ updateParagraphStyle: { range: { startIndex: p.start, endIndex: p.end }, paragraphStyle: { indentStart: { magnitude: indent.start, unit: "PT" }, indentFirstLine: { magnitude: indent.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
   }
   return requests;
 }
+/** Where Docs' list styles put an item of a level: its text 36pt a level in, its glyph 18pt before it */
+const levelIndent = (level: number) => ({ start: INDENT_PT * (level + 1), first: INDENT_PT * (level + 1) - 18 });
 // A list the document already had (start < 0) is known by type and level only: its preset is kept
 const sameList = (a: DocListState, b: { list?: ListType; level?: number; preset?: string }) =>
   !!a && !!b.list && a.type === b.list && (a.start < 0 ? a.level == null || a.level === (b.level ?? 0) : (a.level ?? 0) === (b.level ?? 0) && (a.preset ?? LIST_PRESETS[a.type]) === presetOf(b));
@@ -925,8 +934,12 @@ export class SegmentFormat {
     return this.index.textRequests(start, end, docIndex);
   }
 
-  /** `list` is the list state of the paragraph being typed into before this write */
-  writeRequests(start: number, end: number, docIndex: number, list: DocListState): { requests: DocsRequest[]; docList: DocListState } {
+  /**
+   * `list` is the list state of the paragraph being typed into before this write. `closes` says what
+   * follows the written text in the document: the end of its paragraph ("newline"; "final" when that
+   * is the body's last newline, which no range may include) or more of the paragraph (null).
+   */
+  writeRequests(start: number, end: number, docIndex: number, list: DocListState, closes: ParagraphClose = null): { requests: DocsRequest[]; docList: DocListState } {
     if (end <= start) return { requests: [], docList: list };
     const requests: DocsRequest[] = [];
     const at = (offset: number) => docIndex + offset - start;
@@ -1002,14 +1015,18 @@ export class SegmentFormat {
       } else if (fresh) cur = docState;
       if (want && lineEnd < end) glyphs.add(l);
     }
+    // The last line ends where its paragraph does: once the whole text is in, that item is finished too
+    const lastLine = this.lineStarts.length - 1;
+    const closing = closes && end === this.text.length && this.lineStarts[lastLine] < this.text.length ? lastLine : -1;
+    if (closing >= 0) glyphs.add(closing);
     // Style each finished item whole with its glyph's style, then put its text's own styles back
     for (const l of glyphs) {
       const lineStart = this.lineStarts[l];
       const lineEnd = (this.lineStarts[l + 1] ?? this.text.length + 1) - 1;
-      if (lineEnd >= end || !this.format.paragraphs[l]?.list) continue; // its newline is not in the doc yet
+      if ((lineEnd >= end && l !== closing) || !this.format.paragraphs[l]?.list) continue; // its newline is not in the doc yet
       const glyph = { ...(this.format.paragraphs[l]?.glyph ?? (lineStart < lineEnd ? this.index.runAt(lineStart) : this.index.runAt(lineEnd)) ?? {}) };
       delete glyph.link;
-      requests.push(textRequest(resolveTextStyle(glyph), at(lineStart), at(lineEnd + 1)));
+      requests.push(textRequest(resolveTextStyle(glyph), at(lineStart), at(l === closing && closes === "final" ? lineEnd : lineEnd + 1)));
       if (lineStart < start) requests.push(...this.index.textRequests(lineStart, Math.min(lineEnd + 1, start), at(lineStart)));
     }
     requests.push(...this.index.textRequests(start, end, docIndex));

@@ -17,7 +17,7 @@
 
 import type { DripAction } from "./drip-engine";
 import type { DocSnapshot } from "./google";
-import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef } from "./rich-text";
+import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef, type ParagraphClose } from "./rich-text";
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
 import { reportError } from "./monitor";
@@ -336,7 +336,7 @@ export async function runJobWindow(
 
 /** Formatting lookups used while typing */
 interface Formats {
-  writeRequests(start: number, end: number, docIndex: number, list: DocListState): { requests: DocsRequest[]; docList: DocListState };
+  writeRequests(start: number, end: number, docIndex: number, list: DocListState, closes?: ParagraphClose): { requests: DocsRequest[]; docList: DocListState };
   uniformStyleRequests(offset: number, length: number, docIndex: number): DocsRequest[];
   imageAt(at: number): ImageRef | undefined;
 }
@@ -603,7 +603,9 @@ class Context {
       if (isSource && place?.repair) requests.push(...place.repair(index));
       if (fx) {
         if (isSource) {
-          const r = fx.writeRequests(offset, offset + text.length, index, list);
+          // What the text ends at: a paragraph opened here, the newline it is typed before, or more text
+          const closes: ParagraphClose = !place ? null : open.length ? "newline" : snap.chars[index] === "\n" ? (index >= snap.endIndex - 1 ? "final" : "newline") : null;
+          const r = fx.writeRequests(offset, offset + text.length, index, list, closes);
           requests.push(...r.requests);
           nextList = r.docList;
         } else {
