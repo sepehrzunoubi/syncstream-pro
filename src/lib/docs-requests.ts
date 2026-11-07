@@ -2,6 +2,8 @@
  * The Docs batchUpdate requests the editor's direct edits may send: POST /api/docs/edit takes these
  * and nothing else. Every request directEdits (text, formatting, lists, breaks, footnotes, images and
  * table structure), segmentEdits (headers and footers) and the page setup make is one of them.
+ * Tabs are never made or renamed from the browser: Compare & Sync does that on the server when a
+ * sync starts (createTab, renameTab in google.ts), and nothing ever deletes one.
  */
 export const EDIT_REQUESTS: ReadonlySet<string> = new Set([
   "updateTextStyle",

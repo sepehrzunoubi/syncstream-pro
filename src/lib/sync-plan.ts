@@ -7,6 +7,8 @@
 
 import type { docs_v1 } from "googleapis";
 import type { DripPlan } from "./drip-engine";
+import { indexedText } from "./doc-import";
+import { isTabId, openTab } from "./doc-tabs";
 import { normalizeText, parseFormat, type DocListState, type ListType, type RichFormat } from "./rich-text";
 import { planSpots } from "./spots";
 import { breakOffsets } from "./breaks";
@@ -14,32 +16,53 @@ import type { PlanSegment, SpotState, SyncJob, SyncPlan } from "./sync-store";
 
 /** One addition to an existing document, as the client sends it */
 export interface SegmentInput {
-  /** Docs index where the text goes */
+  /** Docs index where the text goes (in its tab) */
   at: number;
   /** "inline": typed at `at`. "before": a new paragraph is opened there first. */
   mode: "inline" | "before";
   text: string;
   format: RichFormat;
+  /** The tab it goes into, for a job typing into several tabs (absent: the job's tab) */
+  tabId?: string;
 }
 
+/** Additions the editor can send in one sync */
 export const MAX_SEGMENTS = 300;
+/** A Compare & Sync job: every difference, in every tab */
+export const MAX_COMPARE_SEGMENTS = 2000;
 
-/** Validate the `segments` of a start request. Their text is the sync's source, back to back. */
-export function parseSegments(raw: unknown): { ok: true; segments: SegmentInput[] } | { ok: false; error: string } {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SEGMENTS) return { ok: false, error: "Invalid additions" };
+/**
+ * Validate the `segments` of a start request. Their text is the sync's source, back to back. Either
+ * every segment names its tab or none does; a tab's segments come together, top to bottom.
+ */
+export function parseSegments(raw: unknown, opts: { maxSegments?: number } = {}): { ok: true; segments: SegmentInput[] } | { ok: false; error: string } {
+  const invalid = { ok: false as const, error: "Invalid additions" };
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > (opts.maxSegments ?? MAX_SEGMENTS)) return invalid;
+  const tabbed = (raw[0] as Record<string, unknown> | null)?.tabId != null;
   const segments: SegmentInput[] = [];
+  /** Tabs whose segments are all behind */
+  const finished = new Set<string>();
+  let tab: string | undefined;
   let lastAt = 0;
   for (const item of raw as Record<string, unknown>[]) {
     const at = item?.at;
     const mode = item?.mode;
     const text = item?.text;
+    const tabId = item?.tabId;
+    if ((tabId != null) !== tabbed || (tabbed && !isTabId(tabId))) return invalid;
+    if (tabbed && tabId !== tab) {
+      if (finished.has(tabId as string)) return invalid;
+      if (tab) finished.add(tab);
+      tab = tabId as string;
+      lastAt = 0;
+    }
     if (typeof at !== "number" || !Number.isInteger(at) || at < 1 || at < lastAt || (mode !== "inline" && mode !== "before") || typeof text !== "string" || !text) {
-      return { ok: false, error: "Invalid additions" };
+      return invalid;
     }
     if (normalizeText(text) !== text) return { ok: false, error: "Text contains characters Google Docs would remove" };
     const parsed = parseFormat(text, item.format);
     if (!parsed.ok) return { ok: false, error: `Invalid formatting: ${parsed.error}` };
-    segments.push({ at, mode, text, format: parsed.format });
+    segments.push({ at, mode, text, format: parsed.format, ...(tab ? { tabId: tab } : {}) });
     lastAt = at;
   }
   return { ok: true, segments };
@@ -60,7 +83,7 @@ export function segmentBoundaries(segments: { text: string }[]): number[] {
 export function planSegmentsOf(segments: SegmentInput[]): PlanSegment[] {
   let acc = 0;
   return segments.map((s) => {
-    const seg: PlanSegment = { start: acc, end: acc + s.text.length, mode: s.mode, format: s.format };
+    const seg: PlanSegment = { start: acc, end: acc + s.text.length, mode: s.mode, format: s.format, ...(s.tabId ? { tabId: s.tabId } : {}) };
     acc += s.text.length;
     return seg;
   });
@@ -96,13 +119,51 @@ export function spotsFor(doc: docs_v1.Schema$Document, chars: string, segments: 
   });
 }
 
+/**
+ * Where each segment of a job is typed, in a document read with all its tabs (getRawDocument): each
+ * tab's segments in that tab as read, what earlier segments type moving the later ones down within
+ * their own tab only. Segments that name no tab go into the first tab, as a one-tab job's do. Null
+ * when a tab is gone or a position no longer sits on a paragraph: the document changed.
+ */
+export function spotsForTabs(doc: docs_v1.Schema$Document, segments: SegmentInput[]): SpotState[] | null {
+  const spots: SpotState[] = [];
+  const seen = new Set<string | undefined>();
+  for (let i = 0; i < segments.length; ) {
+    const tabId = segments[i].tabId;
+    let j = i;
+    while (j < segments.length && segments[j].tabId === tabId) j++;
+    // (parseSegments gives each tab's segments together; spots of a tab split in two would overlap)
+    if (seen.has(tabId)) throw new Error("A tab's segments must come together");
+    seen.add(tabId);
+    const open = openTab(doc, tabId);
+    if (!open) return null;
+    const found = spotsFor(open.doc, indexedText(open.doc), segments.slice(i, j));
+    if (!found) return null;
+    spots.push(...(tabId ? found.map((s) => ({ ...s, tabId })) : found));
+    i = j;
+  }
+  return spots;
+}
+
+/** The tabs segments go into, each once in the order they are typed, with their titles from `titles` */
+export function tabsOfSegments(segments: { tabId?: string }[], titles: { id: string; title: string }[] = []): { id: string; title: string }[] {
+  const out: { id: string; title: string }[] = [];
+  for (const s of segments) {
+    if (!s.tabId || out.some((t) => t.id === s.tabId)) continue;
+    out.push({ id: s.tabId, title: titles.find((t) => t.id === s.tabId)?.title ?? "" });
+  }
+  return out;
+}
+
 export interface SyncRecordsInput {
   id: string;
   userId: string;
   documentId: string;
   documentName: string;
-  /** The tab typed into */
+  /** The tab typed into (a job typing into several tabs: the first, when not given) */
   tab?: { id: string; title: string } | null;
+  /** Titles of the tabs segments name, for a job typing into several tabs */
+  tabs?: { id: string; title: string }[] | null;
   plan: DripPlan;
   /** Formatting of the whole source (plans without segments) */
   format: RichFormat;
@@ -122,6 +183,8 @@ export function buildSyncRecords(input: SyncRecordsInput): { plan: SyncPlan; job
   const startInMinutes = input.startInMinutes ?? 0;
   const startAt = now + Math.round(startInMinutes * 60_000);
   const planSegments = input.segments ? planSegmentsOf(input.segments) : undefined;
+  const tabs = input.segments ? tabsOfSegments(input.segments, input.tabs ?? []) : [];
+  const tab = input.tab ?? tabs[0] ?? null;
   const syncPlan: SyncPlan = {
     id,
     userId: input.userId,
@@ -139,7 +202,8 @@ export function buildSyncRecords(input: SyncRecordsInput): { plan: SyncPlan; job
     userId: input.userId,
     documentId: input.documentId,
     documentName: input.documentName,
-    ...(input.tab ? { tabId: input.tab.id, ...(input.tab.title ? { tabTitle: input.tab.title } : {}) } : {}),
+    ...(tab ? { tabId: tab.id, ...(tab.title ? { tabTitle: tab.title } : {}) } : {}),
+    ...(tabs.length ? { tabs } : {}),
     status: startInMinutes > 0 ? "scheduled" : "pending",
     createdAt: now,
     startAt,

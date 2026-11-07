@@ -44,7 +44,7 @@ test("a tab is read as itself, with the document's tabs in Docs' order and nesti
   assert.deepEqual(first.tabs, [
     { id: "t.0", title: "Research", level: 0 },
     { id: "t.web", title: "Web Structured Data", level: 0 },
-    { id: "t.kid", title: "Sources", level: 1 },
+    { id: "t.kid", title: "Sources", level: 1, parentId: "t.web" },
   ]);
   assert.deepEqual(nodesText(importDoc(first.doc).nodes), ["First tab intro", "First tab end"]);
   const web = await getDocument("t", "doc-read-1234", "t.web");

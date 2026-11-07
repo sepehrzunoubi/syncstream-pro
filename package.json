@@ -16,6 +16,7 @@
     "e2e:live:auth": "tsx scripts/e2e-live/authorize.ts"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.1.0",
     "@radix-ui/react-dropdown-menu": "^2.1.24",
     "@radix-ui/react-menubar": "^1.1.24",
     "@radix-ui/react-popover": "^1.1.23",

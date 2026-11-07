@@ -37,6 +37,8 @@ export interface PlanSegment {
   mode: "inline" | "before";
   /** Formatting of this segment's text: line k is paragraph k */
   format: RichFormat;
+  /** The tab it is typed into (a job typing into several tabs; absent: the job's tab) */
+  tabId?: string;
 }
 
 /** Where a segment is being typed: found again from the text before it on every write */
@@ -50,6 +52,8 @@ export interface SpotState {
   docList?: DocListState;
   /** Character styles of the text already typed here have been checked (see the runner) */
   restyled?: boolean;
+  /** The tab the spot is in (a job typing into several tabs) */
+  tabId?: string;
 }
 
 /** Small mutable state, rewritten as the job progresses. */
@@ -61,6 +65,11 @@ export interface SyncJob {
   /** The tab typed into, and its name (absent: a document read without its tabs, or an older job) */
   tabId?: string;
   tabTitle?: string;
+  /**
+   * A job typing into several tabs: each of them, in the order they are typed. Each segment names
+   * its own tab; `tabId` is the first.
+   */
+  tabs?: { id: string; title: string }[];
   status: JobStatus;
   createdAt: number;
   /** When the job is allowed to start typing */
@@ -147,6 +156,11 @@ export interface SyncContext {
   doc?: unknown;
   /** For each segment, the editor tokens its text came from */
   ranges?: [number, number][];
+  /**
+   * A job typing into several tabs: each tab's editor document, in typing order. `first` is the
+   * index of the tab's first segment; `ranges` are its segments' tokens in its `doc`.
+   */
+  tabs?: { tabId: string; title: string; first: number; doc: unknown; ranges: [number, number][] }[];
   /** Older syncs: the document's paragraphs before and after the text */
   before?: unknown[];
   after?: unknown[];
