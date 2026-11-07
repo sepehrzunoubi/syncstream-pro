@@ -26,7 +26,7 @@ test.describe("document tabs", () => {
     api.contentMode = "always";
     await app.open();
     const panel = page.getByRole("navigation", { name: "Document tabs" });
-    await expect(panel.locator(".ss-doc-tab .truncate")).toHaveText(["Research", "Web Structured Data", "Sources"]);
+    await expect(panel.locator(".ss-doc-tab-label")).toHaveText(["Research", "Web Structured Data", "Sources"]);
     await expect(panel.getByRole("button", { name: "Research" })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("header")).toContainText("Research");
     // New text in the first tab
@@ -137,11 +137,13 @@ test.describe("document tabs", () => {
     expect(api.contentTabs[0]).toBe("t.deleted");
   });
 
-  test("a document with a single tab shows no tab list and names no tab", async ({ app, page, api }) => {
+  test("a document with a single tab lists just that tab and names no tab in the title", async ({ app, page, api }) => {
     api.tabs = [TABS[0]];
     api.contentMode = "always";
     await app.open();
-    await expect(page.getByRole("navigation", { name: "Document tabs" })).toHaveCount(0);
+    const panel = page.getByRole("navigation", { name: "Document tabs" });
+    await expect(panel.locator(".ss-doc-tab")).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Research" })).toHaveAttribute("aria-current", "page");
     await expect(page.locator(".ss-header-tab")).toHaveCount(0);
     await app.caretAtEnd(CLOSING_TEXT);
     await page.keyboard.press("Backspace");

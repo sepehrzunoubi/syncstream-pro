@@ -26,9 +26,9 @@
 .ss-menu,
 .ss-popover,
 .ss-dialog-scrim {
-  --ss-canvas: #f9fbfd;
+  --ss-canvas: #f8fafd;
   --ss-surface: #ffffff;
-  --ss-toolbar: #edf2fa;
+  --ss-toolbar: #f0f4f9;
   --ss-text: #1f1f1f;
   --ss-text-2: #444746;
   --ss-text-3: #5e5e5e;
@@ -56,7 +56,6 @@
   font-family: "Google Sans", Roboto, Arial, sans-serif;
   font-size: 14px;
   line-height: 20px;
-  -webkit-font-smoothing: antialiased;
   user-select: none;
 }
 
@@ -107,7 +106,8 @@
 
 /* ── Buttons ─────────────────────────────────────────────────────────── */
 
-.ss-icon-btn {
+/* Sizes in :where(), so a size or shape given in the markup (h-10, rounded-full) wins */
+:where(.ss-icon-btn) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -138,7 +138,7 @@
 }
 .ss-btn:disabled { opacity: 0.38; cursor: not-allowed; }
 .ss-btn { transition: background-color 150ms, box-shadow 150ms, opacity 200ms, color 150ms; }
-.ss-btn-tonal { background: var(--ss-tonal); color: var(--ss-on-tonal); }
+.ss-btn-tonal { background: var(--ss-tonal); color: #004a77; }
 .ss-btn-tonal:hover:not(:disabled) { box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px 1px rgba(0,0,0,.15); }
 .ss-btn-filled { background: var(--ss-blue); color: #fff; }
 .ss-btn-filled:hover:not(:disabled) { background: #0a4fbd; box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px 1px rgba(0,0,0,.15); }
@@ -151,41 +151,68 @@
 
 /* ── Toolbar ─────────────────────────────────────────────────────────── */
 
+/* As Docs lays it out: a 40px pill 6px under the title bar and 8px above the ruler, 30px buttons on a
+   32px pitch, 1×20 separators with 3px either side, medium-weight grey captions */
+.ss-toolbar-wrap { flex: none; margin: 6px 16px 8px; }
 .ss-toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   height: 40px;
   padding: 0 8px;
-  border-radius: 24px;
+  border-radius: 28px;
   background: var(--ss-toolbar);
   overflow-x: auto;
   scrollbar-width: none;
+  -webkit-font-smoothing: antialiased;
 }
 .ss-toolbar::-webkit-scrollbar { display: none; }
 .ss-toolbar[aria-disabled="true"] > * { opacity: 0.38; pointer-events: none; }
-.ss-sep { flex: none; width: 1px; height: 20px; margin: 0 6px; background: var(--ss-divider); }
+.ss-toolbar .ss-icon-btn { flex: none; height: 30px; min-width: 30px; padding: 0; margin: 0 1px; border: 1px solid transparent; border-radius: 4px; }
+.ss-toolbar .ss-icon-btn[data-on="true"] { background: var(--ss-pressed); color: var(--ss-blue); }
+.ss-toolbar .ss-icon-btn[data-state="open"], .ss-toolbar .ss-select-btn[data-state="open"] { background: rgba(68, 71, 70, 0.1); }
+.ss-toolbar .ss-color-btn { min-width: 32px; }
+.ss-toolbar .ss-step-btn { width: 24px; min-width: 24px; height: 24px; border: 0; }
+.ss-sep { flex: none; width: 1px; height: 20px; margin: 0 3px; background: #c4c7c5; }
 .ss-select-btn {
   display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 6px;
+  gap: 0;
+  height: 30px;
+  margin: 0 1px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 4px;
-  color: var(--ss-text);
+  color: var(--ss-text-2);
   white-space: nowrap;
 }
 .ss-select-btn:hover:not(:disabled) { background: var(--ss-hover); }
+.ss-caption { display: block; overflow: hidden; text-align: left; font-size: 14px; font-weight: 500; color: color-mix(in srgb, #1f1f1f 70%, transparent); }
+.ss-select-btn .ss-icon { color: var(--ss-text-2); }
+.ss-zoom-btn { width: 75px; height: 28px; }
+.ss-zoom-btn .ss-caption { width: 48px; padding: 1px 4px; color: var(--ss-text-2); }
+.ss-style-btn { width: 122px; justify-content: space-between; }
+.ss-style-btn .ss-caption { width: 80px; margin-left: 10px; }
+.ss-font-btn { width: 97px; justify-content: space-between; }
+.ss-font-btn .ss-caption { width: 55px; margin-left: 10px; }
+.ss-align-btn { width: 39px; overflow: hidden; }
+.ss-align-btn .ss-icon:first-child { margin-left: 4px; }
+.ss-align-btn .ss-icon:last-child { margin-left: -5px; }
 .ss-size-input {
-  width: 36px;
+  flex: none;
+  width: 34px;
   height: 24px;
+  margin: 0 2px;
   border: 1px solid var(--ss-outline);
   border-radius: 4px;
   background: transparent;
   text-align: center;
   font-size: 14px;
-  color: var(--ss-text);
+  font-weight: 500;
+  color: var(--ss-text-2);
 }
+.ss-size-input:hover { border-color: var(--ss-text); }
 .ss-size-input:focus { outline: 2px solid var(--ss-blue); border-color: transparent; }
 
 /* ── Menus ───────────────────────────────────────────────────────────── */
@@ -199,11 +226,15 @@
   padding: 6px 0;
   border-radius: 4px;
   background: var(--ss-surface);
-  box-shadow: 0 2px 6px 2px rgba(60,64,67,.15), 0 1px 2px rgba(60,64,67,.3);
-  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  box-shadow: 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  font-family: Roboto, Arial, sans-serif;
   font-size: 14px;
+  line-height: 20px;
+  letter-spacing: 0.1px;
   color: var(--ss-text);
 }
+/* A menu of the menu bar opens flush under its name, its corner squared there */
+.ss-menubar-menu { border-top-left-radius: 0; }
 .ss-menu[data-state="open"] { animation: ss-menu-in 140ms cubic-bezier(0.2, 0, 0, 1); }
 /* Menus close at once, as in Docs: a menu fading out stays mounted, and its unmounting would take focus
    from the next menu opened during the fade, closing it */
@@ -217,17 +248,17 @@
   align-items: center;
   gap: 12px;
   min-height: 32px;
-  padding: 4px 16px 4px 12px;
+  padding: 6px 15px 6px 8px;
   cursor: default;
   outline: none;
   user-select: none;
 }
 .ss-menu-item[data-highlighted],
-.ss-menu-item[data-state="open"] { background: #f1f3f4; }
+.ss-menu-item[data-state="open"] { background: rgba(31, 31, 31, 0.1); }
 .ss-menu-item .ss-sub-arrow { margin-left: auto; padding-left: 24px; color: var(--ss-text-2); }
 .ss-menu-item[data-disabled], .ss-menu-item:disabled { opacity: 0.38; }
 .ss-menu-item .ss-check { width: 18px; flex: none; color: var(--ss-text-2); }
-.ss-menu-item .ss-shortcut { margin-left: auto; padding-left: 24px; color: var(--ss-text-3); font-size: 13px; }
+.ss-menu-item .ss-shortcut { margin-left: auto; padding-left: 24px; color: var(--ss-text-2); font-size: 14px; }
 .ss-menu-sep { height: 1px; margin: 6px 0; background: #e0e0e0; }
 .ss-menu-label { padding: 8px 16px 4px; font-size: 12px; color: var(--ss-text-3); }
 
@@ -283,33 +314,75 @@
 .ss-canvas { overflow: auto; }
 
 /* Ruler above the page, as in Docs */
+/* Ruler above the page, as in Docs: 16px with a hairline under it, ticks hanging from that line */
 .ss-ruler-row {
   position: sticky;
   top: 0;
   z-index: 5;
-  padding-top: 2px;
+  height: 16px;
+  border-bottom: 1px solid #c4c7c5;
   background: var(--ss-canvas);
 }
-.ss-ruler { width: 8.5in; height: 24px; margin: 0 auto; }
+.ss-ruler { width: 8.5in; height: 15px; margin: 0 auto; }
 .ss-ruler-row { overflow: hidden; }
+/* Docs draws the ruler's hairline across the whole window, over the sidebar too */
+.ss-rail-docked .ss-sidebar {
+  background-image: linear-gradient(#c4c7c5, #c4c7c5);
+  background-size: calc(100% - 16px) 1px;
+  background-position: 16px 15px;
+  background-repeat: no-repeat;
+}
 .ss-ruler svg { display: block; overflow: visible; }
 .ss-ruler .ss-marker { cursor: ew-resize; }
 @media (max-width: 720px) { .ss-ruler-row { display: none; } }
 
 /* Menu bar under the title */
-.ss-menubar { display: flex; gap: 0; margin-left: -2px; }
+.ss-menubar { display: flex; gap: 0; }
 .ss-menubar-trigger {
   height: 24px;
-  padding: 0 7px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
   border-radius: 4px;
   font-size: 14px;
-  line-height: 24px;
+  line-height: 18px;
+  letter-spacing: 0.1px;
   color: var(--ss-text);
   outline: none;
 }
 .ss-menubar-trigger:hover,
 .ss-menubar-trigger[data-state="open"],
-.ss-menubar-trigger[data-highlighted] { background: var(--ss-hover); }
+.ss-menubar-trigger[data-highlighted] { background: color-mix(in srgb, #1f1f1f 8%, #fff); }
+.ss-menubar-trigger[data-state="open"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+
+/* ── Title bar ───────────────────────────────────────────────────────── */
+
+.ss-header { position: relative; display: flex; flex: none; align-items: flex-start; height: 59px; }
+.ss-header-logo { position: absolute; left: 8px; top: 7px; width: 48px; height: 48px; padding: 6px; object-fit: contain; }
+.ss-header-main { min-width: 0; flex: 1; margin-left: 54px; padding-top: 10px; }
+.ss-title-row { display: flex; align-items: center; gap: 4px; height: 24px; min-width: 0; }
+.ss-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: min(560px, 50vw);
+  height: 24px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 22px;
+  color: var(--ss-text);
+}
+button.ss-title:hover, button.ss-title[data-state="open"] { border-color: var(--ss-outline); }
+.ss-title-arrow { flex: none; margin-right: -4px; color: var(--ss-text-2); }
+.ss-header-tab { display: flex; min-width: 0; align-items: center; font-size: 14px; color: var(--ss-text-2); }
+.ss-badges { display: flex; flex: none; align-items: center; gap: 4px; min-width: 0; margin-left: 2px; }
+.ss-badge { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 9999px; color: var(--ss-text-2); }
+a.ss-badge:hover { background: var(--ss-hover); }
+.ss-status { display: inline-flex; min-width: 0; align-items: center; }
+.ss-status-text { overflow: hidden; font-size: 13px; letter-spacing: 0.1px; color: var(--ss-text-2); white-space: nowrap; text-overflow: ellipsis; }
+.ss-menubar-row { display: flex; height: 25px; }
+.ss-header-actions { display: flex; flex: none; align-items: center; gap: 8px; height: 60px; padding: 0 12px 0 16px; }
 .ss-page {
   width: 8.5in;
   min-height: 11in;
@@ -568,14 +641,15 @@
 
 /* Pages: sheets drawn behind the text, gaps pushed in by the pagination plugin.
    Size, margins and colour come from the page setup (variables set by PagedSurface). */
-.ss-pages { position: relative; width: var(--ss-page-w, 8.5in); margin: 8px auto 64px; }
+.ss-pages { position: relative; width: var(--ss-page-w, 8.5in); margin: 16px auto 64px; }
 .ss-sheet {
   position: absolute;
   left: 0;
   right: 0;
   height: var(--ss-page-h, 11in);
   background: var(--ss-page-color, #fff);
-  box-shadow: 0 1px 3px 1px rgba(60,64,67,.15);
+  /* Docs draws a page with a crisp 1px border, not a shadow */
+  box-shadow: 0 0 0 1px #c4c7c5;
 }
 /* The side margins belong to the editor, so a click or drag anywhere across the line reaches the text, as in Docs */
 .ss-sheet-content { position: relative; padding: var(--ss-m-top, 1in) 0 0; cursor: text; }
@@ -769,23 +843,74 @@ tr.ss-page-gap { display: table-row; }
 .ss-color-dot { width: 20px; height: 20px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.2); }
 .ss-btn-quiet { color: var(--ss-text-2); }
 /* Title rename */
-.ss-title-input { min-width: 160px; max-width: 480px; height: 28px; padding: 0 6px; border: 2px solid var(--ss-blue); border-radius: 4px; font: inherit; font-size: 18px; color: var(--ss-text); outline: none; background: var(--ss-surface); }
-/* Document outline in the left panel */
-.ss-outline { flex: none; max-height: 40%; overflow-y: auto; padding: 0 12px 8px; }
-.ss-outline-title { display: flex; align-items: center; height: 40px; padding-left: 12px; font-size: 14px; font-weight: 500; }
-.ss-outline-empty { padding: 0 12px; font-size: 12px; line-height: 16px; color: var(--ss-text-3); }
-.ss-outline ul { list-style: none; margin: 0; padding: 0; }
-.ss-outline-item { display: block; width: 100%; padding: 4px 8px; border-radius: 9999px; font-size: 13px; line-height: 18px; text-align: left; color: var(--ss-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-outline li[data-level="0"] .ss-outline-item, .ss-outline li[data-level="1"] .ss-outline-item { font-weight: 500; color: var(--ss-text); }
-.ss-outline-item:hover { background: var(--ss-hover); }
-/* Document tabs in the left panel, as Docs lists them */
-.ss-doc-tabs { flex: none; max-height: 40%; overflow-y: auto; padding: 0 12px 8px; }
-.ss-doc-tabs ul { list-style: none; margin: 0; padding: 0; }
-.ss-doc-tab { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 12px; border-radius: 9999px; font-size: 14px; text-align: left; color: var(--ss-text-2); }
-.ss-doc-tab:hover:not(:disabled) { background: var(--ss-hover); }
-.ss-doc-tab[aria-current="page"] { background: var(--ss-pressed); color: var(--ss-on-pressed); font-weight: 500; }
+.ss-title-input { min-width: 160px; max-width: 480px; height: 24px; padding: 1px 6px; border: 1px solid var(--ss-blue); border-radius: 4px; font: inherit; font-size: 18px; line-height: 22px; color: var(--ss-text); outline: none; box-shadow: inset 0 0 0 1px var(--ss-blue); background: var(--ss-surface); }
+/* ── Sidebar, as Docs lays out its tabs & outlines panel ────────────── */
+
+.ss-sidebar { width: 296px; height: 100%; overflow-y: auto; padding: 18px 0 16px 16px; }
+.ss-side-hat { height: 52px; }
+.ss-side-back { width: 40px; height: 40px; margin: 6px 0 0 13px; border-radius: 9999px; color: var(--ss-text-2); }
+.ss-side-heading { height: 52px; margin-left: 16px; padding: 16px 0 16px 12px; font-size: 14px; font-weight: 500; line-height: 20px; letter-spacing: 0.1px; color: var(--ss-text-2); }
+.ss-doc-tabs { list-style: none; margin: 0; padding: 0; width: 264px; }
+.ss-doc-tab {
+  display: flex;
+  align-items: center;
+  width: calc(100% - 16px);
+  height: 40px;
+  margin-left: 16px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 16px;
+  text-align: left;
+  color: var(--ss-text-2);
+}
+.ss-doc-tab:hover:not(:disabled):not([aria-current="page"]) { background: var(--ss-hover); }
+.ss-doc-tab[aria-current="page"] { background: var(--ss-pressed); color: #0842a0; }
 .ss-doc-tab:disabled { opacity: 0.5; cursor: default; }
+.ss-doc-tab-icon { display: grid; flex: none; place-items: center; width: 24px; height: 24px; margin-left: 8px; }
+.ss-doc-tab-label { min-width: 0; margin-left: 5px; padding: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ss-doc-tab-emoji { width: 18px; flex: none; text-align: center; font-size: 15px; line-height: 1; }
+/* The open tab's headings, under it */
+.ss-outline { margin: 4px 0 4px 43px; }
+.ss-outline ul { list-style: none; margin: 0; padding: 0; }
+.ss-outline-item {
+  display: block;
+  width: 100%;
+  height: 36px;
+  margin-bottom: 5px;
+  padding: 10px 8px 10px 21px;
+  border-left: 2px solid transparent;
+  font-size: 14px;
+  line-height: 16px;
+  letter-spacing: 0.1px;
+  text-align: left;
+  color: var(--ss-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ss-outline-item:hover { color: var(--ss-blue); border-left-color: var(--ss-blue); }
+.ss-outline-empty { padding: 8px 8px 8px 23px; font-size: 12px; line-height: 16px; letter-spacing: 0.1px; color: var(--ss-text-2); }
+.ss-syncs { margin-top: 8px; width: 264px; }
+.ss-new-doc { color: var(--ss-blue); }
+.ss-side-label { margin: 12px 0 4px 32px; font-size: 12px; font-weight: 500; line-height: 16px; letter-spacing: 0.1px; color: var(--ss-text-2); }
+.ss-sync-row { position: relative; margin-left: 16px; width: 248px; }
+.ss-sync-item { display: flex; gap: 12px; width: 100%; padding: 8px 36px 8px 16px; border-radius: 20px; text-align: left; transition: background-color 120ms; }
+.ss-sync-item:hover { background: var(--ss-hover); }
+.ss-sync-item[aria-current="true"] { background: var(--ss-pressed); }
+.ss-sync-dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 9999px; }
+.ss-sync-name { display: block; overflow: hidden; font-size: 14px; font-weight: 500; line-height: 20px; color: var(--ss-text); white-space: nowrap; text-overflow: ellipsis; }
+.ss-sync-item[aria-current="true"] .ss-sync-name { color: #0842a0; }
+.ss-sync-tab { font-weight: 400; color: var(--ss-text-2); }
+.ss-sync-line { display: block; overflow: hidden; font-size: 12px; line-height: 16px; letter-spacing: 0.1px; color: var(--ss-text-2); white-space: nowrap; text-overflow: ellipsis; }
+.ss-sync-more { position: absolute; top: 8px; right: 4px; width: 28px; height: 28px; border-radius: 9999px; opacity: 0; transition: opacity 120ms; }
+.ss-sync-row:hover .ss-sync-more, .ss-sync-more:focus-visible, .ss-sync-more[data-state="open"] { opacity: 1; }
+.ss-side-more { height: 32px; margin: 4px 0 0 32px; padding: 0 12px; border-radius: 16px; font-size: 14px; font-weight: 500; color: var(--ss-blue); }
+.ss-side-more:hover { background: rgba(11, 87, 208, 0.08); }
+.ss-side-empty { margin: 4px 16px 0 32px; font-size: 12px; line-height: 16px; color: var(--ss-text-3); }
+/* The sidebar's button when it is hidden, at the canvas's top left, as in Docs */
+.ss-side-open { position: absolute; top: 24px; left: 29px; z-index: 6; width: 40px; height: 40px; border-radius: 9999px; color: var(--ss-text-2); }
 /* Right-click menu and shortcuts */
 .ss-context-menu { min-width: 240px; padding: 8px 0; }
 .ss-context-menu .ss-menu-item { width: 100%; }

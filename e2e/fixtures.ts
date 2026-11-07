@@ -301,7 +301,7 @@ export class App {
 
   /** The line under the document name: what the workspace is doing */
   subtitle() {
-    return this.page.locator("header .text-\\[12px\\]").first();
+    return this.page.locator("header [data-ss-status-text]").first();
   }
 
   /** The editor's document as JSON */

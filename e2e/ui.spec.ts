@@ -13,7 +13,7 @@ test.describe("workspace", () => {
 
   test("renaming the document posts the new name and shows it", async ({ app, page, api }) => {
     await app.open();
-    await page.getByRole("button", { name: "Rename document" }).click();
+    await app.menu("File", "Rename");
     const input = page.locator(".ss-title-input");
     await expect(input).toBeFocused();
     await input.fill("Renamed Field Notes");
@@ -57,13 +57,13 @@ test.describe("workspace", () => {
     await expect(app.doc).toContainText(CLOSING_TEXT + "!");
   });
 
-  test("the Edit menu opens Find and replace, the View menu hides the outline", async ({ app, page }) => {
+  test("the Edit menu opens Find and replace, the View menu hides tabs & outlines", async ({ app, page }) => {
     await app.open();
     await app.menu("Edit", "Find and replace");
     await expect(page.getByRole("dialog", { name: "Find and replace" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ss-outline")).toBeVisible();
-    await app.menu("View", "Show outline");
+    await app.menu("View", "Show tabs & outlines");
     await expect(page.locator(".ss-outline")).toHaveCount(0);
   });
 });
@@ -239,7 +239,7 @@ test.describe("starting a sync", () => {
     expect(api.edits).toEqual([]);
     // The running view: the sync's panel, a caret where typing is, the untyped text marked
     await expect(page.getByRole("complementary", { name: "This sync" })).toBeVisible();
-    await expect(page.locator("header").getByRole("button", { name: "New sync" })).toBeVisible();
+    await expect(page.locator("header").getByRole("button", { name: "Back to editing" })).toBeVisible();
     await expect(page.locator(".ss-caret")).toHaveCount(1);
     await expect(page.locator(".ss-untyped").first()).toBeAttached();
     await expect(page.getByRole("status").filter({ hasText: "Sync started" })).toBeVisible();

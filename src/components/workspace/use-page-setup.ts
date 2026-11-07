@@ -39,14 +39,16 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
   /** Width of the text area in points, for column widths */
   const textWidthPt = pageSize(pageSetup).w - pageSetup.margins.left - pageSetup.margins.right;
   // "Fit" zoom: shrink the page to the space between the side columns.
-  // Below 720px the page reflows instead (see docs.css), so no scaling there.
+  // In a window 720px wide or less the page reflows instead (docs.css's media query), so no scaling
+  // there. That goes by the window, not the canvas: between both side panels on a laptop the canvas
+  // can be under 720px, and the page should shrink there, not reflow.
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
     const measure = () => {
-      const w = el.clientWidth;
-      setFitScale(w < 720 ? 1 : Math.min(1, (w - 48) / geometry.w));
-      setNarrow(w < 720);
+      const small = window.matchMedia("(max-width: 720px)").matches;
+      setFitScale(small ? 1 : Math.min(1, (el.clientWidth - 48) / geometry.w));
+      setNarrow(small);
     };
     measure();
     const ro = new ResizeObserver(measure);

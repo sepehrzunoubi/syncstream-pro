@@ -9,7 +9,7 @@ import { keepFlags, NAMED_STYLES, namedKeep, type NamedStyle } from "@/lib/rich-
 export interface PageGeometry { w: number; h: number; top: number; bottom: number; left: number; right: number }
 export const DEFAULT_GEOMETRY: PageGeometry = { w: 816, h: 1056, top: 96, bottom: 96, left: 96, right: 96 };
 /** Docs-like gap between pages */
-export const PAGE_GAP = 16;
+export const PAGE_GAP = 10;
 const sameGeometry = (a: PageGeometry, b: PageGeometry) => a.w === b.w && a.h === b.h && a.top === b.top && a.bottom === b.bottom && a.left === b.left && a.right === b.right;
 
 interface Break {

@@ -72,7 +72,7 @@ function TopMenu({ label, children }: { label: string; children: React.ReactNode
     <MB.Menu>
       <MB.Trigger className="ss-menubar-trigger" onMouseDown={keepSelection}>{label}</MB.Trigger>
       <MB.Portal>
-        <MB.Content className="ss-menu min-w-[240px]" align="start" sideOffset={2} collisionPadding={8} onCloseAutoFocus={(e) => e.preventDefault()}>
+        <MB.Content className="ss-menu ss-menubar-menu min-w-[240px]" align="start" sideOffset={0} collisionPadding={8} onCloseAutoFocus={(e) => e.preventDefault()}>
           {children}
         </MB.Content>
       </MB.Portal>
@@ -95,20 +95,26 @@ interface DocsMenubarProps {
   editingDisabled: boolean;
   zoom: number | "fit";
   onZoom: (z: number | "fit") => void;
-  railOpen: boolean;
-  onToggleRail: () => void;
-  onNewSync: () => void;
-  onCreateDoc: () => void;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  /** Create a Google Doc and open it, ready to sync */
+  onNewDoc: () => void;
+  isCreatingDoc: boolean;
+  /** Recent documents, to open one */
+  docs: { id: string; name: string }[];
+  selectedDocId: string;
+  onSelectDoc: (id: string) => void;
   onRefreshDocs: () => void;
+  /** Rename the open document, when it can be */
+  onRename: (() => void) | null;
   docUrl: string | null;
-  onSignOut: () => void;
+  wordCountOpen: boolean;
+  onToggleWordCount: () => void;
   onPageSetup: () => void;
   onCustomSpacing: () => void;
   onBorders: () => void;
   onHeaderFooter: (which: "header" | "footer") => void;
   onColumns: (columns: number | "options") => void;
-  outlineOpen: boolean;
-  onToggleOutline: () => void;
   onShortcuts: () => void;
   /** Headers, footers and footnotes need an open Google Doc */
   docOpen: boolean;
@@ -159,15 +165,20 @@ export function DocsMenubar(p: DocsMenubarProps) {
   return (
     <MB.Root className="ss-menubar" aria-label="Menu">
       <TopMenu label="File">
-        <Item onSelect={p.onNewSync}>New sync</Item>
-        <Item onSelect={p.onCreateDoc}>Create a new Google Doc</Item>
-        <Item onSelect={p.onRefreshDocs}>Refresh document list</Item>
+        <Item disabled={p.isCreatingDoc} onSelect={p.onNewDoc}>New Google Doc</Item>
+        <Sub label="Open">
+          {p.docs.length === 0 && <Item disabled>No recent documents</Item>}
+          {p.docs.map((d) => (
+            <Item key={d.id} checkable checked={d.id === p.selectedDocId} onSelect={() => p.onSelectDoc(d.id)}>{d.name}</Item>
+          ))}
+          <Sep />
+          <Item onSelect={p.onRefreshDocs}>Refresh list</Item>
+        </Sub>
+        <Item disabled={!p.onRename} onSelect={afterMenu(() => p.onRename?.())}>Rename</Item>
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
         <Sep />
         <Item onSelect={afterMenu(p.onPageSetup)}>Page setup</Item>
         <Item shortcut={`${mod}P`} onSelect={() => window.print()}>Print</Item>
-        <Sep />
-        <Item onSelect={p.onSignOut}>Sign out</Item>
       </TopMenu>
 
       <TopMenu label="Edit">
@@ -192,8 +203,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
             <Item key={z} checkable checked={p.zoom === z} onSelect={() => p.onZoom(z)}>{z}%</Item>
           ))}
         </Sub>
-        <Item checkable checked={p.railOpen} onSelect={p.onToggleRail}>Show syncs</Item>
-        <Item checkable checked={p.outlineOpen} onSelect={p.onToggleOutline}>Show outline</Item>
+        <Item checkable checked={p.sidebarOpen} onSelect={p.onToggleSidebar}>Show tabs & outlines</Item>
       </TopMenu>
 
       <TopMenu label="Insert">
@@ -306,6 +316,10 @@ export function DocsMenubar(p: DocsMenubarProps) {
         </Sub>
         <Sep />
         <Item disabled={off} shortcut={`${mod}\\`} onSelect={() => run((c) => c.clearFormatting())}>Clear formatting</Item>
+      </TopMenu>
+
+      <TopMenu label="Tools">
+        <Item checkable checked={p.wordCountOpen} shortcut={`${mod}Shift+C`} onSelect={p.onToggleWordCount}>Word count</Item>
       </TopMenu>
 
       <TopMenu label="Help">

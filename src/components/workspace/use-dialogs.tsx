@@ -15,13 +15,12 @@ export function useDialogs() {
   const [bordersOpen, setBordersOpen] = useState(false);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [outlineOpen, setOutlineOpen] = useState(true);
   useEffect(() => {
     const open = () => setShortcutsOpen(true);
     window.addEventListener("ss-shortcuts", open);
     return () => window.removeEventListener("ss-shortcuts", open);
   }, []);
-  return { pageSetupOpen, setPageSetupOpen, spacingOpen, setSpacingOpen, bordersOpen, setBordersOpen, columnsOpen, setColumnsOpen, shortcutsOpen, setShortcutsOpen, outlineOpen, setOutlineOpen };
+  return { pageSetupOpen, setPageSetupOpen, spacingOpen, setSpacingOpen, bordersOpen, setBordersOpen, columnsOpen, setColumnsOpen, shortcutsOpen, setShortcutsOpen };
 }
 
 export type Dialogs = ReturnType<typeof useDialogs>;

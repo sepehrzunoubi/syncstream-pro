@@ -37,7 +37,7 @@ export function ColorMenu({ editor, kind, current, disabled }: ColorMenuProps) {
   return (
     <DM.Root modal={false}>
       <DM.Trigger asChild>
-        <button className="ss-icon-btn flex-col" title={label} aria-label={label} disabled={disabled} onMouseDown={(e) => e.preventDefault()}>
+        <button className="ss-icon-btn ss-color-btn flex-col" title={label} aria-label={label} disabled={disabled} onMouseDown={(e) => e.preventDefault()}>
           {kind === "text" ? (
             <span className="text-[16px] font-medium leading-[18px]" style={{ fontFamily: "Google Sans, Roboto, Arial, sans-serif" }}>A</span>
           ) : (
