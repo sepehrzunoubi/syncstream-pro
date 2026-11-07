@@ -4,8 +4,9 @@
  *
  * LEFT is the document that gets the changes; RIGHT is the reference it is brought up to. The
  * engine finds what RIGHT has that LEFT doesn't and gives, per reference tab, LEFT's content
- * untouched with the missing content put where RIGHT has it, marked as pending additions
- * (`syncAdd`), so the ordinary sync types it. Nothing of LEFT is ever deleted or restyled.
+ * with the missing content put where RIGHT has it, marked as pending additions (`syncAdd`), so the
+ * ordinary sync types it, and LEFT's text that RIGHT has too in RIGHT's look (written when the sync
+ * starts). Nothing of LEFT is ever deleted or moved.
  */
 
 import type { EditorNode } from "./rich-text";
@@ -59,7 +60,8 @@ export type ChangeKind =
   | "footer"
   | "tab" // a new tab
   | "rename" // a blank "Tab 1" takes the reference tab's title
-  | "pageSetup"; // a blank or new tab takes the reference's page size and margins
+  | "pageSetup" // a blank or new tab takes the reference's page size and margins
+  | "format"; // text your document has takes the reference's look (bold, colour, highlight, font, heading, list…)
 
 export interface Change {
   /** Stable for the same two revisions and tab map */
@@ -78,13 +80,15 @@ export interface Change {
   merged: [number, number] | null;
   /** Token range in the reference tab's document, when it has one */
   right: [number, number] | null;
+  /** Reference paragraphs whose look your paragraphs next to it take with it (a heading above added text) */
+  restyle?: [number, number][];
 }
 
-/** Differences the sync leaves alone, so nothing of LEFT changes */
+/** Differences the sync leaves alone */
 export type KeptKind =
   | "onlyLeft" // text LEFT has and RIGHT doesn't
-  | "formatting" // same text, different look
-  | "paragraphStyle" // same paragraph, different heading/alignment/spacing
+  | "formatting" // same text, different look, where it can't be copied (a smart chip's)
+  | "paragraphStyle" // same paragraph, different heading/alignment/spacing, where it can't be copied
   | "spelling" // a word spelled a little differently (typo, case, quotes)
   | "moved" // content LEFT has, in another place
   | "spacing" // blank lines or spaces only
@@ -128,8 +132,10 @@ export interface TabCompare {
   changes: Change[];
   kept: Kept[];
   unsupported: Unsupported[];
-  /** Reference token ranges that will be copied, for highlighting the reference */
+  /** Reference token ranges that will be copied (their words or their look), for highlighting the reference */
   rightCopied: [number, number][];
+  /** Token ranges of `merged`: your paragraphs that take the reference's look */
+  restyled?: [number, number][];
   /** For a new or blank tab: the reference's page setup and headers/footers to create when the sync starts */
   setup?: { pageSetup?: PageSetup; header?: ImportedSegment; footer?: ImportedSegment };
   stats: { words: number; images: number; tables: number; footnotes: number; changes: number; skipped: number; presentPct: number };

@@ -7,8 +7,11 @@
  * (`syncAdd`), so the ordinary sync types it in. Paragraphs are anchored where both sides have the
  * same text, the rest paired by how many of LEFT's words a reference paragraph has, in order. Inside
  * a paragraph both have, words are compared after normalizing (quotes, spaces, case, a typo), and
- * only the reference's missing words are added, with the reference's look. Nothing of LEFT is
- * deleted, moved or restyled: what differs and can't be added is listed as left as it is.
+ * only the reference's missing words are added, with the reference's look. Text both have takes the
+ * reference's look too (its bold, colour, highlight, font, size, link; its paragraph's heading,
+ * alignment, spacing and list), written when the sync starts, each with the addition next to it (or
+ * as a change of its own). Nothing of LEFT is deleted or moved: what differs and can't be added is
+ * listed as left as it is.
  *
  * Pure and deterministic: the page shows the preview with it, and the server repeats it from fresh
  * reads when the sync starts (the same revisions give the same answer, change ids included).
@@ -409,8 +412,15 @@ interface Insert {
 
 type Item =
   | { k: "L"; b: Block; moved?: boolean }
-  | { k: "M"; l: Block; r: Block; fill?: boolean; inserts?: Insert[]; table?: TablePlan }
+  | { k: "M"; l: Block; r: Block; fill?: boolean; inserts?: Insert[]; table?: TablePlan; restyle?: Restyle }
   | { k: "R"; b: Block; drop?: "moved" | "spacing" | "unsupported" };
+
+/**
+ * How a paragraph both have takes the reference's look: the new marks of each of LEFT's characters
+ * that looks different (by its index in the paragraph's content), and whether its paragraph style
+ * (heading, alignment, spacing, indents, list) does
+ */
+interface Restyle { marks: Map<number, Marks>; para: boolean }
 
 type RowItem = { k: "L"; row: Row } | { k: "M"; l: Row; r: Row; cells: (Item[] | null)[] } | { k: "R"; row: Row };
 interface TablePlan { rows: RowItem[]; shape: boolean }
@@ -466,7 +476,14 @@ function itemsOf(L: Block[], R: Block[], notes: Notes): Item[] {
   for (const it of items) {
     if (it.k !== "M") continue;
     // (An empty last paragraph taking the reference's last one takes it whole: see buildSeq)
-    if (it.l.t === "p" && it.r.t === "p") it.inserts = it.fill || it.l.chip ? [] : diffParagraph(it.l, it.r, notes);
+    if (it.l.t === "p" && it.r.t === "p") {
+      if (it.fill || it.l.chip) it.inserts = [];
+      else {
+        const d = diffParagraph(it.l, it.r, notes);
+        it.inserts = d.inserts;
+        if (d.restyle) it.restyle = d.restyle;
+      }
+    }
     else if (it.l.t === "table" && it.r.t === "table") it.table = planTable(it.l, it.r, notes);
   }
   return items;
@@ -535,7 +552,7 @@ function alignUnits(l: Para, r: Para, same: (i: number, j: number) => boolean): 
  * once normalized first, then words a typo apart), and each run of the reference's missing words put
  * where the reference has it, after LEFT's own words in the same place
  */
-function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
+function diffParagraph(l: Para, r: Para, notes: Notes): { inserts: Insert[]; restyle: Restyle | null } {
   const lu = unitsOf(l);
   const ru = unitsOf(r);
   const same = (i: number, j: number) => {
@@ -559,21 +576,31 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
     pi = i + 1;
     pj = j + 1;
   }
-  // What the pairs say LEFT keeps as it is
-  let formatting = false;
+  // What the pairs say LEFT keeps as it is, and the look its text takes from the reference: each of
+  // LEFT's characters looks as the reference's it pairs with (a word spelled differently, each of its
+  // letters as the reference's at the same place, the rest as its last)
+  const marks = new Map<number, Marks>();
   for (const [i, j] of pairs) {
     const a = lu[i];
     const b = ru[j];
     if (a.kind === "w" && a.raw !== b.raw) keep(notes, "spelling", `${quoted(a.raw)} / ${quoted(b.raw)}`);
     else if (a.kind === "s" && a.raw !== b.raw) keep(notes, "spacing");
-    if (!formatting && a.kind !== "s") {
-      for (let k = 0; k < a.to - a.from && k < b.to - b.from; k++) {
-        if (!sameStyle(styleFromMarks(l.atoms[a.from + k].node.marks), styleFromMarks(r.atoms[b.from + k].node.marks))) { formatting = true; break; }
-      }
+    if (a.kind === "x") continue;
+    const n = b.to - b.from;
+    for (let k = 0; k < a.to - a.from && n > 0; k++) {
+      const mine = l.atoms[a.from + k];
+      const theirs = r.atoms[b.from + Math.min(k, n - 1)];
+      if (mine.kind !== "c" || theirs.kind !== "c") continue;
+      if (!sameStyle(styleFromMarks(mine.node.marks), styleFromMarks(theirs.node.marks))) marks.set(a.from + k, lookMarks(mine.node.marks, theirs.node.marks));
     }
   }
-  if (formatting) keep(notes, "formatting", preview(l.text, 40));
-  if (lookOf(l.node.attrs) !== lookOf(r.node.attrs)) keep(notes, "paragraphStyle", preview(l.text, 40));
+  const para = l.key != null && lookOf(l.node.attrs) !== lookOf(r.node.attrs);
+  // A smart chip's text keeps its own look (Docs' link blue is the chip's, not the text's)
+  let restyle: Restyle | null = null;
+  if (r.chip) {
+    if (marks.size) keep(notes, "formatting", preview(l.text, 40));
+    if (para) keep(notes, "paragraphStyle", preview(l.text, 40));
+  } else if (marks.size || para) restyle = { marks, para };
 
   const inserts: Insert[] = [];
   let prevI = -1;
@@ -614,8 +641,16 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
     prevI = i;
     prevJ = j;
   }
-  return inserts;
+  return { inserts, restyle };
 }
+
+/** The marks that make a run's look, as styleFromMarks reads them */
+const LOOK_MARKS = new Set(["bold", "italic", "underline", "strike", "superscript", "subscript", "smallCaps", "textStyle", "highlight", "link"]);
+/** LEFT's marks with the reference's look: its other marks stay, its look is the reference's */
+const lookMarks = (mine: Marks | undefined, theirs: Marks | undefined): Marks => [
+  ...(mine ?? []).filter((m) => !LOOK_MARKS.has(m.type)),
+  ...(theirs ?? []).filter((m) => LOOK_MARKS.has(m.type)),
+];
 
 /** Punctuation, a symbol, a number or spaces: what a paragraph can have another of without its words changing */
 const minor = (u: Unit) => u.kind === "s" || u.kind === "p" || (u.kind === "w" && /^\p{N}+$/u.test(u.norm));
@@ -752,8 +787,10 @@ interface Tags {
   origin: WeakMap<EditorNode, number[]>;
   /** The reference tokens of a new block's own: a paragraph's end, a table's, row's or cell's start and end */
   block: WeakMap<EditorNode, { nl?: number; open?: number; end?: number }>;
-  /** The change a new node belongs to */
+  /** The change a new node belongs to (a restyled paragraph of LEFT's: the change that restyles it) */
   change: WeakMap<EditorNode, string>;
+  /** LEFT's paragraphs that take the reference's look */
+  restyled: WeakSet<EditorNode>;
 }
 
 interface Draft {
@@ -770,6 +807,8 @@ interface Draft {
   footnotes: number;
   /** Content of the tab (not a tab, rename, page setup, header or footer change) */
   content: boolean;
+  /** Reference paragraphs whose look LEFT's paragraphs take with it */
+  restyle: [number, number][];
 }
 
 interface Ctx {
@@ -791,7 +830,7 @@ type DraftInfo = Partial<Pick<Draft, "images" | "tables" | "footnotes">> & Pick<
 function change(ctx: Ctx, kind: ChangeKind, right: [number, number] | null, info: DraftInfo, key?: string): { id: string; skipped: boolean } {
   const id = `${kind}-${hashId(`${ctx.rightTabId}|${kind}|${key ?? (right ? right.join("-") : "")}`)}`;
   const skipped = ctx.skip.has(id);
-  ctx.drafts.push({ id, kind, right, skipped, images: 0, tables: 0, footnotes: 0, content: !key, ...info });
+  ctx.drafts.push({ id, kind, right, skipped, images: 0, tables: 0, footnotes: 0, content: !key, restyle: [], ...info });
   return { id, skipped };
 }
 
@@ -913,9 +952,25 @@ function contentOf(atoms: Atom[]): { kinds: Set<string>; images: number; footnot
   return { kinds, images: atoms.filter((a) => a.kind === "img").length, footnotes: atoms.filter((a) => a.kind === "fn").length, text: atoms.map((a) => a.ch).join("") };
 }
 
+/**
+ * One block of a sequence as it's built: the node (none for a change left out), the change it is or
+ * holds (a skipped one too, so what is next to it doesn't depend on whether it's copied), and a
+ * paragraph of LEFT's that takes the reference's look
+ */
+interface Slot {
+  node: EditorNode | null;
+  change: string | null;
+  /** An empty line of LEFT's: what's either side of it is still next to each other */
+  blank: boolean;
+  restyle?: { l: Para; r: Para; how: Restyle; own: string | null };
+  /** How many changes there were before it */
+  drafts: number;
+}
+
 /** LEFT's blocks with the reference's additions, in order */
 function buildSeq(items: Item[], ctx: Ctx): EditorNode[] {
-  const out: EditorNode[] = [];
+  const slots: Slot[] = [];
+  const put = (node: EditorNode | null, change: string | null = null, blank = false, restyle?: Slot["restyle"]) => slots.push({ node, change, blank, drafts: ctx.drafts.length, ...(restyle ? { restyle } : {}) });
   // Reference paragraphs added together (one change), each new or into LEFT's empty last paragraph
   let group: { p: Para; into?: Para }[] = [];
   const flush = () => {
@@ -930,8 +985,8 @@ function buildSeq(items: Item[], ctx: Ctx): EditorNode[] {
     const right: [number, number] = [firstTok(g[0].p), lastTok(g[g.length - 1].p) + 1];
     const { id, skipped } = change(ctx, kind, right, { words: countWords(text), preview: preview(text) || objectsPreview(atoms), where: ctx.cell ?? ctx.where, when: "typed", images, footnotes });
     // Left out: LEFT's empty last paragraph it was to go into stays as it is
-    if (skipped) { for (const x of g) if (x.into) out.push(x.into.node); return; }
-    for (const x of g) out.push(x.into ? splice(x.into.node, new Map([[0, copyAtoms(x.p, 0, x.p.atoms.length, ctx, id)]])) : newParagraph(x.p, ctx, id));
+    if (skipped) { put(null, id); for (const x of g) if (x.into) put(x.into.node, null, true); return; }
+    for (const x of g) put(x.into ? splice(x.into.node, new Map([[0, copyAtoms(x.p, 0, x.p.atoms.length, ctx, id)]])) : newParagraph(x.p, ctx, id), id);
   };
   for (const it of items) {
     if (it.k === "R") {
@@ -941,7 +996,9 @@ function buildSeq(items: Item[], ctx: Ctx): EditorNode[] {
         const lead = group.length && group.every((x) => !x.into && x.p.key == null) ? group.map((x) => x.p) : [];
         if (lead.length) group = [];
         else flush();
-        out.push(...newTable(it.b, lead, ctx));
+        const { nodes, id } = newTable(it.b, lead, ctx);
+        if (!nodes.length) put(null, id);
+        for (const n of nodes) put(n, id);
         continue;
       }
       if (group.length && isHeading(it.b)) flush();
@@ -955,38 +1012,150 @@ function buildSeq(items: Item[], ctx: Ctx): EditorNode[] {
     }
     flush();
     const left = it.k === "L" ? it.b : it.l;
-    out.push(it.k === "L" ? it.b.node : buildMatched(it, ctx));
+    if (it.k === "L") put(it.b.node, null, isBlank(it.b));
+    else if (it.l.t === "p" && it.r.t === "p") {
+      const { node, ids } = buildParagraph(it.l, it.r, it.inserts ?? [], ctx);
+      put(node, ids[0] ?? null, isBlank(it.l), it.restyle ? { l: it.l, r: it.r, how: it.restyle, own: ids[0] ?? null } : undefined);
+    } else put(buildMatched(it, ctx));
     // What follows is "after" this
     if (left.t === "p" && /\S/.test(left.text)) ctx.where = `after ${quoted(left.text)}`;
     else if (left.t === "table") ctx.where = "after the table";
   }
   flush();
+  return restyleSeq(slots, ctx);
+}
+
+/**
+ * LEFT's paragraphs that take the reference's look, each with the change it goes with: the words
+ * added into it, else the addition right after it (a heading the added text goes under), else the one
+ * right before it (empty lines between aside). The rest, a run of them at a time, are changes of
+ * their own, made when the sync starts. A restyle goes with its change: left out with it, copied with it.
+ */
+function restyleSeq(slots: Slot[], ctx: Ctx): EditorNode[] {
+  const next = (i: number, step: 1 | -1): string | null => {
+    for (let k = i + step; k >= 0 && k < slots.length; k += step) {
+      const s = slots[k];
+      if (s.change) return s.change;
+      if (s.blank && !s.restyle) continue;
+      return null;
+    }
+    return null;
+  };
+  const owner = new Map<number, string>();
+  slots.forEach((s, i) => {
+    if (!s.restyle) return;
+    const id = s.restyle.own ?? next(i, 1) ?? next(i, -1);
+    if (id) owner.set(i, id);
+  });
+  // The rest: one change for each run of them (empty lines between them in the run)
+  let inserted = 0;
+  for (let i = 0; i < slots.length;) {
+    if (!slots[i].restyle || owner.has(i)) { i++; continue; }
+    const run = [i];
+    let j = i + 1;
+    for (; j < slots.length; j++) {
+      const s = slots[j];
+      if (s.restyle && !owner.has(j)) run.push(j);
+      else if (!(s.blank && !s.restyle && !s.change)) break;
+    }
+    const first = slots[run[0]].restyle!;
+    const last = slots[run[run.length - 1]].restyle!;
+    const text = run.map((k) => slots[k].restyle!.l.text).join("\n");
+    const { id } = change(ctx, "format", [firstTok(first.r), lastTok(last.r) + 1], { words: 0, preview: preview(text), where: ctx.cell ?? "", when: "start" });
+    // In the list where it is in the document, not after everything
+    const d = ctx.drafts.pop()!;
+    ctx.drafts.splice(slots[run[0]].drafts + inserted, 0, d);
+    inserted++;
+    for (const k of run) owner.set(k, id);
+    i = j;
+  }
+  const out: EditorNode[] = [];
+  slots.forEach((s, i) => {
+    if (!s.node) return;
+    const id = owner.get(i);
+    if (!s.restyle || !id) { out.push(s.node); return; }
+    const draft = ctx.drafts.find((d) => d.id === id);
+    if (draft && draft.kind !== "format") draft.restyle.push([firstTok(s.restyle.r), lastTok(s.restyle.r) + 1]);
+    if (ctx.skip.has(id)) { out.push(s.node); return; }
+    const node = restyled(s.node, s.restyle.l, s.restyle.r, s.restyle.how, ctx);
+    ctx.tags.restyled.add(node);
+    if (!ctx.tags.change.has(node)) ctx.tags.change.set(node, id);
+    out.push(node);
+  });
+  return out;
+}
+
+/** What ties a LEFT paragraph to its list and its place, which it keeps when it takes the reference's look */
+const OWN_PLACE = ["listId", "glyph", "preset", "cont"];
+
+/**
+ * A LEFT paragraph (with what's added into it) in the reference's look: each of its own characters
+ * that looks different with the reference's marks, and its paragraph style the reference's (its list
+ * the one it's in when the reference's is the same kind, else one made the way the editor makes one)
+ */
+function restyled(node: EditorNode, l: Para, r: Para, how: Restyle, ctx: Ctx): EditorNode {
+  const content: EditorNode[] = [];
+  let at = 0;
+  for (const child of node.content ?? []) {
+    // What's added keeps the reference's look already
+    if (ctx.tags.origin.has(child)) { content.push(child); continue; }
+    const n = atomsIn(child);
+    if (child.type === "text" && typeof child.text === "string" && n > 0) {
+      let from = 0;
+      const marksAt = (k: number) => how.marks.get(at + k) ?? child.marks ?? [];
+      const keyAt = (k: number) => JSON.stringify(marksAt(k));
+      while (from < n) {
+        const m = marksAt(from);
+        const key = keyAt(from);
+        let to = from + 1;
+        while (to < n && keyAt(to) === key) to++;
+        const text: EditorNode = { ...child, text: child.text.slice(from, to) };
+        if (m.length) text.marks = m;
+        else delete text.marks;
+        content.push(text);
+        from = to;
+      }
+    } else content.push(child);
+    at += n;
+  }
+  const out: EditorNode = { ...node, content };
+  if (how.para) {
+    const mine = l.node.attrs ?? {};
+    const theirs = r.node.attrs ?? {};
+    const attrs: Record<string, unknown> = { ...mine, ...withoutIds(theirs) };
+    for (const k of OWN_PLACE) { if (k in mine) attrs[k] = mine[k]; else delete attrs[k]; }
+    if (theirs.list && theirs.list !== mine.list) Object.assign(attrs, { listId: null, glyph: null, preset: ctx.presets.get(listKey(theirs)) ?? null });
+    else if (!theirs.list) { attrs.list = null; if ("listId" in attrs) attrs.listId = null; }
+    out.attrs = attrs;
+  }
   return out;
 }
 
 /** A reference table, new, with the empty lines before it (`lead`): one change, its structure made when the sync starts */
-function newTable(t: Table, lead: Para[], ctx: Ctx): EditorNode[] {
+function newTable(t: Table, lead: Para[], ctx: Ctx): { nodes: EditorNode[]; id: string } {
   const atoms = t.rows.flatMap((r) => r.cells.flatMap((c) => c.blocks.flatMap((b) => (b.t === "p" ? b.atoms : []))));
   const { images, footnotes } = contentOf(atoms);
   const columns = Math.max(0, ...t.rows.map((r) => r.cells.reduce((n, c) => n + (Number(c.node.attrs?.colspan) || 1), 0)));
   const right: [number, number] = [lead.length ? firstTok(lead[0]) : t.tok, t.end + 1];
   const { id, skipped } = change(ctx, "table", right, { words: countWords(t.text), preview: preview(t.text.replace(/[|/]/g, " ")) || `A table, ${t.rows.length} by ${columns}`, where: ctx.cell ?? ctx.where, when: "start", images, footnotes, tables: 1 });
-  if (skipped) return [];
+  if (skipped) return { nodes: [], id };
   const node: EditorNode = { type: "table", attrs: withoutIds(t.node.attrs), content: t.rows.map((row) => newRow(row, ctx, id)) };
   ctx.tags.block.set(node, { open: t.tok, end: t.end });
   ctx.tags.change.set(node, id);
-  return [...lead.map((p) => newParagraph(p, ctx, id)), node];
+  return { nodes: [...lead.map((p) => newParagraph(p, ctx, id)), node], id };
 }
 
 function buildMatched(it: Extract<Item, { k: "M" }>, ctx: Ctx): EditorNode {
   const { l, r } = it;
-  if (l.t === "p" && r.t === "p") return buildParagraph(l, r, it.inserts ?? [], ctx);
+  if (l.t === "p" && r.t === "p") return buildParagraph(l, r, it.inserts ?? [], ctx).node;
   if (l.t === "table" && r.t === "table" && it.table) return buildTable(l, it.table, ctx);
   return l.node;
 }
 
-function buildParagraph(l: Para, r: Para, inserts: Insert[], ctx: Ctx): EditorNode {
+/** A paragraph both have, with the reference's words added into it, and the changes that add them (left out ones too) */
+function buildParagraph(l: Para, r: Para, inserts: Insert[], ctx: Ctx): { node: EditorNode; ids: string[] } {
   const at = new Map<number, EditorNode[]>();
+  const ids: string[] = [];
   const where = inserts.length && /\S/.test(l.text) ? `in ${quoted(l.text)}` : null;
   for (const ins of inserts) {
     if (ins.moved) continue;
@@ -1002,11 +1171,12 @@ function buildParagraph(l: Para, r: Para, inserts: Insert[], ctx: Ctx): EditorNo
       images,
       footnotes,
     });
+    ids.push(id);
     if (skipped) continue;
     const nodes = [...(ins.padBefore ? [pad(atoms[0], ctx, id)] : []), ...copyAtoms(r, ins.from, ins.to, ctx, id), ...(ins.padAfter ? [pad(atoms[atoms.length - 1], ctx, id)] : [])];
     at.set(ins.at, [...(at.get(ins.at) ?? []), ...nodes]);
   }
-  return at.size ? splice(l.node, at) : l.node;
+  return { node: at.size ? splice(l.node, at) : l.node, ids };
 }
 
 /** A LEFT paragraph with new inline nodes put in at content tokens (a text node split where one goes) */
@@ -1079,8 +1249,9 @@ function buildTable(l: Table, plan: TablePlan, ctx: Ctx): EditorNode {
  * For each token of the merged document (doc-model's tokenize order): the reference token it copies
  * (-1 for LEFT's own), and each change's token range
  */
-function originOf(blocks: EditorNode[], tags: Tags): { origin: number[]; spans: Map<string, [number, number]> } {
+function originOf(blocks: EditorNode[], tags: Tags): { origin: number[]; spans: Map<string, [number, number]>; restyled: [number, number][] } {
   const origin: number[] = [];
+  const restyled: [number, number][] = [];
   const spans = new Map<string, [number, number]>();
   const mark = (id: string | undefined, from: number, to: number) => {
     if (!id || to <= from) return;
@@ -1091,6 +1262,7 @@ function originOf(blocks: EditorNode[], tags: Tags): { origin: number[]; spans: 
   const paragraph = (node: EditorNode, inherited: string | undefined) => {
     const id = tags.change.get(node) ?? inherited;
     if (node.attrs?.locked) { push(-1, id); return; }
+    const start = origin.length;
     for (const child of node.content ?? []) {
       const n = atomsIn(child);
       const o = tags.origin.get(child);
@@ -1098,6 +1270,7 @@ function originOf(blocks: EditorNode[], tags: Tags): { origin: number[]; spans: 
       for (let k = 0; k < n; k++) push(o ? o[Math.min(k, o.length - 1)] : -1, cid);
     }
     push(tags.block.get(node)?.nl, id);
+    if (tags.restyled.has(node)) restyled.push([start, origin.length]);
   };
   const table = (node: EditorNode) => {
     const id = tags.change.get(node);
@@ -1121,7 +1294,7 @@ function originOf(blocks: EditorNode[], tags: Tags): { origin: number[]; spans: 
     if (b.type === "table") table(b);
     else paragraph(b, undefined);
   }
-  return { origin, spans };
+  return { origin, spans, restyled };
 }
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
@@ -1286,13 +1459,14 @@ const docOf = (nodes: EditorNode[]): EditorNode => ({ type: "doc", content: grou
 function compareTab(rt: CompareTab, target: TabTarget, lt: CompareTab | null, skip: Set<string>, parentTitle: string | null): { tab: TabCompare; total: number; missing: number } {
   const baseNodes = lt ? lt.doc.nodes : [NEW_TAB_PARAGRAPH];
   const base = docOf(baseNodes);
-  const tags: Tags = { origin: new WeakMap(), block: new WeakMap(), change: new WeakMap() };
+  const tags: Tags = { origin: new WeakMap(), block: new WeakMap(), change: new WeakMap(), restyled: new WeakSet() };
   const ctx: Ctx = { rightTabId: rt.id, skip, tags, drafts: [], presets: new Map(), where: target.kind === "new" ? "in a new tab" : "at the start", cell: null };
   const notes: Notes = { kept: new Map(), unsupported: new Map(), seqs: [], pool: [] };
   const setup: NonNullable<TabCompare["setup"]> = {};
   let merged = base;
   let origin: number[] = [];
   let spans = new Map<string, [number, number]>();
+  let restyled: [number, number][] = [];
   let total = 0;
   const R = readBlocks(rt.doc.nodes);
   if (target.kind !== "skip") {
@@ -1321,14 +1495,14 @@ function compareTab(rt: CompareTab, target: TabTarget, lt: CompareTab | null, sk
       settle(notes);
       const blocks = buildSeq(items, ctx);
       merged = docOf(blocks);
-      ({ origin, spans } = originOf(blocks, tags));
+      ({ origin, spans, restyled } = originOf(blocks, tags));
       // Footnote texts that differ stay as LEFT has them
       footnoteNotes(items, lt, rt, notes);
     }
   }
   if (!origin.length) origin = new Array<number>(tokenize(merged).length).fill(-1);
   for (const b of R) if (b.t !== "lock") total += b.words.length;
-  const changes: Change[] = ctx.drafts.map((d) => ({ id: d.id, kind: d.kind, rightTabId: rt.id, words: d.words, preview: d.preview, where: d.where, when: d.when, merged: d.skipped ? null : spans.get(d.id) ?? null, right: d.right }));
+  const changes: Change[] = ctx.drafts.map((d) => ({ id: d.id, kind: d.kind, rightTabId: rt.id, words: d.words, preview: d.preview, where: d.where, when: d.when, merged: d.skipped ? null : spans.get(d.id) ?? null, right: d.right, ...(d.restyle.length ? { restyle: d.restyle } : {}) }));
   const live = ctx.drafts.filter((d) => !d.skipped);
   const missing = ctx.drafts.filter((d) => d.content).reduce((n, d) => n + d.words, 0);
   const sum = (key: "words" | "images" | "tables" | "footnotes") => live.reduce((n, d) => n + d[key], 0);
@@ -1342,7 +1516,8 @@ function compareTab(rt: CompareTab, target: TabTarget, lt: CompareTab | null, sk
     changes,
     kept: Array.from(notes.kept.values(), (k) => ({ ...k, rightTabId: rt.id, leftTabId: lt?.id ?? null })),
     unsupported: Array.from(notes.unsupported.values(), (u) => ({ ...u, rightTabId: rt.id })),
-    rightCopied: union(live.filter((d) => d.right && d.content).map((d) => d.right!)),
+    rightCopied: union([...live.filter((d) => d.right && d.content).map((d) => d.right!), ...live.flatMap((d) => d.restyle)]),
+    restyled,
     ...(Object.keys(setup).length ? { setup } : {}),
     stats: {
       words: sum("words"),

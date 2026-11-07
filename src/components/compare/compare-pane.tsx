@@ -42,6 +42,8 @@ export interface PaneSetup { pageSetup: PageSetup; pageless: boolean; defaults?:
 export interface PaneMarks {
   copied?: [number, number][];
   skipped?: [number, number][];
+  /** Your text that takes the reference's look */
+  restyled?: [number, number][];
   /** First tokens of whole new blocks (tables) */
   blocks?: number[];
 }
@@ -141,7 +143,7 @@ export function ComparePane(p: ComparePaneProps) {
     const size = editor.state.doc.content.size;
     const ranges = (list?: [number, number][]) => (list ?? []).map((r) => tokenRange(positions, r, size)).filter((r): r is { from: number; to: number } => !!r);
     const blocks = (marks?.blocks ?? []).map((t) => positions[t]).filter((x): x is number => typeof x === "number");
-    setCompareMarks(editor.view, { copied: ranges(marks?.copied), skipped: ranges(marks?.skipped), blocks, flash: null });
+    setCompareMarks(editor.view, { copied: ranges(marks?.copied), skipped: ranges(marks?.skipped), restyled: ranges(marks?.restyled), blocks, flash: null });
     onLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, docKey, marksKey]);

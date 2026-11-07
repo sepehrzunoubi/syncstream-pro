@@ -12,13 +12,18 @@ const NEW_LINE = "Beta two is the part the reference added.";
 
 const tab = (id: string, title: string, texts: string[], index: number): CompareTab => ({ id, title, level: 0, parentId: null, index, doc: tabContent(texts) });
 
-/** Your document lacks a paragraph of the reference's first tab, and its whole second tab */
-function comparison(rev = 1, given: TabMap = {}): CompareLoadResponse {
+/** Your document lacks a paragraph of the reference's first tab, and its whole second tab (with `highlight`, the reference's first line is highlighted) */
+function comparison(rev = 1, given: TabMap = {}, highlight = false): CompareLoadResponse {
+  const ref = tab("t.ref", "Overview", ["Alpha one stays as it is.", NEW_LINE, "Gamma three closes it."], 0);
+  if (highlight) {
+    const first = ref.doc.nodes[0].content![0];
+    first.marks = [...(first.marks ?? []), { type: "highlight", attrs: { color: "#f4cccc" } }];
+  }
   return {
     left: { documentId: LEFT, name: "Team notes", revisionId: `left-${rev}`, tabs: [tab("t.left", "Overview", ["Alpha one stays as it is.", "Gamma three closes it."], 0)] },
     right: {
       documentId: RIGHT, name: "Team notes (final)", revisionId: `right-${rev}`,
-      tabs: [tab("t.ref", "Overview", ["Alpha one stays as it is.", NEW_LINE, "Gamma three closes it."], 0), tab("t.app", "Appendix", ["Only the reference has this appendix."], 1)],
+      tabs: [ref, tab("t.app", "Appendix", ["Only the reference has this appendix."], 1)],
     },
     tabMap: { "t.ref": { kind: "tab", leftTabId: "t.left" }, "t.app": { kind: "new", title: "Appendix", parentRightTabId: null }, ...given },
     canEdit: true,
@@ -34,11 +39,13 @@ interface CompareFake {
   startAnswer: "ok" | "changed" | "busy";
   /** Images of the reference a start says it couldn't copy */
   droppedImages: number;
+  /** The reference's first line is highlighted */
+  highlight?: boolean;
 }
 
 /** Signed in, with the fixtures' Google, the two documents in Drive and the compare routes faked */
-async function openCompare(page: Page, api: FakeGoogle, session?: Record<string, unknown>): Promise<CompareFake> {
-  const fake: CompareFake = { loads: [], starts: [], startAnswer: "ok", droppedImages: 0 };
+async function openCompare(page: Page, api: FakeGoogle, session?: Record<string, unknown>, opts: { highlight?: boolean } = {}): Promise<CompareFake> {
+  const fake: CompareFake = { loads: [], starts: [], startAnswer: "ok", droppedImages: 0, highlight: opts.highlight };
   api.docs = [
     { id: LEFT, name: "Team notes", modifiedTime: new Date().toISOString() },
     { id: RIGHT, name: "Team notes (final)", modifiedTime: new Date(Date.now() - 86_400_000).toISOString() },
@@ -52,7 +59,7 @@ async function openCompare(page: Page, api: FakeGoogle, session?: Record<string,
       fake.loads.push(url.searchParams);
       // As the route does: the tab choices given win, the rest are matched automatically
       const map = url.searchParams.get("map");
-      return json(route, comparison(fake.loads.length, map ? (JSON.parse(map) as TabMap) : {}));
+      return json(route, comparison(fake.loads.length, map ? (JSON.parse(map) as TabMap) : {}, fake.highlight));
     }
     if (url.pathname === "/api/compare/start") {
       const body = route.request().postDataJSON() as CompareStartBody;
@@ -173,6 +180,30 @@ test.describe("Compare & Sync", () => {
     await page.getByRole("button", { name: "Start sync" }).click();
     await expect.poll(() => fake.starts.length).toBe(1);
     expect(fake.starts[0].skip).toHaveLength(1);
+  });
+
+  test("a highlight the reference has on a line you have comes over with the text added after it: one change, shown on both pages", async ({ page, api, app }) => {
+    void app;
+    const fake = await openCompare(page, api, PICKED, { highlight: true });
+    await compared(page);
+    const row = changeRow(page, "Beta two");
+    await expect(row).toContainText("restyles 1 line");
+    // Your line takes the highlight, marked as restyled; it isn't typed (no glow)
+    const line = yours(page).locator(".ss-cmp-restyle", { hasText: "Alpha one" });
+    await expect(line).toBeVisible();
+    await expect(yours(page).locator("mark", { hasText: "Alpha one" })).toBeVisible();
+    await expect(yours(page).locator(".ss-add", { hasText: "Alpha one" })).toHaveCount(0);
+    await expect(yours(page).locator(".ss-cmp-pane-head")).toContainText("restyled text underlined");
+    // Left out, the change takes its restyle with it
+    await row.locator(".ss-cmp-toggle").click();
+    await expect(yours(page).locator(".ss-cmp-restyle")).toHaveCount(0);
+    await expect(yours(page).locator("mark", { hasText: "Alpha one" })).toHaveCount(0);
+    await expect(reference(page).locator(".ss-cmp-skip", { hasText: "Alpha one" }).first()).toBeVisible();
+    await row.locator(".ss-cmp-toggle").click();
+    await expect(line).toBeVisible();
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect.poll(() => fake.starts.length).toBe(1);
+    expect(fake.starts[0].skip).toEqual([]);
   });
 
   test("Start sends the comparison as it was reviewed", async ({ page, api, app }) => {

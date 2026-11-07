@@ -4,7 +4,7 @@ import type { docs_v1 } from "googleapis";
 import { applyBreaks, breaksFromMerged, compareDocs, matchTabs, NEW_TAB_PARAGRAPH } from "./compare";
 import type { CompareSide, CompareTab, TabCompare } from "./compare-types";
 import { importDoc, type ImportedDoc } from "./doc-import";
-import { additions, breakAnchors, directEdits, PENDING_MARK, tokenize, type Tok } from "./doc-model";
+import { additions, breakAnchors, directEdits, PENDING_MARK, tokenize, untokenize, type Tok } from "./doc-model";
 import type { EditorNode } from "./rich-text";
 
 // ── Documents as documents.get gives them, read by the app's own importer ──
@@ -125,15 +125,23 @@ function one(left: B[], right: B[], opts: Parameters<typeof compareDocs>[2] = {}
 // ── What every comparison must be ──────────────────────────────────────────
 
 
-/** LEFT is untouched; everything else is copied from the reference, pending; the sync can carry it */
+/**
+ * LEFT's content is all there, in order, untouched but for the look of what takes the reference's;
+ * everything else is copied from the reference, pending; the sync can carry it
+ */
 function checkInvariants(tab: TabCompare, right?: EditorNode) {
   const merged = tokenize(tab.merged);
   const base = tokenize(tab.base);
   assert.equal(tab.origin.length, merged.length, "one origin per token");
   // (A table's row and cell tokens are named by place, which a row added before them changes)
   const plain = (t: Tok) => JSON.parse(JSON.stringify(t.k === "st" ? { ...t, id: undefined } : t));
-  const own = merged.filter((_, j) => tab.origin[j] < 0);
-  assert.deepEqual(own.map(plain), base.map(plain), "LEFT's tokens, every mark and attribute, in order");
+  // Restyled text: the same characters and paragraph ends, in another look
+  const restyled = new Set<number>();
+  for (const [a, b] of tab.restyled ?? []) for (let j = a; j < b; j++) restyled.add(j);
+  const bare = (t: Tok) => (t.k === "c" ? { k: "c", c: t.c } : { k: t.k });
+  const ownAt = merged.map((_, j) => j).filter((j) => tab.origin[j] < 0);
+  assert.deepEqual(ownAt.map((j) => (restyled.has(j) ? bare(merged[j]) : plain(merged[j]))), base.map((t, n) => (restyled.has(ownAt[n]) ? bare(t) : plain(t))), "LEFT's tokens, every mark and attribute but a restyle's, in order");
+  for (const j of restyled) assert.ok(tab.origin[j] < 0 || merged[j].k !== "nl", `restyled token ${j} is LEFT's or added`);
   merged.forEach((t, j) => {
     if (tab.origin[j] < 0) return;
     if (t.k === "c" || t.k === "img" || t.k === "pb") assert.ok(t.pending, `copied ${t.k} at ${j} is pending`);
@@ -150,20 +158,24 @@ function checkInvariants(tab: TabCompare, right?: EditorNode) {
       assert.ok(src.k === "block" || (src.k === "c" && src.c === t.c), `token ${j} copies reference token ${o}`);
     });
   }
-  // Nothing of LEFT is saved over: only structure the sync can't type is written directly
+  // Nothing of LEFT is saved over: only structure the sync can't type is written directly, and the
+  // look of what is restyled
+  const restyles = tab.restyled?.length ? ["updateTextStyle", "updateParagraphStyle", "createParagraphBullets", "deleteParagraphBullets"] : [];
   for (const req of directEdits(tab.base, tab.merged).requests) {
     const [kind] = Object.keys(req);
-    assert.ok(["insertTable", "mergeTableCells", "insertTableRow", "insertTableColumn", "createFootnote", "insertText"].includes(kind), `no ${kind} of LEFT`);
+    assert.ok(["insertTable", "mergeTableCells", "insertTableRow", "insertTableColumn", "createFootnote", "insertText", ...restyles].includes(kind), `no ${kind} of LEFT`);
     if (kind === "insertText" && !JSON.stringify(tab.merged).includes("footnoteRef")) assert.match((req.insertText as { text: string }).text, /^\n+$/);
   }
-  // Text typed into one of LEFT's paragraphs never restyles it: its first line is that paragraph as it is
+  // Text typed into one of LEFT's paragraphs never restyles it: its first line is that paragraph as it
+  // is once the sync has started (restyled, if it is)
+  const started = untokenize(merged.filter((_, j) => tab.origin[j] < 0));
   const starts = new Set<number>();
   let index = 1;
   base.forEach((t, i) => {
     if (i === 0 || ["nl", "st", "block"].includes(base[i - 1].k)) starts.add(index);
     index += t.k === "block" ? Number(t.node.attrs?.span) || 0 : t.k === "st" ? t.span : 1;
   });
-  for (const s of additions(tab.base, tab.merged).segments) {
+  for (const s of additions(started, tab.merged).segments) {
     if (s.mode === "inline" && (!starts.has(s.at) || !s.text.includes("\n"))) assert.deepEqual(s.format.paragraphs[0], s.format.base, `line 0 of the text typed at ${s.at}`);
   }
 }
@@ -284,16 +296,73 @@ test("extra words LEFT has stay, and the reference's missing ones are still adde
   assert.equal(kept(tab, "onlyLeft"), 1);
 });
 
-test("the same words in another look are left as they are", () => {
+/** Each text run of a merged tab's paragraphs: its text, and its look as it would be written */
+const runs = (doc: EditorNode): [string, string][][] => (doc.content ?? []).map((p) => (p.content ?? []).map((c): [string, string] => [c.text ?? c.type ?? "", (c.marks ?? []).map((m) => (m.attrs ? `${m.type}:${JSON.stringify(m.attrs)}` : m.type)).sort().join(",")]));
+
+test("the same words in another look take the reference's look exactly: one change, made when the sync starts", () => {
   const tab = one([{ p: ["The ", { t: "key", s: { italic: true } }, " point."] }], [{ p: ["The ", { t: "key", s: { bold: true } }, " point."] }]);
-  assert.deepEqual(tab.changes, []);
-  assert.equal(kept(tab, "formatting"), 1);
+  assert.deepEqual(kinds(tab), ["format"]);
+  assert.equal(tab.changes[0].when, "start");
+  assert.equal(tab.changes[0].words, 0);
+  assert.equal(kept(tab, "formatting"), 0);
+  // "key" is bold now and no longer italic; the rest as it was
+  assert.deepEqual(runs(tab.merged), [[["The ", ""], ["key", "bold"], [" point.", ""]]]);
+  assert.equal(pendingText(tab.merged), "");
+  // Written as Docs takes it, when the sync starts
+  const reqs = directEdits(tab.base, tab.merged).requests.map((r) => Object.keys(r)[0]);
+  assert.deepEqual(reqs, ["updateTextStyle"]);
+  assert.deepEqual(tab.restyled, [[0, 15]]);
 });
 
-test("the same paragraph with another style is left as it is", () => {
+test("the same paragraph with another style takes the reference's heading and alignment", () => {
   const tab = one([{ p: "Introduction" }], [{ p: "Introduction", named: "HEADING_1", align: "CENTER" }]);
-  assert.deepEqual(tab.changes, []);
-  assert.equal(kept(tab, "paragraphStyle"), 1);
+  assert.deepEqual(kinds(tab), ["format"]);
+  assert.equal(kept(tab, "paragraphStyle"), 0);
+  const attrs = tab.merged.content![0].attrs!;
+  assert.equal(attrs.styleName, "h1");
+  assert.equal(attrs.textAlign, "center");
+  const reqs = directEdits(tab.base, tab.merged).requests;
+  assert.ok(reqs.some((r) => JSON.stringify(r).includes("HEADING_1")), "the heading is written");
+});
+
+test("a highlighted heading right above new text goes with it: one change, the heading restyled only when it's copied", () => {
+  const hl = { backgroundColor: rgb("#f4cccc") };
+  const left: B[] = ["Intro", "Regulatory environment", "Market overview", "End"];
+  const right: B[] = ["Intro", { p: [{ t: "Regulatory environment", s: hl }] }, { p: "Agents are covered by existing rules.", list: "bullet" }, { p: "EU AI Act phases in now.", list: "bullet" }, { p: [{ t: "Market overview", s: hl }] }, { p: "It's still early.", list: "bullet" }, "End"];
+  const tab = one(left, right);
+  // Each heading goes with the items after it
+  assert.deepEqual(kinds(tab), ["list", "list"]);
+  assert.deepEqual(tab.changes.map((c) => c.restyle?.length ?? 0), [1, 1]);
+  const highlighted = (t: TabCompare) => (t.merged.content ?? []).filter((p) => (p.content ?? []).some((c) => c.marks?.some((m) => m.type === "highlight") && !c.marks.some((m) => m.type === PENDING_MARK))).map((p) => textOf([p]));
+  assert.deepEqual(highlighted(tab), ["Regulatory environment", "Market overview"]);
+  // The first left out: its heading keeps your look, the other still takes the reference's
+  const off = one(left, right, { skip: [tab.changes[0].id] });
+  assert.deepEqual(highlighted(off), ["Market overview"]);
+  assert.deepEqual(off.changes.map((c) => c.kind), ["list", "list"]);
+  // The reference's headings are highlighted as copied
+  for (const c of tab.changes) for (const r of c.restyle!) assert.ok(tab.rightCopied.some(([a, b]) => a <= r[0] && b >= r[1]));
+});
+
+test("restyles with nothing added next to them are a change of their own, one for each run of them", () => {
+  const red = { foregroundColor: rgb("#cc0000") };
+  const left: B[] = ["One", "Two", "Plain", "Three"];
+  const right: B[] = [{ p: [{ t: "One", s: red }] }, { p: [{ t: "Two", s: red }] }, "Plain", { p: [{ t: "Three", s: red }] }];
+  const tab = one(left, right);
+  assert.deepEqual(kinds(tab), ["format", "format"]);
+  assert.deepEqual(tab.changes.map((c) => c.preview), ["One Two", "Three"]);
+  // In the order of the document
+  assert.ok(tab.changes[0].right![1] <= tab.changes[1].right![0]);
+});
+
+test("your own words in a restyled paragraph keep their look; text typed into it takes the reference's", () => {
+  const tab = one([{ p: ["Revenue grew, ", { t: "as hoped,", s: { italic: true } }, " by ten percent."] }], [{ p: [{ t: "Revenue grew by ten percent this year.", s: { bold: true } }] }]);
+  const paragraph = runs(tab.merged)[0];
+  // LEFT's own "as hoped," stays italic, not bold; the words both have are bold; the added words are bold and pending
+  assert.ok(paragraph.some(([t, m]) => t.includes("as hoped") && m === "italic"));
+  assert.ok(paragraph.some(([t, m]) => t.includes("Revenue grew") && m === "bold"));
+  assert.ok(paragraph.some(([t, m]) => t.includes("this year") && m.includes("bold") && m.includes(PENDING_MARK)));
+  // One change: the words, with the restyle of the paragraph they go into
+  assert.deepEqual(kinds(tab), ["text"]);
 });
 
 test("quotes, spaces, case and typos read as the same words: nothing typed twice", () => {

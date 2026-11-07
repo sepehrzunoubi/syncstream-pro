@@ -802,3 +802,66 @@ test("the live page's view of a long sync is kept only while /api/sync/source's 
   assert.ok(cyr.built.context === null, `the Cyrillic text's view is kept: the reply is ${cyr.bytes} bytes`);
   assert.ok(cyr.bytes < 4_000_000, `Cyrillic reply ${cyr.bytes} bytes`);
 });
+
+test("the reference's look comes over: highlighted headings, a heading style and a font on text LEFT has, written at the start, before the typing", async () => {
+  const left = stub("left-doc-0000900", "Mine", [{ id: "t.0", title: "Notes", text: "Intro\nRegulatory environment\nMarket overview\nEnd" }]);
+  const right = stub("right-doc-000900", "Ref", [{ id: "t.0", title: "Notes", text: "Intro\nRegulatory environment\nAgents are covered.\nEU AI Act phases in.\nMarket overview\nIt's still early.\nEnd" }]);
+  const r = right.tab("t.0");
+  const at = (text: string) => { const i = r.text().indexOf(text); return { startIndex: i, endIndex: i + text.length }; };
+  const pink = { color: { rgbColor: { red: 0.957, green: 0.8, blue: 0.8 } } };
+  r.batchUpdate([
+    { updateTextStyle: { range: at("Regulatory environment"), textStyle: { backgroundColor: pink }, fields: "backgroundColor" } },
+    { updateTextStyle: { range: at("Market overview"), textStyle: { backgroundColor: pink }, fields: "backgroundColor" } },
+    { updateTextStyle: { range: at("Intro"), textStyle: { weightedFontFamily: { fontFamily: "Times New Roman", weight: 400 } }, fields: "weightedFontFamily" } },
+    { updateParagraphStyle: { range: at("Market overview"), paragraphStyle: { namedStyleType: "HEADING_2" }, fields: "namedStyleType" } },
+    { createParagraphBullets: { range: { startIndex: at("Agents").startIndex, endIndex: at("phases in.").endIndex }, bulletPreset: "BULLET_DISC_CIRCLE_SQUARE" } },
+  ]);
+  // Before anything is typed, the restyle is in: the set-up writes it
+  let restyledFirst = false;
+  const watching: CompareGoogle = { ...g, batch: async (...a) => { const out = await g.batch(...a); if (JSON.stringify(a[1]).includes("backgroundColor") && !plain(left, "t.0").includes("Agents")) restyledFirst = true; return out; } };
+  await start("left-doc-0000900", "right-doc-000900", { google: watching });
+  assert.ok(restyledFirst, "the look is written before the sync types");
+  assert.equal(plain(left, "t.0"), plain(right, "t.0"));
+  const doc = openTab(await getRawDocument("t", "left-doc-0000900"), "t.0")!.doc;
+  const paras = (doc.body?.content ?? []).filter((e) => e.paragraph).map((e) => e.paragraph!);
+  const textOfP = (p: (typeof paras)[number]) => (p.elements ?? []).map((x) => x.textRun?.content ?? "").join("").replace(/\n$/, "");
+  const find = (t: string) => paras.find((p) => textOfP(p) === t)!;
+  const runStyle = (t: string) => find(t).elements!.find((x) => (x.textRun?.content ?? "").startsWith(t.slice(0, 3)))!.textRun!.textStyle ?? {};
+  assert.ok(runStyle("Regulatory environment").backgroundColor, "the first heading is highlighted");
+  assert.ok(runStyle("Market overview").backgroundColor, "the second heading is highlighted");
+  assert.equal(find("Market overview").paragraphStyle?.namedStyleType, "HEADING_2");
+  assert.equal(runStyle("Intro").weightedFontFamily?.fontFamily, "Times New Roman");
+  assert.ok(!runStyle("End").backgroundColor && !runStyle("End").weightedFontFamily, "what looks the same stays as it is");
+  assert.ok(find("Agents are covered.").bullet && find("EU AI Act phases in.").bullet, "the new items are a list");
+  // Compared again, nothing is left to copy: not a word, not a look
+  const [l2, r2] = await Promise.all([getRawDocument("t", "left-doc-0000900"), getRawDocument("t", "right-doc-000900")]);
+  const sides = buildSides(l2, "left-doc-0000900", r2, "right-doc-000900", {});
+  const again = compareDocs(sides.left, sides.right, { tabMap: sides.tabMap });
+  assert.deepEqual(again.tabs.flatMap((t) => t.changes.map((c) => `${c.kind}: ${c.preview}`)), []);
+});
+
+test("only a look to copy: the start writes it and says there was nothing left to type", async () => {
+  stub("left-doc-0000901", "Mine", [{ id: "t.0", title: "Notes", text: "Plain words\nMore" }]);
+  const right = stub("right-doc-000901", "Ref", [{ id: "t.0", title: "Notes", text: "Plain words\nMore" }]);
+  right.tab("t.0").batchUpdate([{ updateTextStyle: { range: { startIndex: 1, endIndex: 6 }, textStyle: { bold: true }, fields: "bold" } }]);
+  const [l, r] = await Promise.all([getRawDocument("t", "left-doc-0000901"), getRawDocument("t", "right-doc-000901")]);
+  const prepared = await prepareCompare(g, { leftId: "left-doc-0000901", rightId: "right-doc-000901", leftRevision: l.revisionId!, rightRevision: r.revisionId!, tabMap: {}, skip: [], breaks: [] });
+  const built = buildCompareJob(prepared, { id: "job_901", userId: "u", documentId: "left-doc-0000901", documentName: "", breaksMode: "none", targetMinutes: null, typoFrequency: 0, seed: 1, startInMinutes: 0, now: 1, accessToken: "a", refreshToken: "r" });
+  assert.ok(!built.ok && built.code === "nothing" && /now has everything/.test(built.error), JSON.stringify(built));
+  const run = openTab(await getRawDocument("t", "left-doc-0000901"), "t.0")!.doc.body!.content!.find((e) => e.paragraph)!.paragraph!.elements![0].textRun!;
+  assert.equal(run.content, "Plain");
+  assert.equal(run.textStyle?.bold, true);
+});
+
+test("lines the reference has as a list become one in LEFT, and LEFT's list the reference has as plain lines stops being one", async () => {
+  const left = stub("left-doc-0000902", "Mine", [{ id: "t.0", title: "Notes", text: "Fruit\nApples\nPears\nSteps\nWash\nCut\nNew line here" }]);
+  bullets(left, "t.0", ["Wash", "Cut"], "NUMBERED_DECIMAL_ALPHA_ROMAN");
+  const right = stub("right-doc-000902", "Ref", [{ id: "t.0", title: "Notes", text: "Fruit\nApples\nPears\nSteps\nWash\nCut\nNew line here\nAnd one more." }]);
+  bullets(right, "t.0", ["Apples", "Pears"], "BULLET_DISC_CIRCLE_SQUARE");
+  await start("left-doc-0000902", "right-doc-000902");
+  const ps = await paragraphsOf("left-doc-0000902", "t.0");
+  assert.deepEqual(ps.map((p) => [p.text, !!p.list]), [["Fruit", false], ["Apples", true], ["Pears", true], ["Steps", false], ["Wash", false], ["Cut", false], ["New line here", false], ["And one more.", false]]);
+  const [l2, r2] = await Promise.all([getRawDocument("t", "left-doc-0000902"), getRawDocument("t", "right-doc-000902")]);
+  const sides = buildSides(l2, "left-doc-0000902", r2, "right-doc-000902", {});
+  assert.deepEqual(compareDocs(sides.left, sides.right, { tabMap: sides.tabMap }).tabs.flatMap((t) => t.changes.map((c) => `${c.kind}: ${c.preview}`)), []);
+});
