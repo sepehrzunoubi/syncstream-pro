@@ -9,7 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { google } from "googleapis";
 import { compareDocs } from "../../src/lib/compare";
-import { buildCompareJob, buildSides, CompareChangedError, CompareRefusedError, MAX_PLAN_JSON, prepareCompare, rawTabs, type CompareGoogle } from "../../src/lib/compare-server";
+import { buildCompareJob, buildSides, CompareChangedError, CompareRefusedError, prepareCompare, rawTabs, type CompareGoogle } from "../../src/lib/compare-server";
+import { MAX_STORED_JSON, storedSize } from "../../src/lib/sync-store";
 import type { CompareBreak } from "../../src/lib/compare-types";
 import { segmentCharTokens, tokenize } from "../../src/lib/doc-model";
 import { batchUpdate, batchUpdateWithReplies, createTab, deleteRange, getDocSnapshot, getRawDocument, renameTab } from "../../src/lib/google";
@@ -429,16 +430,16 @@ test("someone editing your document while the start sets it up: their edit is ne
 });
 
 test("too much to store in one sync: refused with a clear message before anything is written; past 100 tabs, the rest aren't copied", async () => {
-  // About 115 pages, every few words styled: its plan is more than Redis takes in one request
+  // About 400 pages, some words styled: more than one sync types
   const words = "the quick brown fox jumps over a lazy dog while seven happy writers draft long essays".split(" ");
   const lines: string[] = [];
-  for (let p = 0; p < 1800; p++) lines.push(Array.from({ length: 30 }, (_, k) => words[(p * 7 + k * 3) % words.length]).join(" ") + ".");
+  for (let p = 0; p < 6400; p++) lines.push(Array.from({ length: 30 }, (_, k) => words[(p * 7 + k * 3) % words.length]).join(" ") + ".");
   const left = stub("left-doc-0000300", "Mine", [{ id: "t.0", title: "Tab 1" }]);
   const right = stub("right-doc-000300", "Ref", [{ id: "t.0", title: "Book" }]);
   for (let k = lines.length - 1; k >= 0; k -= 100) right.tab("t.0").batchUpdate([{ insertText: { location: { index: 1 }, text: lines.slice(Math.max(0, k - 99), k + 1).join("\n") + (k === lines.length - 1 ? "" : "\n") } }]);
   const len = right.tab("t.0").text().length;
   const styles: object[] = [];
-  for (let i = 1; i + 12 < len; i += 40) styles.push({ updateTextStyle: { range: { startIndex: i, endIndex: i + 6 }, textStyle: { bold: true }, fields: "bold" } });
+  for (let i = 1; i + 12 < len; i += 4000) styles.push({ updateTextStyle: { range: { startIndex: i, endIndex: i + 6 }, textStyle: { bold: true }, fields: "bold" } });
   right.tab("t.0").batchUpdate(styles as never);
   const [l, r] = await Promise.all([getRawDocument("t", "left-doc-0000300"), getRawDocument("t", "right-doc-000300")]);
   const rev = left.revisionId;
@@ -477,11 +478,14 @@ test("new tabs go where the reference has them: between, before and under the ta
   assert.equal(plain(left, "t.a"), "Hello there, this is the start.");
 });
 
-test("a 50-page copy fits in one sync: its plan and the live page's context are each under Redis's 1 MB", async () => {
-  const words = "the quick brown fox jumps over a lazy dog while seven happy writers draft long essays about history".split(" ");
+test("a 150-page copy into a blank document fits in one sync: its plan and the live page's context are stored packed, each under Redis's 1 MB", async () => {
+  // Words of a large vocabulary (prose-like: it packs about as well as real text), 150 pages of about 500
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const syllables = ["ka", "ri", "mo", "ten", "sa", "lu", "vor", "pe", "dan", "is", "el", "tro", "mi", "gra", "ul", "bes", "no", "fa", "ze", "chi"];
+  const vocab = Array.from({ length: 3000 }, () => Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => syllables[Math.floor(rnd() * syllables.length)]).join(""));
   const lines: string[] = [];
-  // 50 pages of about 500 words
-  for (let p = 0; p < 50 * 18; p++) lines.push(Array.from({ length: 28 }, (_, k) => words[(p * 5 + k * 7) % words.length]).join(" ") + ".");
+  for (let p = 0; p < 150 * 18; p++) lines.push(Array.from({ length: 28 }, () => vocab[Math.floor(rnd() * rnd() * vocab.length)]).join(" ") + ".");
   stub("left-doc-0000302", "Mine", [{ id: "t.0", title: "Tab 1" }]);
   const right = stub("right-doc-000302", "Ref", [{ id: "t.0", title: "Book" }]);
   for (let k = lines.length - 1; k >= 0; k -= 100) right.tab("t.0").batchUpdate([{ insertText: { location: { index: 1 }, text: lines.slice(Math.max(0, k - 99), k + 1).join("\n") + (k === lines.length - 1 ? "" : "\n") } }]);
@@ -490,15 +494,16 @@ test("a 50-page copy fits in one sync: its plan and the live page's context are 
   for (let i = 1; i + 20 < len; i += 120) styles.push({ updateTextStyle: { range: { startIndex: i, endIndex: i + 9 }, textStyle: { italic: true }, fields: "italic" } });
   right.tab("t.0").batchUpdate(styles as never);
   const [l, r] = await Promise.all([getRawDocument("t", "left-doc-0000302"), getRawDocument("t", "right-doc-000302")]);
-  const pace = { breaksMode: "auto" as const, targetMinutes: 600, typoFrequency: 1, seed: 1 };
+  const pace = { breaksMode: "auto" as const, targetMinutes: 1200, typoFrequency: 1, seed: 1 };
   const prepared = await prepareCompare(g, { leftId: "left-doc-0000302", rightId: "right-doc-000302", leftRevision: l.revisionId!, rightRevision: r.revisionId!, tabMap: {}, skip: [], breaks: [], pace });
   const built = buildCompareJob(prepared, { id: "job_big", userId: "u", documentId: "left-doc-0000302", documentName: "", ...pace, startInMinutes: 0, now: 0, accessToken: "a", refreshToken: "r" });
   assert.ok(built.ok, built.ok ? "" : built.error);
   if (!built.ok) return;
-  assert.ok(built.plan.totalChars > 130_000, `${built.plan.totalChars} characters`);
-  const plan = JSON.stringify(built.plan).length;
-  assert.ok(plan < MAX_PLAN_JSON, `plan ${plan}`);
-  assert.ok(built.context && JSON.stringify(built.context).length < 1_000_000, "the live page keeps its view of it");
+  assert.ok(built.plan.totalChars > 400_000, `${built.plan.totalChars} characters`);
+  assert.ok(JSON.stringify(built.plan).length > 1_000_000, "more than Redis takes unpacked");
+  const plan = storedSize(built.plan);
+  assert.ok(plan < MAX_STORED_JSON, `plan ${plan} packed`);
+  assert.ok(built.context && storedSize(built.context) < MAX_STORED_JSON, "the live page keeps its view of it");
   assert.ok(JSON.stringify(built.job).length < 100_000);
 });
 

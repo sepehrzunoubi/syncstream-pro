@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { randomBytes } from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { seal, unseal } from "./secret";
 import type { DripAction, StreamEvent } from "./drip-engine";
 import type { DocListState, RichFormat } from "./rich-text";
@@ -251,6 +252,28 @@ export interface SyncStore {
   clearBreakEdit(id: string): Promise<void>;
 }
 
+/**
+ * Upstash takes at most 1 MB in one request, and a plan or context is stored in one. They are
+ * stored packed (gzip, then base64, under `z`): a sync's actions and text shrink 3 to 5 times.
+ */
+export const MAX_STORED_JSON = 950_000;
+interface Packed { z: string }
+
+export function packValue(value: unknown): Packed {
+  return { z: gzipSync(Buffer.from(JSON.stringify(value), "utf8")).toString("base64") };
+}
+
+/** A stored value as it was written: packed, or plain (stored before packing) */
+export function unpackValue<T>(stored: unknown): T | null {
+  if (stored == null) return null;
+  const z = (stored as Partial<Packed>).z;
+  if (typeof z === "string" && Object.keys(stored as object).length === 1) return JSON.parse(gunzipSync(Buffer.from(z, "base64")).toString("utf8")) as T;
+  return stored as T;
+}
+
+/** What a value takes in its one request to Redis, packed */
+export const storedSize = (value: unknown): number => JSON.stringify(packValue(value)).length;
+
 function createRedisStore(redis: Redis): SyncStore {
   return {
     async getJob(id) {
@@ -264,16 +287,16 @@ function createRedisStore(redis: Redis): SyncStore {
       await Promise.all([redis.expire(PLAN_PREFIX + job.id, TTL_SECONDS), redis.expire(CONTEXT_PREFIX + job.id, TTL_SECONDS)]);
     },
     async getPlan(id) {
-      return (await redis.get<SyncPlan>(PLAN_PREFIX + id)) ?? null;
+      return unpackValue<SyncPlan>(await redis.get(PLAN_PREFIX + id));
     },
     async setPlan(plan) {
-      await redis.set(PLAN_PREFIX + plan.id, plan, { ex: TTL_SECONDS });
+      await redis.set(PLAN_PREFIX + plan.id, packValue(plan), { ex: TTL_SECONDS });
     },
     async getContext(id) {
-      return (await redis.get<SyncContext>(CONTEXT_PREFIX + id)) ?? null;
+      return unpackValue<SyncContext>(await redis.get(CONTEXT_PREFIX + id));
     },
     async setContext(id, context) {
-      await redis.set(CONTEXT_PREFIX + id, context, { ex: TTL_SECONDS });
+      await redis.set(CONTEXT_PREFIX + id, packValue(context), { ex: TTL_SECONDS });
     },
     async deleteJob(id) {
       await redis.del(JOB_PREFIX + id, PLAN_PREFIX + id, CONTEXT_PREFIX + id, LOCK_PREFIX + id, KICK_PREFIX + id, CONTROL_PREFIX + id, BREAKS_PREFIX + id);

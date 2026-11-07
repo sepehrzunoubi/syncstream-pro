@@ -16,7 +16,7 @@ import { buildDripPlan } from "./drip-engine";
 import { parseAnchors, withAnchors } from "./breaks";
 import { plainFormat } from "./rich-text";
 import { buildSyncRecords, MAX_COMPARE_SEGMENTS, parseSegments, segmentBoundaries, spotsForTabs, type SegmentInput } from "./sync-plan";
-import type { SyncContext, SyncJob, SyncPlan } from "./sync-store";
+import { MAX_STORED_JSON, storedSize, type SyncContext, type SyncJob, type SyncPlan } from "./sync-store";
 import { wordsInTabs } from "./google";
 import { isStaleRevision } from "./sync-runner";
 import type { EditorNode } from "./rich-text";
@@ -152,10 +152,10 @@ const TAB_LIMIT = 100;
 const MAX_STRUCTURAL_ROUNDS = 4;
 /** Google refusing a batch because a collaborator just edited: read again and work it out again, this often */
 const STALE_RETRIES = 3;
-/** Upstash takes at most 1 MB in one request: a sync's plan is stored in one */
-export const MAX_PLAN_JSON = 950_000;
 /** At most what a plan's actions take per character typed (typos at their most, over a set time: about 4.2) */
 const PLAN_BYTES_PER_CHAR = 4.5;
+/** How small a plan packs, at the least (text of random letters; real prose packs 4 to 5 times) */
+const WORST_PACKING = 2.5;
 const TOO_MANY_SPOTS = `That's more than ${MAX_COMPARE_SEGMENTS.toLocaleString("en-US")} separate places to type into in one sync. Skip some changes, or copy one tab at a time.`;
 const TOO_MUCH = "That's more than one sync can copy. Choose “Don't copy this tab” for some of the reference's tabs, or skip some changes, then copy the rest in a second sync.";
 const TOO_MANY_TABS = `Google Docs allows at most ${TAB_LIMIT} tabs in a document. Choose “Don't copy this tab” for some of the reference's tabs.`;
@@ -170,19 +170,23 @@ const bodyOf = (doc: ImportedDoc): EditorNode => ({ type: "doc", content: doc.no
 function preflight(work: TabCompare[], leftTabCount: number, pace?: PlanPace) {
   if (leftTabCount + work.filter((t) => t.target.kind === "new").length > TAB_LIMIT) throw new CompareRefusedError(TOO_MANY_TABS, 400, "tooManyTabs");
   let segments = 0;
-  let formats = 0;
+  const formats: unknown[] = [];
   let text = "";
   for (const t of work) {
     // LEFT once the set-up is in is the structure; the rest is typed
     const typed = additions(structureOnly(t.merged, t.origin), t.merged);
     segments += typed.segments.length;
-    formats += JSON.stringify(typed.segments.map((s) => s.format)).length;
+    formats.push(typed.segments.map((s) => s.format));
     text += typed.text;
   }
   if (segments > MAX_COMPARE_SEGMENTS) throw new CompareRefusedError(TOO_MANY_SPOTS, 400, "tooManyPlaces");
-  // The plan's actions as the sync will make them, or as many as typos at their most would
-  const actions = pace && text.trim() ? JSON.stringify(dripPlan(text, pace, []).actions).length : text.length * PLAN_BYTES_PER_CHAR;
-  if (actions + formats > MAX_PLAN_JSON) throw new CompareRefusedError(TOO_MUCH, 400, "tooLarge");
+  if (text.length > MAX_TEXT_CHARS) throw new CompareRefusedError(TOO_MUCH, 400, "tooLarge");
+  // The plan as stored: its actions as the sync will make them, packed; or as many as typos at
+  // their most would make, packed as little as text ever packs
+  const size = pace && text.trim()
+    ? storedSize({ actions: dripPlan(text, pace, []).actions, formats })
+    : (text.length * PLAN_BYTES_PER_CHAR + JSON.stringify(formats).length) / WORST_PACKING;
+  if (size > MAX_STORED_JSON) throw new CompareRefusedError(TOO_MUCH, 400, "tooLarge");
 }
 
 /** How a sync is paced: what the start's plan is made with */
@@ -664,7 +668,8 @@ function tabBreakAnchors(target: EditorNode, segments: Segment[]): { at: number;
 }
 
 export const COMPARE_CHANGED = "One of the documents changed since you compared them. Here's the comparison again.";
-const MAX_CONTEXT_JSON = 900_000;
+/** The live page's context comes back whole from /api/sync/source, well under Vercel's 4.5 MB */
+const MAX_CONTEXT_JSON = 3_000_000;
 const MAX_TEXT_CHARS = 1_000_000;
 
 export interface CompareJobInput {
@@ -734,7 +739,7 @@ export function buildCompareJob(prepared: PreparedCompare, o: CompareJobInput): 
   const lead = tabs[0];
   // (the live page reads a sync's tabs from `tabs` alone: the first tab isn't stored twice)
   let context: SyncContext | null = { tabs };
-  if (JSON.stringify(context).length > MAX_CONTEXT_JSON) context = null;
+  if (JSON.stringify(context).length > MAX_CONTEXT_JSON || storedSize(context) > MAX_STORED_JSON) context = null;
   const many = prepared.tabs.length > 1 || (prepared.leftDoc.tabs?.length ?? 0) > 1;
   const { plan: syncPlan, job } = buildSyncRecords({
     id: o.id,
@@ -754,6 +759,6 @@ export function buildCompareJob(prepared: PreparedCompare, o: CompareJobInput): 
     baselineWordCount: wordsInTabs(prepared.leftDoc, prepared.tabs.map((t) => t.tabId)),
   });
   // Stored in one request each: a plan Redis can't take is refused here, not with a failure after
-  if (JSON.stringify(syncPlan).length > MAX_PLAN_JSON) return { ok: false, status: 400, error: TOO_MUCH, code: "tooLarge" };
+  if (storedSize(syncPlan) > MAX_STORED_JSON) return { ok: false, status: 400, error: TOO_MUCH, code: "tooLarge" };
   return { ok: true, plan: syncPlan, job, context };
 }
