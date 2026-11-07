@@ -3,12 +3,13 @@ import { randomBytes } from "node:crypto";
 import { seal, unseal } from "./secret";
 import type { DripAction, StreamEvent } from "./drip-engine";
 import type { DocListState, RichFormat } from "./rich-text";
+import type { BreakEdit } from "./breaks";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type JobStatus = "scheduled" | "pending" | "running" | "paused" | "done" | "error" | "cancelled";
 
-/** Immutable description of a sync, written once at start. */
+/** Description of a sync, written at start; only its breaks change after (see breaks.ts) */
 export interface SyncPlan {
   id: string;
   userId: string;
@@ -75,6 +76,8 @@ export interface SyncJob {
   totalChars: number;
   /** Wall-clock time when the current action's wait ends */
   nextActionAt?: number;
+  /** Paused: what was left of the current action's wait, so resuming continues it */
+  waitLeftMs?: number;
   /** typo sub-step: 0 = nothing typed, 1 = wrong chars in doc, 2 = wrong chars deleted */
   typoSubStep: number;
   typoCharsInDoc: number;
@@ -107,6 +110,12 @@ export interface SyncJob {
   baselineWordCount: number;
   liveWordCount?: number;
   breaks: number[];
+  /** Where each of `breaks` starts, in source characters typed before it (absent on older jobs) */
+  breakAt?: number[];
+  /** Counts changes to the breaks, so two open tabs can't overwrite each other's */
+  breaksVersion?: number;
+  /** Breaks can be added, changed or removed from this many source characters on */
+  editableFrom?: number;
   completedBreaks: number[];
   nextBreakAction?: number;
   nextBreakAt?: number;
@@ -191,6 +200,7 @@ const USER_JOBS_PREFIX = "userjobs:";
 const LOCK_PREFIX = "synclock:";
 const KICK_PREFIX = "synckick:";
 const CONTROL_PREFIX = "syncctl:";
+const BREAKS_PREFIX = "syncbrk:";
 
 export type ControlCommand = "pause" | "cancel";
 const ACTIVE_JOBS_KEY = "syncjobs:active";
@@ -221,6 +231,10 @@ export interface SyncStore {
   setControl(id: string, command: ControlCommand): Promise<void>;
   getControl(id: string): Promise<ControlCommand | null>;
   clearControl(id: string): Promise<void>;
+  /** A change to the breaks left for the running worker to apply, like a control request */
+  setBreakEdit(id: string, edit: BreakEdit): Promise<void>;
+  getBreakEdit(id: string): Promise<BreakEdit | null>;
+  clearBreakEdit(id: string): Promise<void>;
 }
 
 function createRedisStore(redis: Redis): SyncStore {
@@ -248,7 +262,7 @@ function createRedisStore(redis: Redis): SyncStore {
       await redis.set(CONTEXT_PREFIX + id, context, { ex: TTL_SECONDS });
     },
     async deleteJob(id) {
-      await redis.del(JOB_PREFIX + id, PLAN_PREFIX + id, CONTEXT_PREFIX + id, LOCK_PREFIX + id, KICK_PREFIX + id, CONTROL_PREFIX + id);
+      await redis.del(JOB_PREFIX + id, PLAN_PREFIX + id, CONTEXT_PREFIX + id, LOCK_PREFIX + id, KICK_PREFIX + id, CONTROL_PREFIX + id, BREAKS_PREFIX + id);
     },
     async addUserJob(userId, id) {
       await redis.sadd(USER_JOBS_PREFIX + userId, id);
@@ -296,6 +310,15 @@ function createRedisStore(redis: Redis): SyncStore {
     async clearControl(id) {
       await redis.del(CONTROL_PREFIX + id);
     },
+    async setBreakEdit(id, edit) {
+      await redis.set(BREAKS_PREFIX + id, edit, { ex: 3600 });
+    },
+    async getBreakEdit(id) {
+      return (await redis.get<BreakEdit>(BREAKS_PREFIX + id)) ?? null;
+    },
+    async clearBreakEdit(id) {
+      await redis.del(BREAKS_PREFIX + id);
+    },
   };
 }
 
@@ -309,6 +332,7 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
   const active = new Set<string>();
   const expiring = new Map<string, number>(); // key → expiry ms
   const controls = new Map<string, ControlCommand>();
+  const breakEdits = new Map<string, BreakEdit>();
   const live = (key: string) => {
     const exp = expiring.get(key);
     if (exp != null && exp <= now()) expiring.delete(key);
@@ -321,7 +345,7 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
     async setPlan(plan) { plans.set(plan.id, structuredClone(plan)); },
     async getContext(id) { return structuredClone(contexts.get(id) ?? null); },
     async setContext(id, context) { contexts.set(id, structuredClone(context)); },
-    async deleteJob(id) { jobs.delete(id); plans.delete(id); contexts.delete(id); expiring.delete(LOCK_PREFIX + id); expiring.delete(KICK_PREFIX + id); controls.delete(id); },
+    async deleteJob(id) { jobs.delete(id); plans.delete(id); contexts.delete(id); expiring.delete(LOCK_PREFIX + id); expiring.delete(KICK_PREFIX + id); controls.delete(id); breakEdits.delete(id); },
     async addUserJob(userId, id) { (userJobs.get(userId) ?? userJobs.set(userId, new Set()).get(userId)!).add(id); },
     async removeUserJob(userId, id) { userJobs.get(userId)?.delete(id); },
     async listUserJobIds(userId) { return Array.from(userJobs.get(userId) ?? []); },
@@ -354,6 +378,9 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
     async setControl(id, command) { controls.set(id, command); },
     async getControl(id) { return controls.get(id) ?? null; },
     async clearControl(id) { controls.delete(id); },
+    async setBreakEdit(id, edit) { breakEdits.set(id, structuredClone(edit)); },
+    async getBreakEdit(id) { return structuredClone(breakEdits.get(id) ?? null); },
+    async clearBreakEdit(id) { breakEdits.delete(id); },
   };
 }
 

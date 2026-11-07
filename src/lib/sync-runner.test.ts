@@ -91,7 +91,7 @@ interface Harness {
   store: SyncStore;
   doc: FakeDoc;
   clock: FakeClock;
-  queue: { jobId: string; generation: number; delaySec: number }[];
+  queue: { jobId: string; generation: number; delaySec: number; tick?: number }[];
   deps: RunnerDeps;
   jobId: string;
 }
@@ -128,7 +128,7 @@ async function makeHarness(text: string, opts: { seed?: number; actions?: DripAc
   const deps: RunnerDeps = {
     store, docs: doc, now: clock.now, sleep: clock.sleep, windowMs: opts.windowMs ?? 20_000,
     refresh: async () => ({ access_token: "fresh" }),
-    enqueue: async (id, generation, delaySec) => { queue.push({ jobId: id, generation, delaySec }); },
+    enqueue: async (id, generation, delaySec, tick) => { queue.push({ jobId: id, generation, delaySec, tick }); },
   };
   return { store, doc, clock, queue, deps, jobId };
 }
@@ -140,7 +140,7 @@ async function drain(h: Harness, maxSteps = 5000): Promise<string[]> {
   while (h.queue.length > 0 && steps++ < maxSteps) {
     const msg = h.queue.shift()!;
     h.clock.t += msg.delaySec * 1000;
-    const r = await runJobWindow(msg.jobId, msg.generation, h.deps);
+    const r = await runJobWindow(msg.jobId, msg.generation, { ...h.deps, tick: msg.tick });
     outcomes.push(r.outcome);
   }
   assert.ok(steps < maxSteps, "queue never drained");
@@ -789,4 +789,112 @@ test("a page break in the text is typed with insertPageBreak, which adds its new
   assert.equal(h.doc.text, text, "the break and its newline occupy the two indices the source counts");
   const kinds = batches[0].reqs.map((r) => Object.keys(r)[0]);
   assert.ok(batches[0].text === "Intro" && h.doc.pageBreaks === 1 && !kinds.includes("insertText"), "one insertText for Intro then insertPageBreak");
+});
+
+// ── Breaks changed while a sync types ────────────────────────────────────────
+
+import { withAnchors } from "./breaks";
+import { changeBreaks } from "./live-breaks";
+import { waitLeft } from "./sync-runner";
+
+const at = (word: string) => TEXT.indexOf(word) + word.length + 1;
+async function anchoredHarness(anchors: { at: number; minutes: number }[]) {
+  const actions = withAnchors(buildDripPlan(TEXT, { seed: 3, breaks: [] }), anchors).actions;
+  return makeHarness(TEXT, { actions });
+}
+/** Deliver queued messages one at a time until `until` holds for the job */
+async function deliverUntil(h: Harness, until: (job: SyncJob) => boolean, max = 500) {
+  for (let i = 0; i < max; i++) {
+    const job = (await h.store.getJob(h.jobId))!;
+    if (until(job)) return job;
+    const msg = h.queue.shift();
+    assert.ok(msg, "nothing left to deliver");
+    h.clock.t += msg.delaySec * 1000;
+    await runJobWindow(msg.jobId, msg.generation, { ...h.deps, tick: msg.tick });
+  }
+  assert.fail("never got there");
+}
+const liveDeps = (h: Harness) => ({ store: h.store, enqueue: h.deps.enqueue, now: h.clock.now, sleep: h.clock.sleep, spinMs: 0 });
+
+test("a break added while the sync types is taken where it was put, and the text still comes out exactly", async () => {
+  const h = await anchoredHarness([]);
+  const start = h.clock.now();
+  await runJobWindow(h.jobId, 0, h.deps);
+  const before = (await h.store.getJob(h.jobId))!;
+  assert.ok(before.currentAction > 0 && before.currentAction < before.totalActions);
+  const res = await changeBreaks(h.jobId, { breaks: [{ at: at("paragraph"), minutes: 40 }], version: 0 }, liveDeps(h));
+  assert.ok(res.ok && res.applied);
+  assert.deepEqual(res.job.breakAt, [at("paragraph")]);
+  assert.equal(res.job.breaksVersion, 1);
+  await drain(h);
+  const job = (await h.store.getJob(h.jobId))!;
+  assert.equal(job.status, "done");
+  assert.equal(h.doc.text, TEXT);
+  assert.deepEqual(job.completedBreaks, [0]);
+  assert.ok(h.clock.now() - start >= 40 * 60_000, "the break was taken");
+  // Changed against the version it had before: another tab's change is not overwritten
+  const h2 = await anchoredHarness([]);
+  await runJobWindow(h2.jobId, 0, h2.deps);
+  assert.ok((await changeBreaks(h2.jobId, { breaks: [], version: 0 }, liveDeps(h2))).ok);
+  const stale = await changeBreaks(h2.jobId, { breaks: [{ at: at("paragraph"), minutes: 5 }], version: 0 }, liveDeps(h2));
+  assert.ok(!stale.ok && stale.status === 409);
+});
+
+test("ending the current break now hands the sync on at once; the delivery queued for the old end is ignored", async () => {
+  const h = await anchoredHarness([{ at: at("dog."), minutes: 30 }]);
+  await runJobWindow(h.jobId, 0, h.deps);
+  const onBreak = await deliverUntil(h, (j) => j.nextBreakAction === j.currentAction && j.nextActionAt != null && j.nextActionAt - h.clock.now() > 60_000);
+  const oldDelivery = h.queue.shift()!;
+  const startedBreakAt = h.clock.now();
+  h.clock.t += 5 * 60_000;
+  const res = await changeBreaks(h.jobId, { breaks: [], current: { end: true }, version: onBreak.breaksVersion ?? 0 }, liveDeps(h));
+  assert.ok(res.ok && res.applied);
+  const fresh = h.queue.shift()!;
+  assert.equal(fresh.delaySec, 0);
+  assert.equal(fresh.tick, res.job.tick);
+  // The old delivery arriving later is a duplicate
+  const stale = await runJobWindow(oldDelivery.jobId, oldDelivery.generation, { ...h.deps, tick: oldDelivery.tick });
+  assert.equal(stale.outcome, "stale");
+  h.queue.length = 0;
+  h.queue.push(fresh);
+  await drain(h);
+  assert.equal(h.doc.text, TEXT);
+  const job = (await h.store.getJob(h.jobId))!;
+  assert.equal(job.status, "done");
+  assert.ok(job.finishedAt! - startedBreakAt < 25 * 60_000, "the break ended early");
+});
+
+test("a change left while the worker holds the lock is applied by the worker", async () => {
+  const h = await anchoredHarness([]);
+  await runJobWindow(h.jobId, 0, h.deps);
+  const lock = (await h.store.acquireLock(h.jobId, 60))!;
+  const res = await changeBreaks(h.jobId, { breaks: [{ at: at("paragraph"), minutes: 12 }], version: 0 }, liveDeps(h));
+  assert.ok(res.ok && !res.applied);
+  assert.ok(await h.store.getBreakEdit(h.jobId));
+  await h.store.releaseLock(h.jobId, lock);
+  // The kick it queued, then the rest
+  await drain(h);
+  const job = (await h.store.getJob(h.jobId))!;
+  assert.equal(await h.store.getBreakEdit(h.jobId), null);
+  assert.deepEqual(job.breakAt, [at("paragraph")]);
+  assert.deepEqual(job.breaks, [12]);
+  assert.equal(h.doc.text, TEXT);
+});
+
+test("pausing during a break and resuming goes on with the time it had left", async () => {
+  const h = await anchoredHarness([{ at: at("dog."), minutes: 30 }]);
+  await runJobWindow(h.jobId, 0, h.deps);
+  const onBreak = await deliverUntil(h, (j) => j.nextBreakAction === j.currentAction && j.nextActionAt != null && j.nextActionAt - h.clock.now() > 60_000);
+  const left = onBreak.nextActionAt! - h.clock.now();
+  h.clock.t += 10 * 60_000;
+  // As the pause and resume routes do
+  await h.store.setJob({ ...onBreak, status: "paused", pausedAt: h.clock.now(), nextActionAt: undefined, waitLeftMs: waitLeft(onBreak, h.clock.now()) });
+  h.clock.t += 60 * 60_000;
+  const paused = (await h.store.getJob(h.jobId))!;
+  await h.store.setJob({ ...paused, status: "running", pausedAt: undefined, nextActionAt: undefined, lastDueAt: undefined, generation: paused.generation + 1 });
+  h.queue.length = 0;
+  await runJobWindow(h.jobId, paused.generation + 1, h.deps);
+  const resumed = (await h.store.getJob(h.jobId))!;
+  assert.equal(resumed.currentAction, onBreak.currentAction, "still on the break");
+  assert.equal(resumed.nextActionAt! - h.clock.now(), left - 10 * 60_000, "the 20 minutes it had left, not the whole break again");
 });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadOwnedJob, readJobId, jobResponse, mutateJob } from "@/lib/sync-api";
 import { withRoute } from "@/lib/route";
+import { waitLeft } from "@/lib/sync-runner";
 import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +20,8 @@ export const POST = withRoute(async (req: NextRequest) => {
         return NextResponse.json({ error: `Job is ${fresh.status}, not running` }, { status: 400 });
       }
       const now = Date.now();
-      // The current action restarts its full wait on resume.
-      return { ...fresh, status: "paused", activity: "Paused", pausedAt: now, nextActionAt: undefined };
+      // Resuming goes on with what was left of the current wait (a break keeps its time left)
+      return { ...fresh, status: "paused", activity: "Paused", pausedAt: now, nextActionAt: undefined, waitLeftMs: waitLeft(fresh, now) };
     },
     "pause"
   );

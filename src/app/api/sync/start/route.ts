@@ -13,6 +13,7 @@ import { isTabId } from "@/lib/doc-tabs";
 import { applyAuthCookies, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { normalizeText, parseFormat } from "@/lib/rich-text";
 import { buildSyncRecords, parseSegments, segmentBoundaries, spotsFor, type SegmentInput } from "@/lib/sync-plan";
+import { parseAnchors, withAnchors, type BreakAnchor } from "@/lib/breaks";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
@@ -110,7 +111,16 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
 
   let breaks: "auto" | number[] = "auto";
-  if (Array.isArray(body.breaks)) {
+  // Manual: breaks after the words the user picked, [{ at, minutes }], typed at a natural pace
+  let anchors: BreakAnchor[] | null = null;
+  const boundaries = segments ? segmentBoundaries(segments) : [];
+  if (Array.isArray(body.breaks) && body.breaks.length > 0 && body.breaks.every((b) => b !== null && typeof b === "object")) {
+    const parsed = parseAnchors(body.breaks, text, { ends: boundaries });
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    anchors = parsed.anchors;
+    breaks = [];
+    targetMinutes = null;
+  } else if (Array.isArray(body.breaks)) {
     if (body.breaks.length > MAX_CUSTOM_BREAKS) {
       return NextResponse.json({ error: `At most ${MAX_CUSTOM_BREAKS} breaks` }, { status: 400 });
     }
@@ -135,8 +145,8 @@ export const POST = withRoute(async (req: NextRequest) => {
     startInMinutes = body.startInMinutes;
   }
 
-  const boundaries = segments ? segmentBoundaries(segments) : [];
-  const plan = buildDripPlan(text, { targetMinutes, breaks, typoFrequency, seed, ...(boundaries.length ? { boundaries } : {}) });
+  const drip = buildDripPlan(text, { targetMinutes, breaks, typoFrequency, seed, ...(boundaries.length ? { boundaries } : {}) });
+  const plan = anchors ? withAnchors(drip, anchors) : drip;
   if (plan.actions.length === 0) {
     return NextResponse.json({ error: "Nothing to type" }, { status: 400 });
   }
