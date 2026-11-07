@@ -43,3 +43,7 @@ next-env.d.ts
 /playwright-report
 /blob-report
 /playwright/.cache
+
+# throwaway scripts and local agent worktrees, never committed
+/e2e/probe/
+/.claude/worktrees/
