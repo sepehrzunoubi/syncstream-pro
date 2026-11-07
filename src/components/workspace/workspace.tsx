@@ -189,7 +189,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (!handoff) return;
     setSelectedDocId(handoff.documentId);
     if (jobs.some((j) => j.id === handoff.jobId)) { setFocusedJobId(handoff.jobId); setComposing(false); }
-  }, [ready, draftLoaded, jobs, setSelectedDocId]);
+    if (handoff.note) setSnack(handoff.note);
+  }, [ready, draftLoaded, jobs, setSelectedDocId, setSnack]);
   const live = useLiveBreaks({ viewer, job: focusedJob ?? null, source: view?.source ?? focusedSource, shown: view, now, upsertJob, setSnack });
 
   const insertImages = useCallback(async (files: File[], at?: number) => {
