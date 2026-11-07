@@ -40,6 +40,9 @@ import { listRuns, type ListParagraph } from "./list-labels";
 
 export const PENDING_MARK = "syncAdd";
 
+/** What a list item's own leading tabs are put behind while its bullet is made, so Docs doesn't take them for nesting */
+const TAB_GUARD = "\u200b";
+
 type Marks = NonNullable<EditorNode["marks"]>;
 
 export type Tok =
@@ -264,21 +267,52 @@ function same(b: Tok, t: Tok): boolean {
  * Myers' diff after trimming the common start and end; very different
  * documents fall back to replacing the middle.
  */
-export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000): number[] {
+export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000, sameCellOnly = true): number[] {
   const added = additionsOnlyAlignment(base, target);
   if (added) return added;
+  // Content only matches content in the same table cell (or outside tables): text the editor moved
+  // across a cell's edge (a selection from a cell to past its table, deleted) is deleted and put back
+  // there, since Docs can't delete a cell's edge
+  const baseCell = cellIds(base);
+  const targetCell = cellIds(target);
+  // On a reload (sameCellOnly off) a row or cell matches any of its table's by kind: their ids are by
+  // position, so a row or column a collaborator added before the editor's gives every one after it
+  // another id, and the editor's text would be aligned with the new, empty one's
+  const sameAt = sameCellOnly
+    ? (i: number, j: number) => baseCell[i] === targetCell[j] && same(base[i], target[j])
+    : (i: number, j: number) => same(base[i], target[j]) || sameRowOrCell(base[i], target[j]);
+  const match = myers(base, target, sameAt, maxEdits);
+  // The newline after a page break being added is the one the break brings: of two alignments as close
+  // as each other, the one that leaves it to the addition (see afterAddedBreak). A document newline it
+  // would match counts for nothing when its paragraph's text was all deleted, and Docs can delete it
+  // (not the body's last, nor one right before a table or at a cell's end)
+  if (!target.some((_t, j) => afterAddedBreak(target, j))) return match;
+  const avoiding = myers(base, target, (i, j) => sameAt(i, j) && !afterAddedBreak(target, j), maxEdits);
+  const kept = new Uint8Array(base.length);
+  for (const i of match) if (i >= 0) kept[i] = 1;
+  const orphan = (i: number) => {
+    if (i + 1 >= base.length || base[i + 1].k === "st") return false;
+    let q = i - 1;
+    for (; q >= 0 && base[q].k !== "nl" && base[q].k !== "st" && base[q].k !== "block"; q--) if (kept[q]) return false;
+    return q < i - 1;
+  };
+  let worth = 0;
+  match.forEach((i, j) => { if (i >= 0 && !(afterAddedBreak(target, j) && orphan(i))) worth++; });
+  return avoiding.reduce((n, i) => n + (i >= 0 ? 1 : 0), 0) >= worth ? avoiding : match;
+}
+
+/** Myers' diff after trimming the common start and end; very different documents leave the middle unmatched */
+function myers(base: Tok[], target: Tok[], sameAt: (i: number, j: number) => boolean, maxEdits: number): number[] {
   const match = new Array<number>(target.length).fill(-1);
   let pre = 0;
-  while (pre < base.length && pre < target.length && same(base[pre], target[pre])) { match[pre] = pre; pre++; }
+  while (pre < base.length && pre < target.length && sameAt(pre, pre)) { match[pre] = pre; pre++; }
   let suf = 0;
-  while (suf < base.length - pre && suf < target.length - pre && same(base[base.length - 1 - suf], target[target.length - 1 - suf])) {
+  while (suf < base.length - pre && suf < target.length - pre && sameAt(base.length - 1 - suf, target.length - 1 - suf)) {
     match[target.length - 1 - suf] = base.length - 1 - suf;
     suf++;
   }
-  const a = base.slice(pre, base.length - suf);
-  const b = target.slice(pre, target.length - suf);
-  const n = a.length;
-  const m = b.length;
+  const n = base.length - suf - pre;
+  const m = target.length - suf - pre;
   if (n === 0 || m === 0) return match;
 
   // Myers O((n+m)·d), keeping each round's frontier to walk the path back
@@ -293,7 +327,7 @@ export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000): number
     for (let k = -d; k <= d; k += 2) {
       let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
       let y = x - k;
-      while (x < n && y < m && same(a[x], b[y])) { x++; y++; }
+      while (x < n && y < m && sameAt(pre + x, pre + y)) { x++; y++; }
       next[offset + k] = x;
       if (x >= n && y >= m) { found = d; break; }
     }
@@ -317,6 +351,31 @@ export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000): number
   while (x > 0 && y > 0) { x--; y--; match[pre + y] = pre + x; }
   return match;
 }
+
+/** The table cell each token is in (its cell's id), or "" outside tables; a cell's own start and end are outside it */
+/** A row or cell (or its end) of the same table, wherever it is in it */
+function sameRowOrCell(b: Tok, t: Tok): boolean {
+  if (b.k !== "st" || t.k !== "st" || b.kind !== t.kind || isPending(t)) return false;
+  if (b.kind === "table" || b.kind === "tableEnd") return false;
+  return b.id.split(":")[0] === t.id.split(":")[0];
+}
+
+function cellIds(tokens: Tok[]): string[] {
+  const out = new Array<string>(tokens.length);
+  const open: string[] = [];
+  tokens.forEach((t, i) => {
+    if (t.k === "st" && t.kind === "cellEnd") open.pop();
+    out[i] = open.length ? open[open.length - 1] : "";
+    if (t.k === "st" && t.kind === "cell") open.push(t.id);
+  });
+  return out;
+}
+
+/**
+ * A paragraph end right after a page break that is an addition: the newline the break brings when the
+ * sync types it (insertPageBreak), never one the document has already
+ */
+const afterAddedBreak = (target: Tok[], j: number) => j > 0 && target[j].k === "nl" && target[j - 1].k === "pb" && isPending(target[j - 1]);
 
 /** Paragraph ends and line breaks: the tokens an addition brings more of, which can't tell one another apart */
 const isBreakTok = (t: Tok) => t.k === "nl" || t.k === "br";
@@ -411,6 +470,8 @@ function additionsOnlyAlignment(base: Tok[], target: Tok[]): number[] | null {
   };
   const score = (bi: number, tj: number) => {
     if (base[bi].k !== "nl") return 0;
+    // The newline a page break being added brings (see afterAddedBreak): only when no other fits
+    if (afterAddedBreak(target, tj)) return -0.5;
     const empty = baseEmpty(bi);
     let s = (!empty) === (hasBase[tj] === 1) ? 4 : 0;
     if (empty && !hasAdded[tj]) s += 2;
@@ -531,7 +592,13 @@ function rotate(base: Tok[], target: Tok[], match: number[]): void {
     // lone new bullet at level 0, with the indent only faked). Typed at the start of the next item,
     // when that one is at their level, they take its bullet and level, as Enter there would give them
     if (r.pending && joinsNext(base, target, r)) continue;
-    if (!r.pending) {
+    // Docs takes new lines only inside a paragraph: ones that would go at a table's start or past a
+    // cell's last line go before the newline of the paragraph before, however the two are styled
+    const between = base[r.bs]?.k === "st";
+    // An addition that ends with a page break goes in at the start of the next paragraph: the break's own
+    // newline ends it (before the newline before, that newline would follow the break's as an empty line)
+    if (r.pending && !between && r.bs < base.length && target[r.te - 2]?.k === "pb") continue;
+    if (!r.pending && !between) {
       // A direct edit only when both paragraphs are styled alike: otherwise the style of the wrong one would be sent
       if (JSON.stringify(paragraphFromAttrs(last.attrs)) !== JSON.stringify(paragraphFromAttrs(before.attrs))) continue;
       // Page and section breaks bring their own newline
@@ -543,7 +610,7 @@ function rotate(base: Tok[], target: Tok[], match: number[]): void {
 }
 
 export function diff(base: Tok[], target: Tok[], forTyping = true, firstIndex = 1) {
-  const match = alignTokens(base, target);
+  const match = alignTokens(base, target, 4000, forTyping);
   if (forTyping) rotate(base, target, match);
   const regions = regionsOf(base, target, match);
   // Docs index of each base token (the body starts at 1, after its section break; segments at 0)
@@ -650,7 +717,9 @@ function tableStructureRequests(base: Tok[], target: Tok[], index: number[]): Do
   const match = alignTokens(base, target);
   const docIndexAt = (j: number) => {
     const end = index[base.length];
-    for (let q = j; q < target.length; q++) if (match[q] >= 0) return Math.min(index[match[q]], end - 1);
+    // Docs takes a table only inside a paragraph: one that goes right before another table goes in at
+    // the end of the paragraph before that one (Docs' newline before the new table then ends its text)
+    for (let q = j; q < target.length; q++) if (match[q] >= 0) return Math.min(index[match[q]] - (base[match[q]].k === "st" ? 1 : 0), end - 1);
     return end - 1; // nothing goes after the final newline
   };
   const changes: { at: number; requests: DocsRequest[] }[] = [];
@@ -926,6 +995,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   // content changes: its own attrs when it already existed, those of the paragraph it was split
   // from when it is new (a newline copies the style of the paragraph it is inserted into).
   const saved: Tok[] = [];
+  // The base token each of the saved document's characters is (those the document already has)
+  const fromBase = new Map<number, number>();
   const docsAttrs = new Map<number, Record<string, unknown> | undefined>();
   // Section breaks made now, by their place in `saved`
   const newSections: number[] = [];
@@ -974,7 +1045,13 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       const docsNl = base[keptNl.get(i) ?? i] as Extract<Tok, { k: "nl" }>;
       saved.push(paragraphHasPending(target, j, added) ? docsNl : stripPending(t));
       docsAttrs.set(saved.length - 1, docsNl.attrs);
-    } else saved.push(stripPending(t));
+    } else if (t.k === "st") {
+      // Table structure covers the indices the document has for it (a cell the editor made again has none)
+      saved.push({ ...t, span: (base[i] as Extract<Tok, { k: "st" }>).span });
+    } else {
+      saved.push(stripPending(t));
+      fromBase.set(saved.length - 1, i);
+    }
   }
 
   // Paragraph styles and lists, over the saved document (its indices are the ones Docs has after the
@@ -992,6 +1069,9 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   sIndex[saved.length] = sAt;
   const listRequests: DocsRequest[] = [];
   const paraRequests: DocsRequest[] = [];
+  // The named style of the paragraph each base token is in
+  const baseStyle = new Array<string>(base.length);
+  for (let q = base.length - 1, style = ""; q >= 0; q--) { const t = base[q]; if (t.k === "nl") style = paragraphFromAttrs(t.attrs).style; baseStyle[q] = style; }
   const changedLists = new Set<number>();
   // The list each item is counted in on the page (see listRuns): Docs has to put it in that one
   const memberOf = new Map<number, string | null>();
@@ -1018,6 +1098,29 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     }
     const d = paragraphDelta(pa, pb);
     if (d) paraRequests.push({ updateParagraphStyle: { range, paragraphStyle: d.style, fields: d.fields.join(",") } });
+    // Text read in a paragraph of another named style shows this one's size, font and colour where it
+    // sets none of its own, as the page shows it. Docs keeps a size, font or colour the text has of its
+    // own, and one its old style also gave reads back as none: those are reset
+    let from = -1;
+    let fields = "";
+    const flush = (to: number) => {
+      if (from >= 0 && fields) paraRequests.push({ updateTextStyle: { range: { startIndex: sIndex[from], endIndex: sIndex[to] }, textStyle: {}, fields } });
+      from = -1;
+      fields = "";
+    };
+    for (let q = sParaStart[p]; q < p; q++) {
+      const c = saved[q];
+      const i = fromBase.get(q);
+      let own = "";
+      if (c.k === "c" && i != null && baseStyle[i] !== pb.style) {
+        const st = styleFromMarks(c.marks);
+        own = [st.size ? "" : "fontSize", st.font || st.w ? "" : "weightedFontFamily", st.color ? "" : "foregroundColor"].filter(Boolean).join(",");
+      }
+      if (own === fields) continue;
+      flush(q);
+      if (own) { from = q; fields = own; }
+    }
+    flush(p);
   }
   // A changed list item is re-made together with its whole run (consecutive items of its kind), so the
   // run stays one list with continuous numbering, each item at its own level. Runs are handled last
@@ -1046,24 +1149,36 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   runs.sort((a, b) => b[0] - a[0]);
   for (const [s, e] of runs) {
     const run: BulletParagraph[] = [];
+    // Items whose own text starts with a tab, by where they start
+    const tabbed: number[] = [];
     let preset = "";
     for (let q = s; q <= e; q++) {
       const t = saved[q];
       if (t.k !== "nl") continue;
       const pb = paragraphFromAttrs(t.attrs);
       const range = { start: sIndex[sParaStart[q]], end: sIndex[q] + 1 };
+      let tabs = 0;
+      for (let k = sParaStart[q]; k < q; k++) { const c = saved[k]; if (c.k !== "c" || c.c !== "\t") break; tabs++; }
       if (!pb.list) {
-        let tabs = 0;
-        for (let k = sParaStart[q]; k < q; k++) { const c = saved[k]; if (c.k !== "c" || c.c !== "\t") break; tabs++; }
         run.push({ ...range, level: 0, line: pb, tabs });
         continue;
       }
       preset = presetOf(pb);
+      if (tabs) tabbed.push(range.start);
       run.push({ ...range, level: pb.level ?? 0 });
     }
     if (!preset) continue;
     listRequests.push({ deleteParagraphBullets: { range: { startIndex: run[0].start, endIndex: run[run.length - 1].end } } });
-    listRequests.push(...bulletRequests(run, preset));
+    // Docs takes an item's leading tabs for its level and removes them: those tabs are its text, so a
+    // character goes in front of them while the bullets are made (the run is made with it there)
+    for (const at of [...tabbed].reverse()) listRequests.push({ insertText: { location: { index: at }, text: TAB_GUARD } });
+    const guarded = run.map((p) => {
+      const before = tabbed.filter((at) => at < p.start).length;
+      return { ...p, start: p.start + before, end: p.end + before + (tabbed.includes(p.start) ? 1 : 0) };
+    });
+    listRequests.push(...bulletRequests(guarded, preset));
+    // In document order, each is then at its item's start
+    for (const at of tabbed) listRequests.push({ deleteContentRange: { range: { startIndex: at, endIndex: at + 1 } } });
   }
 
   // A new section's columns: Docs' section break doesn't take them (its section is laid out as Docs
@@ -1134,7 +1249,8 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
     if (!r.pending || r.te === r.ts) continue;
     const atParagraphStart = r.bs === 0 || base[r.bs - 1].k === "nl" || base[r.bs - 1].k === "block" || base[r.bs - 1].k === "st";
     const endsWithBreak = target[r.te - 1].k === "nl";
-    const mode: Segment["mode"] = atParagraphStart && endsWithBreak ? "before" : "inline";
+    // One that ends with a page break is typed with its newline: the break brings that one (see rotate)
+    const mode: Segment["mode"] = atParagraphStart && endsWithBreak && target[r.te - 2]?.k !== "pb" ? "before" : "inline";
     const te = mode === "before" ? r.te - 1 : r.te;
     const seg = segmentText(target, r.ts, te);
     // The paragraph the text is typed into (or copied for a new one) as the document has it

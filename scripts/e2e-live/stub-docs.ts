@@ -335,6 +335,17 @@ export class StubDocument {
     if (STRUCTURAL.has(this.items[i].k)) throw bad(`Index ${i} must be inside a paragraph (it is a table boundary)`);
   }
 
+  /** Whether index i is inside a table: a table starts before it and doesn't end before it */
+  private inTable(i: number): boolean {
+    let depth = 0;
+    for (let j = 0; j < i; j++) {
+      const k = this.items[j].k;
+      if (k === "tbl") depth++;
+      else if (k === "tend") depth--;
+    }
+    return depth > 0;
+  }
+
   /** Style of inserted text: the character before it in the paragraph, else the one after */
   private inheritedStyle(i: number): TextStyle {
     const prev = this.items[i - 1];
@@ -503,8 +514,10 @@ export class StubDocument {
     this.items.splice(index, 0, ...fresh);
   }
 
+  /** "Page breaks cannot be inserted inside a table, equation, footnote, header or footer" (InsertPageBreakRequest.location) */
   insertPageBreak(index: number): void {
     this.assertInsertIndex(index);
+    if (this.inTable(index)) throw bad(`Invalid requests[0].insertPageBreak: a page break can't be inserted inside a table (index ${index})`);
     const ts = this.inheritedStyle(index);
     const end = this.items[this.paragraphEnd(index)] as Extract<Item, { k: "nl" }>;
     this.items.splice(index, 0, { k: "pb", ts: clone(ts) }, { k: "nl", ts: clone(ts), ps: clone(end.ps), ...(end.bullet ? { bullet: clone(end.bullet) } : {}) });

@@ -43,7 +43,7 @@ export function ContextMenu({ editor }: { editor: Editor | null }) {
       {item("Copy", `${mod}C`, () => document.execCommand("copy"), empty)}
       {item("Paste", `${mod}V`, () => window.dispatchEvent(new CustomEvent("ss-paste-hint")))}
       {item("Paste without formatting", `${mod}Shift+V`, () => window.dispatchEvent(new CustomEvent("ss-paste-hint")))}
-      {item("Delete", null, () => editor.commands.deleteSelection(), empty)}
+      {item("Delete", null, () => editor.commands.deleteKeepingLocked(), empty)}
       <div className="ss-menu-sep" />
       {item("Link", `${mod}K`, () => window.dispatchEvent(new CustomEvent("ss-open-link")))}
       <div className="ss-menu-sep" />

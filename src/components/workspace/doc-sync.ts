@@ -15,7 +15,7 @@ import { Plugin, PluginKey, type EditorState, type Transaction } from "@tiptap/p
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { listLabels } from "@/lib/list-labels";
 import { AddMarkStep, AttrStep, RemoveMarkStep, ReplaceStep } from "@tiptap/pm/transform";
-import type { Node as PMNode } from "@tiptap/pm/model";
+import type { Node as PMNode, Slice } from "@tiptap/pm/model";
 import { cleanStyle, fontStack, styleFromMarks, type EditorNode } from "@/lib/rich-text";
 import { BREAK_MARK, PENDING_MARK, groupColumns } from "@/lib/doc-model";
 import { deleteParts, editableParts, lockedRanges } from "./locked-edits";
@@ -29,6 +29,8 @@ declare module "@tiptap/core" {
     docSync: {
       /** Remove formatting marks, keeping additions additions */
       unsetFormattingMarks: () => ReturnType;
+      /** Edit > Delete: as the Delete key, keeping tables and locked blocks the selection reaches */
+      deleteKeepingLocked: () => ReturnType;
     };
   }
 }
@@ -140,6 +142,57 @@ function keepsLocked(tr: Transaction): boolean {
   return false;
 }
 
+/**
+ * Whether a transaction puts a table in a table cell (Insert > Table there, or a paste): Docs could hold
+ * it, but the save writes tables only in the body, so its table and text would never reach the document.
+ * A document's own table in a table is read as locked paragraphs, so loading one never does this.
+ */
+function nestsTable(tr: Transaction): boolean {
+  if (!tr.docChanged || tr.getMeta(LOAD_META)) return false;
+  if (!tr.steps.some((step) => brings(step, "table"))) return false;
+  let nested = false;
+  tr.doc.descendants((node, _pos, parent) => {
+    if (nested || node.isTextblock) return false;
+    if (node.type.name === "table" && parent?.type.name !== "doc" && parent?.type.name !== "columnSection") nested = true;
+    return !nested;
+  });
+  return nested;
+}
+
+/**
+ * Whether a transaction puts a page break in a table cell (Ctrl+Enter there, or a paste): Docs takes no
+ * page break in a table ("Page breaks cannot be inserted inside a table"), so neither the save nor a sync
+ * could write it.
+ */
+function breaksInCell(tr: Transaction): boolean {
+  if (!tr.docChanged || tr.getMeta(LOAD_META)) return false;
+  // Where breaks end up, whether brought (Ctrl+Enter, a paste) or joined in (a deletion or paste from a
+  // cell to past its table); only more of them than before, so a page that already has one (a draft
+  // saved before this was refused) can still be edited
+  return pageBreaksInCells(tr.doc) > pageBreaksInCells(tr.before);
+}
+
+/** Page breaks inside table cells */
+function pageBreaksInCells(doc: PMNode): number {
+  let n = 0;
+  doc.descendants((node) => {
+    if (node.type.name === "table") {
+      node.descendants((c) => { if (c.type.name === "pageBreak") n++; return true; });
+      return false;
+    }
+    return !node.isTextblock;
+  });
+  return n;
+}
+
+/** Whether a step puts a node of the given type in the document */
+function brings(step: Transaction["steps"][number], type: string): boolean {
+  const slice = (step as { slice?: Slice }).slice;
+  let found = false;
+  slice?.content.descendants((node) => { if (node.type.name === type) found = true; return !found; });
+  return found;
+}
+
 /** Locked paragraphs (a header's table, shown cell by cell) can't be changed here: for the header, footer and footnote editors */
 export const LockedParagraphs = Extension.create({
   name: "lockedParagraphs",
@@ -183,6 +236,13 @@ export const DocSync = Extension.create({
 
   addCommands() {
     return {
+      deleteKeepingLocked: () => ({ state, tr, dispatch, commands }) => {
+        const parts = editableParts(state);
+        // As the Delete key: the usual delete, refused with the hint when it would change locked content
+        if (!parts?.length) return commands.deleteSelection();
+        if (dispatch) { deleteParts(tr, parts); tr.scrollIntoView(); }
+        return true;
+      },
       unsetFormattingMarks: () => ({ tr, state }) => {
         for (const range of state.selection.ranges) {
           for (const type of Object.values(state.schema.marks)) {
@@ -212,7 +272,7 @@ export const DocSync = Extension.create({
           init: () => ({ glow: false }),
           apply: (tr, value) => (tr.getMeta(docSyncKey) as { glow: boolean } | undefined) ?? value,
         },
-        filterTransaction: keepsLocked,
+        filterTransaction: (tr) => keepsLocked(tr) && !nestsTable(tr) && !breaksInCell(tr),
         // Whatever is typed or pasted becomes an addition; text dragged within the document keeps what it was
         appendTransaction(transactions, _old, newState) {
           // A column layout change regroups the document's blocks into column sections

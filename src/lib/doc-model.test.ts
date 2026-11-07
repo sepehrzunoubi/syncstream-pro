@@ -249,6 +249,31 @@ test("tables: cells are editable paragraphs between structure tokens that keep D
   }
 });
 
+test("reloading after a collaborator adds a row above or a column before keeps a cell's addition in its own cell, copying nothing", () => {
+  const tp = (text: string, extra?: string) => ({ type: "paragraph", attrs: {}, content: [...(text ? [{ type: "text", text }] : []), ...(extra ? [{ type: "text", text: extra, marks: [{ type: "syncAdd" }] }] : [])] });
+  const cell = (cid: string, para: EditorNode) => ({ type: "tableCell", attrs: { cid, span: 1 }, content: [para] });
+  const row = (rid: string, ...cells: EditorNode[]) => ({ type: "tableRow", attrs: { rid, span: 1 }, content: cells });
+  const table = (...rows: EditorNode[]) => ({ type: "table", attrs: { tid: "t1", span: 1 }, content: rows });
+  const docOf = (t: EditorNode) => ({ type: "doc", content: [tp("Intro"), t, tp("After")] });
+  // The page: "!" waiting to be synced after B
+  const shown = docOf(table(row("r0", cell("c0", tp("A")), cell("c1", tp("B", "!"))), row("r1", cell("c0", tp("C")), cell("c1", tp("D")))));
+  const cellsOf = (d: EditorNode) => {
+    const out: string[] = [];
+    const walk = (n: EditorNode) => {
+      if (n.type === "tableCell") out.push((n.content ?? []).flatMap((q) => q.content ?? []).map((x) => (x.marks?.some((m) => m.type === "syncAdd") ? `[${x.text}]` : x.text)).join(""));
+      else (n.content ?? []).forEach(walk);
+    };
+    walk(d);
+    return out;
+  };
+  // Google now has an empty row above the table's first (the document's row ids are by position)
+  const rowAbove = docOf(table(row("r0", cell("c0", tp("")), cell("c1", tp(""))), row("r1", cell("c0", tp("A")), cell("c1", tp("B"))), row("r2", cell("c0", tp("C")), cell("c1", tp("D")))));
+  assert.deepEqual(cellsOf(rebase(rowAbove, shown)), ["", "", "A", "B[!]", "C", "D"]);
+  // ...or an empty column before the first
+  const columnBefore = docOf(table(row("r0", cell("c0", tp("")), cell("c1", tp("A")), cell("c2", tp("B"))), row("r1", cell("c0", tp("")), cell("c1", tp("C")), cell("c2", tp("D")))));
+  assert.deepEqual(cellsOf(rebase(columnBefore, shown)), ["", "A", "B[!]", "", "C", "D"]);
+});
+
 test("a header's edits are saved in its own segment, from index 0, never as additions", async () => {
   const { segmentEdits } = await import("./doc-model");
   const p = (text: string, marks?: { type: string }[]) => ({ type: "paragraph", attrs: {}, content: text ? [marks ? { type: "text", text, marks } : { type: "text", text }] : [] });
