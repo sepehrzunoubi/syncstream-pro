@@ -42,7 +42,7 @@ export function errorStatus(err: unknown): number | undefined {
 }
 
 /** Google refused a batch because the document changed since it was read */
-const isStaleRevision = (err: unknown) => errorStatus(err) === 400 && /revision/i.test(err instanceof Error ? err.message : String(err));
+export const isStaleRevision = (err: unknown) => errorStatus(err) === 400 && /revision/i.test(err instanceof Error ? err.message : String(err));
 
 export interface RunnerDeps {
   store: SyncStore;

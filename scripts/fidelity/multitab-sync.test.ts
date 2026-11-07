@@ -393,3 +393,18 @@ test("Drive: edit rights, a document's name, and the user's documents without th
     (google as unknown as { drive: typeof realDrive }).drive = realDrive;
   }
 });
+
+test("two tabs with the same text: each addition is typed in its own tab, never found in the other", async () => {
+  const d = new TabbedStub("doc-twins-1234", "Twins", [{ id: "t.a", title: "Draft" }, { id: "t.b", title: "Copy" }]);
+  for (const id of ["t.a", "t.b"]) d.tab(id).batchUpdate([{ insertText: { location: { index: 1 }, text: "Same words here\nSame ending" } }]);
+  docs.set("doc-twins-1234", d);
+  // Only the second tab gets text, after its first line; the first tab's identical line must not take it
+  const s = await startSync("doc-twins-1234", [
+    { tabId: "t.a", edit: appended(1, " (draft)") },
+    { tabId: "t.b", edit: both(paragraphAfter(0, "Only in the copy."), appended(0, " and more")) },
+  ], { seed: 8, typos: 1 });
+  const job = await s.finish();
+  assert.equal(job.status, "done", job.error);
+  assert.equal(plain(d, "t.a"), "Same words here\nSame ending (draft)");
+  assert.equal(plain(d, "t.b"), "Same words here and more\nOnly in the copy.\nSame ending");
+});

@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { batchUpdateWithReplies, createTab, getRawDocument, renameTab } from "@/lib/google";
 import { importImageFromUrl } from "@/lib/image-store";
-import { buildCompareJob, COMPARE_CHANGED, CompareChangedError, prepareCompare, type CompareGoogle } from "@/lib/compare-server";
+import { buildCompareJob, COMPARE_CHANGED, CompareChangedError, CompareRefusedError, prepareCompare, type CompareGoogle } from "@/lib/compare-server";
 import type { CompareBreak, CompareStartBody } from "@/lib/compare-types";
 import { createJobId, getStore, hasRedis, isTerminal, toPublicJob } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
 import { getBaseUrl } from "@/lib/base-url";
 import { MAX_TARGET_MINUTES, MIN_TARGET_MINUTES } from "@/lib/drip-engine";
+import { MAX_ANCHORED_BREAKS, MAX_ANCHORED_MINUTES, MAX_TOTAL_BREAK_MINUTES } from "@/lib/breaks";
+import { isTabId } from "@/lib/doc-tabs";
 import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
@@ -21,14 +23,21 @@ const CHANGED = COMPARE_CHANGED;
 
 const isDocId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{10,200}$/.test(v);
 
-function parseBreaks(raw: unknown): CompareBreak[] | null {
+/** Manual breaks, checked here so that one the sync can't take refuses the start before anything is written */
+function parseBreaks(raw: unknown): CompareBreak[] | string {
   if (raw == null) return [];
-  if (!Array.isArray(raw) || raw.length > 200) return null;
+  if (!Array.isArray(raw)) return "Invalid breaks";
+  if (raw.length > MAX_ANCHORED_BREAKS) return `At most ${MAX_ANCHORED_BREAKS} breaks`;
   const out: CompareBreak[] = [];
+  let total = 0;
   for (const b of raw as Record<string, unknown>[]) {
-    if (!b || typeof b.rightTabId !== "string" || !Number.isInteger(b.rightToken) || typeof b.minutes !== "number" || !Number.isFinite(b.minutes)) return null;
-    out.push({ rightTabId: b.rightTabId, rightToken: b.rightToken as number, minutes: b.minutes });
+    if (!b || !isTabId(b.rightTabId) || !Number.isInteger(b.rightToken) || (b.rightToken as number) < 0 || typeof b.minutes !== "number" || !Number.isFinite(b.minutes)) return "Invalid breaks";
+    const minutes = Math.round(b.minutes);
+    if (minutes < 1 || minutes > MAX_ANCHORED_MINUTES) return `Each break must be from 1 minute to ${MAX_ANCHORED_MINUTES / 60} hours`;
+    total += minutes;
+    out.push({ rightTabId: b.rightTabId, rightToken: b.rightToken as number, minutes });
   }
+  if (total > MAX_TOTAL_BREAK_MINUTES) return "All breaks together can last up to 7 days";
   return out;
 }
 
@@ -55,7 +64,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   const skip = Array.isArray(body.skip) ? body.skip.filter((x): x is string => typeof x === "string").slice(0, 5000) : [];
   const breaksMode = body.breaksMode === "none" || body.breaksMode === "manual" ? body.breaksMode : "auto";
   const manualBreaks = breaksMode === "manual" ? parseBreaks(body.breaks) : [];
-  if (!manualBreaks) return NextResponse.json({ error: "Invalid breaks" }, { status: 400 });
+  if (typeof manualBreaks === "string") return NextResponse.json({ error: manualBreaks }, { status: 400 });
   let targetMinutes: number | null = null;
   if (breaksMode !== "manual" && body.targetMinutes != null) {
     const m = body.targetMinutes;
@@ -78,12 +87,12 @@ export const POST = withRoute(async (req: NextRequest) => {
     const prepared = await withGoogleToken(user, async (token) => {
       const g: CompareGoogle = {
         read: (id) => getRawDocument(token, id),
-        batch: async (id, requests, tabId) => (await batchUpdateWithReplies(token, id, requests, { tabId })) ?? [],
+        batch: async (id, requests, tabId, requiredRevisionId) => (await batchUpdateWithReplies(token, id, requests, { tabId, requiredRevisionId })) ?? [],
         createTab: (id, props) => createTab(token, id, props),
         renameTab: (id, tabId, title) => renameTab(token, id, tabId, title),
         rehost: async (url) => (await importImageFromUrl(url, { baseUrl: getBaseUrl(req), accessToken: token }))?.url ?? null,
       };
-      return prepareCompare(g, { leftId, rightId, leftRevision: body.leftRevision!, rightRevision: body.rightRevision!, tabMap: body.tabMap, skip, breaks: manualBreaks });
+      return prepareCompare(g, { leftId, rightId, leftRevision: body.leftRevision!, rightRevision: body.rightRevision!, tabMap: body.tabMap, skip, breaks: manualBreaks, pace: { breaksMode, targetMinutes, typoFrequency, seed } });
     });
     const now = Date.now();
     const id = createJobId();
@@ -121,6 +130,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     return applyAuthCookies(NextResponse.json({ job: toPublicJob(job), totalMs: syncPlan.totalMs, droppedImages: prepared.droppedImages }), user);
   } catch (error) {
     if (error instanceof CompareChangedError) return NextResponse.json({ error: CHANGED, code: "changed" }, { status: 409 });
+    if (error instanceof CompareRefusedError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     const status = googleStatus(error);
     if (status === 401) return unauthorized();
     if (status === 403) return NextResponse.json({ error: "SyncStream isn't allowed to edit your document. Check that your Google account can edit it." }, { status: 403 });
