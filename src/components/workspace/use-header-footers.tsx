@@ -5,7 +5,7 @@
  * saved directly (nothing in them glows), plus Insert > Headers & footers.
  */
 
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Editor, JSONContent } from "@tiptap/react";
 import type { EditorNode } from "@/lib/rich-text";
 import { segmentEdits } from "@/lib/doc-model";
@@ -23,7 +23,7 @@ export type HfSetup = { useFirstPage: boolean; marginHeader: number; marginFoote
 type Made = { seg: Segment; content: DocContent; revisionId: string };
 const sameTab = (a: DocContent | null | undefined, b: DocContent) => a?.status === "ready" && a.docId === b.docId && (a.tabId ?? null) === (b.tabId ?? null);
 
-export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor }: {
+export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor, docKey }: {
   editor: Editor | null;
   refs: DocRefs;
   saveNow: () => Promise<boolean>;
@@ -32,8 +32,12 @@ export function useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeErro
   editingHf: "header" | "footer" | null;
   setEditingHf: Setter<"header" | "footer" | null>;
   setSegmentEditor: Setter<Editor | null>;
+  /** The document and tab on the page: another one ends editing a header or footer of this one */
+  docKey?: string;
 }) {
   const { docContentRef, revisionRef } = refs;
+  // The toolbar, menus and ruler go back to the body: the header being edited isn't this page's
+  useEffect(() => { setEditingHf(null); setSegmentEditor(null); }, [docKey, setEditingHf, setSegmentEditor]);
   const [segments, setSegments] = useState<Segments>({ header: null, footer: null, firstPageHeader: null, firstPageFooter: null });
   const [hfSetup, setHfSetup] = useState<HfSetup>({ useFirstPage: false, marginHeader: 36, marginFooter: 36 });
   const [footnotes, setFootnotes] = useState<Record<string, EditorNode[]>>({});

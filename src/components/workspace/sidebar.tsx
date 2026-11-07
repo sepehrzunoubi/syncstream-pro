@@ -1,7 +1,9 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import type { Editor } from "@tiptap/react";
+import { Columns2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { DocTab } from "@/lib/doc-tabs";
 import type { PublicJob } from "@/lib/sync-store";
@@ -44,7 +46,8 @@ interface SidebarProps {
 
 /**
  * Docs' left panel, measured against Docs: a back arrow that hides it, "Document tabs" with the
- * open tab as a 40px pill and its outline under it, then the syncs, with "New Google Doc" first.
+ * open tab as a 40px pill and its outline under it, then the syncs, with "New Google Doc" and
+ * "Compare & Sync" first.
  */
 export function Sidebar(p: SidebarProps) {
   const tabs = p.tabs && p.tabs.length ? p.tabs : [{ id: "", title: "Tab 1", level: 0 }];
@@ -93,6 +96,10 @@ export function Sidebar(p: SidebarProps) {
           <span className="ss-doc-tab-icon"><Icon name="note_add" size={18} /></span>
           <span className="ss-doc-tab-label">{p.isCreatingDoc ? "Creating document" : "New Google Doc"}</span>
         </button>
+        <Link href="/dashboard/compare" className="ss-doc-tab ss-new-doc" title="Bring a document up to date with another one">
+          <span className="ss-doc-tab-icon"><Columns2 className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" /></span>
+          <span className="ss-doc-tab-label">Compare &amp; Sync</span>
+        </Link>
 
         {active.length > 0 && <div className="ss-side-label">In progress</div>}
         <AnimatePresence initial={false}>

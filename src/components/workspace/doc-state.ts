@@ -10,7 +10,11 @@ import type { DocTab } from "@/lib/doc-tabs";
 
 export type Doc = { id: string; name: string; modifiedTime: string };
 
-export interface Source { text: string; format: RichFormat | null; context?: { doc?: EditorNode; ranges?: [number, number][] } | null }
+/** A tab of a sync that types into several (Compare & Sync): its page as it will be, and its segments */
+export interface SourceTab { tabId: string; title: string; first: number; doc: EditorNode; ranges: [number, number][] }
+export interface Source { text: string; format: RichFormat | null; context?: { doc?: EditorNode; ranges?: [number, number][]; tabs?: SourceTab[] } | null }
+/** The part of a sync's source the live page shows: one tab's, `from` to `to` in the whole source */
+export interface SourceView { source: Source; from: number; to: number; tab: number }
 
 /** What is known about the selected document's own content */
 export interface DocContent {

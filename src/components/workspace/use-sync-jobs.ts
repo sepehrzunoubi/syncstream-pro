@@ -16,14 +16,14 @@ import { sourceAnchors } from "./break-marks";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { formatClock } from "@/lib/format";
-import { loadDocument } from "./doc-sync";
+import { LOAD_META, loadDocument } from "./doc-sync";
 import { progressKey } from "./pagination";
 import { isActive } from "./job-status";
 import type { BreaksMode } from "./sync-panel";
 import { postJson } from "./api";
 import { markAllAdded, withoutMark } from "./doc-json";
 import { writeAdditions } from "./storage";
-import { shownTab, type Doc, type DocContent, type DocRefs, type Setter, type Source } from "./doc-state";
+import { shownTab, type Doc, type DocContent, type DocRefs, type Setter, type Source, type SourceView } from "./doc-state";
 import { isUploadingImage } from "./pasted-images";
 
 function useNow(active: boolean, intervalMs = 1000): number {
@@ -49,7 +49,7 @@ export interface SyncSettings {
   setSeed: Setter<number>;
 }
 
-export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, setReady, focusedJob, focusedJobId, setFocusedJobId, setComposing, docs, selectedDocId, setSelectedDocId, docContent, docBusy, docJSON, settings, fetchDocs, loadDocContent, saveNow, setDocJSON, setSnack, setScopeError }: {
+export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, setReady, focusedJob, focusedJobId, setFocusedJobId, composing, setComposing, docs, selectedDocId, setSelectedDocId, docContent, docBusy, docJSON, settings, fetchDocs, loadDocContent, saveNow, setDocJSON, setSnack, setScopeError }: {
   editor: Editor | null;
   viewer: Editor | null;
   refs: DocRefs;
@@ -60,6 +60,8 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
   focusedJob: PublicJob | null;
   focusedJobId: string | null;
   setFocusedJobId: Setter<string | null>;
+  /** Editing (false: a sync is shown) */
+  composing?: boolean;
   setComposing: Setter<boolean>;
   docs: Doc[];
   selectedDocId: string;
@@ -80,8 +82,34 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
   const [sources, setSources] = useState<Record<string, Source>>({});
   const [busy, setBusy] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  /** The first list of syncs is in: a sync missing from the list is gone, not loading */
+  const ready = useRef(false);
+  const selectedRef = useRef(selectedDocId);
+  selectedRef.current = selectedDocId;
   const anyActive = jobs.some(isActive);
   const now = useNow(!!focusedJob && isActive(focusedJob));
+
+  // A start that failed is about that document and that text: another document or tab, or an
+  // edit to the text, and it no longer applies
+  const shownTabId = docContent?.docId === selectedDocId ? docContent.tabId ?? null : null;
+  useEffect(() => { setStartError(null); }, [selectedDocId, shownTabId]);
+  useEffect(() => {
+    if (!editor) return;
+    const onTransaction = ({ transaction: tr }: { transaction: { docChanged: boolean; getMeta: (k: string) => unknown } }) => {
+      if (tr.docChanged && !tr.getMeta(LOAD_META)) setStartError(null);
+    };
+    editor.on("transaction", onTransaction);
+    return () => { editor.off("transaction", onTransaction); };
+  }, [editor]);
+
+  // The sync shown went away (removed in another tab, or gone from the list): back to editing, so
+  // the page and the header show the same document again
+  useEffect(() => {
+    if (composing === false && !focusedJob && ready.current) {
+      setFocusedJobId(null);
+      setComposing(true);
+    }
+  }, [composing, focusedJob, setFocusedJobId, setComposing]);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -101,6 +129,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       if (cancelled) return;
       const active = list?.find(isActive);
       if (active) { setFocusedJobId(active.id); setComposing(false); }
+      ready.current = true;
       setReady(true);
     });
     return () => { cancelled = true; };
@@ -162,12 +191,16 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
 
   const startSync = useCallback(async () => {
     if (!editor || busy || !selectedDocId || docBusy) return;
+    if (docContent?.docId !== selectedDocId || docContent.status === "loading") { setStartError("The document is still opening. Try again in a moment."); return; }
     setBusy(true);
     setStartError(null);
     // Nothing is typed or pasted while the sync starts: what it takes is what the page then shows
     editor.setEditable(false, false);
+    // Where it starts from: if another document or tab is shown by the time it answers, what it says is
+    // about this one, not that one
+    const from = { docId: selectedDocId, tabId: docContent.tabId ?? null, name: docs.find((d) => d.id === selectedDocId)?.name };
+    const stillHere = () => selectedRef.current === from.docId && refs.docContentRef.current?.docId === from.docId && (refs.docContentRef.current.tabId ?? null) === from.tabId;
     try {
-      if (docContent?.docId === selectedDocId && docContent.status === "loading") throw new Error("The document is still opening. Try again in a moment.");
       // An image the sync can't insert (yet): it would be left out. Looked for in what the sync takes
       const checkImages = () => {
         let blocked: string | null = null;
@@ -223,7 +256,9 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
         startInMinutes,
       });
       if (status === 401) { setScopeError(true); return; }
-      if (status === 409) await loadDocContent(selectedDocId, editor.getJSON() as EditorNode);
+      // The document changed in Google Docs: reload it with the additions in place, unless the page has
+      // moved on to another one (that one's load mustn't be replaced by this one)
+      if (status === 409 && stillHere()) await loadDocContent(selectedDocId, editor.getJSON() as EditorNode);
       if (!ok) throw new Error(data.error || `Couldn't start the sync (HTTP ${status})`);
       setSources((s) => ({ ...s, [data.job.id]: source }));
       setJobs((prev) => [data.job, ...prev]);
@@ -244,11 +279,15 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       setDocJSON(editor.getJSON());
       setStartInMinutes(0);
       setSeed(randomSeed());
-      setSnack(startInMinutes > 0 ? `Sync scheduled for ${formatClock(data.job.startAt)}` : "Sync started");
+      const noBreaks = breaksMode === "manual" && manualAnchors.length === 0 ? ", with no breaks" : "";
+      setSnack(startInMinutes > 0 ? `Sync scheduled for ${formatClock(data.job.startAt)}${noBreaks}` : `Sync started${noBreaks}`);
     } catch (err) {
-      setStartError(err instanceof Error ? err.message : "Couldn't start the sync");
+      const msg = err instanceof Error ? err.message : "Couldn't start the sync";
+      if (stillHere()) setStartError(msg);
+      else setSnack(`Couldn't start the sync into ${from.name ? `"${from.name}"` : "the other document"}: ${msg}`);
     } finally {
-      editor.setEditable(!docBusy, false);
+      // The page unlocks with this (usePageLock), unless the sync now typing into it, or a document
+      // opening, keeps it locked
       setBusy(false);
     }
   }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, refs.tabRef, refs.docContentRef, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
@@ -272,10 +311,13 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
 
   const dismissJob = useCallback(async (jobId: string) => {
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
-    setFocusedJobId(null);
-    setComposing(true);
+    // Removing another sync from the list leaves the one shown where it is
+    if (jobId === focusedJobId) {
+      setFocusedJobId(null);
+      setComposing(true);
+    }
     await postJson("/api/sync/dismiss", { jobId }).catch(() => {});
-  }, [setJobs, setFocusedJobId, setComposing]);
+  }, [focusedJobId, setJobs, setFocusedJobId, setComposing]);
 
   const editAsNew = useCallback(async (job: PublicJob) => {
     const src = sources[job.id];
@@ -290,9 +332,8 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       const current = editor.getJSON() as EditorNode;
       if (sameDoc) loadDocument(editor, { type: "doc", content: [...(current.content ?? []), ...(extra.content ?? [])] }, true);
       else {
-        // Opening the other document adds this text at its end
-        legacyTextRef.current = extra;
-        writeAdditions(job.documentId, null, { id: job.tabId ?? null, first: !!job.tabId && docContent?.docId === job.documentId && docContent.tabs?.[0]?.id === job.tabId });
+        // Opening the other document adds this text at its end, after any new text kept for it there
+        legacyTextRef.current = legacyTextRef.current ? { type: "doc", content: [...(legacyTextRef.current.content ?? []), ...(extra.content ?? [])] } : extra;
         setSelectedDocId(job.documentId, job.tabId ?? "");
       }
     }
@@ -301,32 +342,60 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
 
   const focusedSource = focusedJob ? sources[focusedJob.id] : undefined;
 
+  // A sync typing into several tabs: where each tab's text is in the source
+  const tabParts = useMemo(() => {
+    const tabs = focusedSource?.context?.tabs;
+    if (!tabs?.length) return null;
+    let from = 0;
+    return tabs.map((t) => {
+      const chars = segmentCharTokens(t.doc, t.ranges);
+      const part = { ...t, chars, from, to: from + chars.reduce((n, c) => n + c.length, 0) };
+      from = part.to;
+      return part;
+    });
+  }, [focusedSource]);
+  const typed = focusedJob?.charsSent ?? 0;
+  // The live page follows the tab being typed (a finished sync shows its last)
+  const tabIndex = tabParts ? (() => { const i = tabParts.findIndex((p) => typed < p.to); return i < 0 ? tabParts.length - 1 : i; })() : -1;
+  const part = tabParts && tabIndex >= 0 ? tabParts[tabIndex] : null;
+  /** What the live page shows: the whole source, or the tab being typed */
+  const view = useMemo((): SourceView | null => {
+    if (!focusedSource) return null;
+    if (!part) return { source: focusedSource, from: 0, to: focusedSource.text.length, tab: -1 };
+    return { source: { text: focusedSource.text, format: null, context: { doc: part.doc, ranges: part.ranges } }, from: part.from, to: part.to, tab: tabIndex };
+  }, [focusedSource, part, tabIndex]);
+
   // Load the focused sync into the viewer, then move its caret as typing progresses
   const loadedRef = useRef<string | null>(null);
+  const viewKey = focusedJob ? `${focusedJob.id}#${tabIndex}` : null;
   useEffect(() => {
-    if (!viewer || !focusedJob || !focusedSource) return;
-    if (loadedRef.current !== focusedJob.id) {
-      const ctx = focusedSource.context;
+    if (!viewer || !focusedJob || !view || !viewKey) return;
+    if (loadedRef.current !== viewKey) {
+      const ctx = view.source.context;
       // (breaks placed before the start are shown from the job, which has them as they are now)
       if (ctx?.doc && ctx.ranges) loadDocument(viewer, withoutMark(ctx.doc as EditorNode, BREAK_MARK), true);
-      else loadDocument(viewer, richToEditorJSON(focusedSource.text, focusedSource.format), false);
-      loadedRef.current = focusedJob.id;
+      else loadDocument(viewer, richToEditorJSON(view.source.text, view.source.format), false);
+      loadedRef.current = viewKey;
     }
-  }, [viewer, focusedJob, focusedSource]);
-  const typed = focusedJob?.charsSent ?? 0;
-  // Which token each typed character comes from, once per sync
+  }, [viewer, focusedJob, view, viewKey]);
+  // Which token each typed character comes from, once per sync (and tab)
   const chars = useMemo(() => {
+    if (part) return part.chars;
     const ctx = focusedSource?.context;
     return ctx?.doc && ctx.ranges ? segmentCharTokens(ctx.doc, ctx.ranges) : null;
-  }, [focusedSource]);
+  }, [focusedSource, part]);
   useEffect(() => {
-    if (!viewer || !focusedJob || loadedRef.current !== focusedJob.id) return;
-    const ranges = focusedSource?.context?.doc ? focusedSource.context.ranges ?? null : null;
-    viewer.view.dispatch(viewer.state.tr.setMeta(progressKey, { typed, ranges, chars }).setMeta("addToHistory", false));
+    if (!viewer || !focusedJob || !view || loadedRef.current !== viewKey) return;
+    const ctx = view.source.context;
+    const ranges = ctx?.doc ? ctx.ranges ?? null : null;
+    // Typed so far in the tab shown
+    const shown = Math.max(0, Math.min(typed - view.from, view.to - view.from));
+    viewer.view.dispatch(viewer.state.tr.setMeta(progressKey, { typed: shown, ranges, chars }).setMeta("addToHistory", false));
     const frame = requestAnimationFrame(() => {
       const caret = viewer.view.dom.querySelector(".ss-caret");
       const canvas = canvasRef.current;
-      if (!caret || !canvas) return;
+      // A break's popover open on the page stays where it is (it would close if the page scrolled)
+      if (!caret || !canvas || document.querySelector(".ss-brk-popover")) return;
       const r = caret.getBoundingClientRect();
       const c = canvas.getBoundingClientRect();
       if (r.top < c.top + 60 || r.bottom > c.bottom - 60) {
@@ -335,7 +404,10 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [viewer, focusedJob, typed, focusedSource, chars, canvasRef]);
+  }, [viewer, focusedJob, typed, view, viewKey, chars, canvasRef]);
 
-  return { now, busy, startError, hasText, preview, focusedSource, startSync, jobAction, dismissJob, editAsNew };
+  /** For the panel: each tab of a sync typing into several, and how far it is */
+  const tabProgress = useMemo(() => tabParts?.map((p, i) => ({ id: p.tabId, title: p.title || `Tab ${i + 1}`, state: (typed >= p.to ? "done" : i === tabIndex ? "typing" : "next") as "done" | "typing" | "next" })) ?? null, [tabParts, typed, tabIndex]);
+
+  return { now, busy, startError, hasText, preview, focusedSource, view, tabProgress, startSync, jobAction, dismissJob, editAsNew };
 }

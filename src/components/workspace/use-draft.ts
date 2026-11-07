@@ -53,8 +53,9 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
     setDocJSON(editor.getJSON());
     if (d.selectedDocId) setSelectedDocId(d.selectedDocId, typeof d.selectedTabId === "string" ? d.selectedTabId : "");
     if (d.durationMinutes !== undefined) setDurationMinutes(d.durationMinutes);
-    // The old "Choose" is now Manual: breaks placed on the page (there are none yet)
-    if (d.breaksMode) setBreaksMode(d.breaksMode === "custom" ? "manual" : d.breaksMode);
+    // The old "Choose" (lengths without places) becomes Automatic: a sync with breaks, as it was. As
+    // Manual it would have none at all until some are placed on the page
+    if (d.breaksMode) setBreaksMode(d.breaksMode === "custom" ? "auto" : d.breaksMode);
     if (typeof d.breakLength === "string") setBreakLength(d.breakLength.slice(0, 40));
     if (typeof d.typoFrequency === "number") setTypoFrequency(d.typoFrequency);
     if (typeof d.zoom === "number" || d.zoom === "fit") setZoom(d.zoom);

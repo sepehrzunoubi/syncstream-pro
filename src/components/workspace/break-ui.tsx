@@ -3,9 +3,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { describeBreak, formatBreak, parseBreakLength } from "@/lib/breaks";
+import { aBreakOf } from "./break-marks";
 
-/** The slim bar on the canvas while a click places a break */
-export function PlacingBar({ minutes, live, onDone }: { minutes: number; live?: boolean; onDone: () => void }) {
+/** A slim bar floating at the top of the canvas: what a click on the page does now, or what it waits for */
+export function CanvasBar({ children }: { children: React.ReactNode }) {
   return (
     <motion.div
       className="ss-placing-bar ss-noprint"
@@ -15,10 +16,29 @@ export function PlacingBar({ minutes, live, onDone }: { minutes: number; live?: 
       exit={{ opacity: 0, y: -6 }}
       transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
     >
-      <span className="ss-brk-chip">{formatBreak(minutes)}</span>
-      <span>Click {live ? "a word not typed yet" : "a word"}: the {describeBreak(minutes)} break starts after it</span>
-      <button type="button" className="ss-link-btn" onClick={onDone}>Done</button>
+      {children}
     </motion.div>
+  );
+}
+
+/** While a click places a break */
+export function PlacingBar({ minutes, live, onDone }: { minutes: number; live?: boolean; onDone: () => void }) {
+  return (
+    <CanvasBar>
+      <span className="ss-brk-chip">{formatBreak(minutes)}</span>
+      <span>{aBreakOf(minutes)} starts after the word you click{live ? ", in text not typed yet" : ""}</span>
+      <button type="button" className="ss-link-btn" onClick={onDone}>Done</button>
+    </CanvasBar>
+  );
+}
+
+/** While the document asked for opens: the page under it is the one before, and waits */
+export function OpeningBar() {
+  return (
+    <CanvasBar>
+      <span className="h-4 w-4 flex-none animate-spin rounded-full border-2 border-[#d3e3fd] border-t-[#0b57d0]" aria-hidden />
+      <span>Opening the document</span>
+    </CanvasBar>
   );
 }
 
@@ -37,13 +57,24 @@ export function BreakPopover({ rect, minutes, title, onSave, onRemove, onClose, 
   const ref = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const parsed = parseBreakLength(value);
-  useEffect(() => { input.current?.focus(); input.current?.select(); }, []);
+  useEffect(() => { input.current?.focus({ preventScroll: true }); input.current?.select(); }, []);
   useEffect(() => {
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
+    const outside = (e: Event) => !ref.current?.contains(e.target as Node);
+    const onDown = (e: MouseEvent) => { if (outside(e)) onClose(); };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    // It is placed by its pill when it opened: once the page scrolls or the window resizes, it would
+    // point at another word
+    const onMove = (e: Event) => { if (outside(e)) onClose(); };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey, true);
-    return () => { window.removeEventListener("mousedown", onDown, true); window.removeEventListener("keydown", onKey, true); };
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onClose);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onClose);
+    };
   }, [onClose]);
   const width = 248;
   const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.left + rect.width / 2 - width / 2));

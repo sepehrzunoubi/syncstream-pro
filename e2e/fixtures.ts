@@ -7,7 +7,7 @@
 import { test as base, expect, type Page, type Route } from "@playwright/test";
 import type { Editor } from "@tiptap/core";
 import type { ImportedDoc } from "../src/lib/doc-import";
-import { fixtureContent, fixtureDocument, FIXTURE_DOC_ID, FIXTURE_DOC_NAME, type Fixture } from "./fixtures/google-doc";
+import { fixtureContent, fixtureDocument, tabContent, FIXTURE_DOC_ID, FIXTURE_DOC_NAME, type Fixture } from "./fixtures/google-doc";
 import type { DocTab } from "../src/lib/doc-tabs";
 
 declare global {
@@ -92,6 +92,26 @@ export class FakeGoogle {
    */
   contentMode: "once" | "always" = "once";
   contentReads = 0;
+  /** Content reads per document id ("once" counts each document's reads on its own) */
+  contentReadsOf: Record<string, number> = {};
+  private contentServedOf: Record<string, number> = {};
+  /**
+   * Other documents' content, by id (any other id reads as the fixture). New Google Doc adds a blank
+   * one here; `contentDelay` holds a document's content back that long, in ms, to see it opening
+   */
+  contents: Record<string, ImportedDoc> = {};
+  contentDelay: Record<string, number> = {};
+  /** Documents that can't be read: the status their content read answers with */
+  contentErrors: Record<string, number> = {};
+  /** Reads of a document still to answer as a busy Google does (429, try again in a second) */
+  contentBusy: Record<string, number> = {};
+  /** What `/api/docs/create` received; how long it takes to answer, in ms; with `createFails`, it fails */
+  creates: Record<string, unknown>[] = [];
+  createDelay = 0;
+  createFails = false;
+  /** Drive lists a new document only after this many reads of the list (it takes a moment there too) */
+  listLag = 0;
+  private unlisted: { doc: { id: string; name: string; modifiedTime: string }; reads: number }[] = [];
   /**
    * The document's tabs, when it has them: the first is `content`, the others' content is in
    * `tabContents`. Each content read records the tab asked for (null: none).
@@ -118,8 +138,9 @@ export class FakeGoogle {
   imageRefusals = 0;
   imagesAtOnce = 0;
   private imagesNow = 0;
-  /** How long starting a sync takes, in ms */
+  /** How long starting a sync takes, in ms; with `startFailure`, the start route answers with it */
   startDelay = 0;
+  startFailure: { status: number; error: string } | null = null;
   /** Calls to API routes this fake doesn't know: always a bug in the test or the app */
   unexpected: string[] = [];
 
@@ -154,12 +175,39 @@ export class FakeGoogle {
         case "/api/auth/logout":
           return json(route, { ok: true });
         case "/api/docs":
+          // Documents made a moment ago show up after a few reads, as in Drive
+          for (const u of this.unlisted) if (++u.reads > this.listLag) this.docs = [u.doc, ...this.docs.filter((d) => d.id !== u.doc.id)];
+          this.unlisted = this.unlisted.filter((u) => u.reads <= this.listLag);
           return json(route, { docs: this.docs });
+        case "/api/docs/create": {
+          const b = body();
+          this.creates.push(b);
+          if (this.createDelay) await new Promise((r) => setTimeout(r, this.createDelay));
+          if (this.createFails) return json(route, { error: "Couldn't create the document. Try again." }, 502);
+          const name = typeof b.title === "string" && b.title.trim() ? b.title.trim() : "Untitled document";
+          const doc = { id: `new-doc-${this.creates.length}-e2e0000000`, name, modifiedTime: new Date().toISOString() };
+          this.contents[doc.id] = { ...tabContent([""]), revisionId: `${doc.id}-rev-1` };
+          if (this.listLag > 0) this.unlisted.push({ doc, reads: 0 });
+          else this.docs = [doc, ...this.docs];
+          return json(route, { id: doc.id, name });
+        }
         case "/api/docs/content": {
           this.contentReads += 1;
+          const id = url.searchParams.get("id") ?? "";
+          this.contentReadsOf[id] = (this.contentReadsOf[id] ?? 0) + 1;
           const asked = url.searchParams.get("tab");
           this.contentTabs.push(asked);
-          if (this.contentMode === "once" && this.contentReads > 1) return json(route, { error: "Couldn't load this document" }, 502);
+          if (this.contentDelay[id]) await new Promise((r) => setTimeout(r, this.contentDelay[id]));
+          if (this.contentErrors[id]) return json(route, { error: "That document could not be found." }, this.contentErrors[id]);
+          if (this.contentBusy[id] > 0) {
+            this.contentBusy[id]--;
+            return route.fulfill({ status: 429, contentType: "application/json", headers: { "Retry-After": "1" }, body: JSON.stringify({ error: "Too many requests. Try again in 1 second.", code: "rate_limited" }) });
+          }
+          // "once": the first answer with the content is the only one (a busy answer gave none)
+          const served = (this.contentServedOf[id] = (this.contentServedOf[id] ?? 0) + 1);
+          if (this.contentMode === "once" && served > 1) return json(route, { error: "Couldn't load this document" }, 502);
+          const other = this.contents[id];
+          if (other) return json(route, { ...other, revisionId: other.revisionId });
           if (!this.tabs) return json(route, { ...this.content, revisionId: this.revision });
           const tab = this.tabs.find((t) => t.id === asked) ?? this.tabs[0];
           const content = tab === this.tabs[0] ? this.content : this.tabContents[tab.id];
@@ -200,6 +248,7 @@ export class FakeGoogle {
           if (this.startDelay) await new Promise((r) => setTimeout(r, this.startDelay));
           const b = body() as unknown as StartBody;
           this.starts.push(b);
+          if (this.startFailure) return json(route, { error: this.startFailure.error }, this.startFailure.status);
           const text = b.segments ? b.segments.map((s) => s.text).join("") : b.text ?? "";
           const now = Date.now();
           const job = {

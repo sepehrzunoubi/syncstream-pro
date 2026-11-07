@@ -10,7 +10,7 @@ import { docsUrl, Header, RENAME_EVENT, type HeaderStatus, type HeaderUser } fro
 import { Sidebar } from "./sidebar";
 import { BREAKS_CLEARED, useManualBreaks } from "./use-manual-breaks";
 import { useLiveBreaks } from "./use-live-breaks";
-import { BreakPopover, PlacingBar } from "./break-ui";
+import { BreakPopover, OpeningBar, PlacingBar } from "./break-ui";
 import { SyncPanel } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
@@ -37,15 +37,18 @@ import { useAutosave } from "./use-autosave";
 import { useHeaderFooters } from "./use-header-footers";
 import { stepZoom, usePageSetup } from "./use-page-setup";
 import { useDraft } from "./use-draft";
-import { useDocLoader } from "./use-doc-loader";
+import { useDocLoader, usePageLock } from "./use-doc-loader";
+import { inTextField } from "./keys";
 import { fontsIn, loadFonts } from "./web-fonts";
 import { useSyncJobs } from "./use-sync-jobs";
+import { SectionSwitch } from "../compare/section-switch";
+import { takeFocusHandoff } from "../compare/storage";
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
   const [snack, setSnack] = useSnack();
   const [scopeError, setScopeError] = useState(false);
   // Documents
-  const { docs, selectedDocId, setSelectedDocId, selectedTabId, setSelectedTabId, isCreatingDoc, renameDoc, fetchDocs, createDoc } = useDocsList({ setSnack, setScopeError });
+  const { docs, selectedDocId, setSelectedDocId, selectedTabId, setSelectedTabId, isCreatingDoc, renameDoc, fetchDocs, createDoc, createdDocRef } = useDocsList({ setSnack, setScopeError });
   const [docJSON, setDocJSON] = useState<JSONContent | null>(null);
   const dialogs = useDialogs();
   const [editingHf, setEditingHf] = useState<"header" | "footer" | null>(null);
@@ -90,14 +93,24 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const focusedJob = !composing ? jobs.find((j) => j.id === focusedJobId) ?? null : null;
   // A sync typing into the selected document: editing it waits until that finishes
   const docBusy = !!selectedDocId && jobs.some((j) => isActive(j) && j.documentId === selectedDocId);
-  useEffect(() => { editor?.setEditable(!docBusy); }, [editor, docBusy]);
   refs.docBusyRef.current = docBusy;
+  // The document picked isn't on the page yet: the one before it shows under a veil until it opens, and
+  // nothing on the page can be changed (it would be lost, or land in the wrong document)
+  const docLoading = composing && !!selectedDocId && (docContent?.docId !== selectedDocId || docContent.status === "loading" || (!!selectedTabId && (docContent.tabId ?? "") !== selectedTabId));
+  const pageLocked = docBusy || docLoading;
+  /** The document and tab on the page: placing breaks, their popover and Undo, a header being edited are for it alone */
+  const docKey = `${selectedDocId}#${selectedTabId}`;
 
   // Icons are ligatures in the Material Symbols font; reveal them once it has loaded
   const [iconsReady, setIconsReady] = useState(false);
   useEffect(() => {
     let alive = true;
-    document.fonts?.load('20px "Material Symbols Outlined"', "undo").then((faces) => { if (alive && faces.length) setIconsReady(true); }).catch(() => {});
+    document.fonts?.load('20px "Material Symbols Outlined"', "undo").then((faces) => {
+      if (!alive || !faces.length) return;
+      setIconsReady(true);
+      // Menus, popovers and dialogs render outside the workspace: their icons show once the font is in too
+      document.documentElement.classList.add("ss-icons-ready");
+    }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -114,7 +127,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const toggleWordCount = useCallback(() => setWordCountOpen((o) => { writeFlag(WORD_COUNT_KEY, !o); return !o; }), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyC") { e.preventDefault(); toggleWordCount(); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyC" && !inTextField(e)) { e.preventDefault(); toggleWordCount(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -123,7 +136,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   // ── The selected Google Doc, editable ──
   const { saveNow, saveState, setSaveState } = useAutosave({ editor, refs, docJSON, docContent, docBusy, setDocJSON, setSnack, setScopeError });
-  const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor });
+  const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor, docKey });
   const page = usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent });
   const { zoom, setZoom, canvasRef, pageless, pageSetup, geometry, textWidthPt, scale, effectivePageless } = page;
   // Ctrl + and Ctrl − zoom the document, not the whole window (the browser's own zoom), one of Docs'
@@ -143,7 +156,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, [scale, setZoom]);
   const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON });
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, breakLength, setBreakLength, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
-  const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
+  const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes, createdDocRef });
   useEditorDebugHook(editor);
   usePageCopy(focusedJob ? viewer : segmentEditor ?? editor);
   // Any font the document or a paste uses is loaded, so the page draws it as Docs will
@@ -157,15 +170,27 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }, [docJSON, defaultFonts]);
 
   // Syncs
-  const { now, busy, startError, hasText, preview, focusedSource, startSync, jobAction, dismissJob, editAsNew } = useSyncJobs({
-    editor, viewer, refs, canvasRef, jobs, setJobs, setReady, focusedJob, focusedJobId, setFocusedJobId, setComposing,
+  const { now, busy, startError, hasText, preview, focusedSource, view, tabProgress, startSync, jobAction, dismissJob, editAsNew } = useSyncJobs({
+    editor, viewer, refs, canvasRef, jobs, setJobs, setReady, focusedJob, focusedJobId, setFocusedJobId, composing, setComposing,
     docs, selectedDocId, setSelectedDocId, docContent, docBusy, docJSON,
     settings: { durationMinutes, breaksMode, breakLength, typoFrequency, startInMinutes, setStartInMinutes, seed, setSeed },
     fetchDocs, loadDocContent, saveNow, setDocJSON, setSnack, setScopeError,
   });
-  const breaks = useManualBreaks({ editor, breaksMode, breakLength, active: !focusedJob && !docBusy && !busy, setSnack });
+  usePageLock(editor, pageLocked || busy);
+  const pageOpen = !docLoading && (!selectedDocId || docContent?.status === "ready");
+  const breaks = useManualBreaks({ editor, breaksMode, breakLength, setBreakLength, docKey, active: !focusedJob && !pageLocked && !busy, canPlace: pageOpen && !isCreatingDoc, setSnack });
   const upsertJob = useCallback((job: PublicJob) => setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j))), [setJobs]);
-  const live = useLiveBreaks({ viewer, job: focusedJob ?? null, source: focusedSource, now, upsertJob, setSnack });
+  // A sync Compare & Sync just started opens here, live, on its document (read once, then gone)
+  const handoffRead = useRef(false);
+  useEffect(() => {
+    if (!ready || !draftLoaded || handoffRead.current) return;
+    handoffRead.current = true;
+    const handoff = takeFocusHandoff();
+    if (!handoff) return;
+    setSelectedDocId(handoff.documentId);
+    if (jobs.some((j) => j.id === handoff.jobId)) { setFocusedJobId(handoff.jobId); setComposing(false); }
+  }, [ready, draftLoaded, jobs, setSelectedDocId]);
+  const live = useLiveBreaks({ viewer, job: focusedJob ?? null, source: view?.source ?? focusedSource, shown: view, now, upsertJob, setSnack });
 
   const insertImages = useCallback(async (files: File[], at?: number) => {
     if (!editor) return;
@@ -220,8 +245,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         kind: "start" as const,
         label: busy ? "Starting" : startInMinutes > 0 ? "Schedule sync" : "Start sync",
         onClick: startSync,
-        disabled: busy || !hasText || !selectedDocId || docBusy,
-        title: docBusy ? "A sync is already typing into this document" : !hasText ? "Type or paste your text first" : !selectedDocId ? "Pick a Google Doc first" : undefined,
+        disabled: busy || !hasText || !selectedDocId || docBusy || docLoading,
+        title: docBusy ? "A sync is already typing into this document" : docLoading ? "The document is still opening" : !hasText ? "Type or paste your text first" : !selectedDocId ? "Pick a Google Doc first" : undefined,
       };
   // New Google Doc: made, then opened on the page, ready to sync, from wherever the workspace is
   const newDoc = useCallback(() => {
@@ -265,10 +290,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
 
   const rail = (
     <Sidebar
-      tabs={docContent?.tabs ?? null}
-      currentTab={docContent?.tabId}
-      tabsDisabled={docContent?.status === "loading"}
-      onSelectTab={(id) => { setComposing(true); if (id && id !== docContent?.tabId) setSelectedTabId(id); if (!wide) setRailOpen(false); }}
+      tabs={focusedJob
+        ? focusedJob.tabs && focusedJob.tabs.length > 1 ? focusedJob.tabs.map((t) => ({ id: t.id, title: t.title || "Tab", level: 0 })) : focusedJob.tabId ? [{ id: focusedJob.tabId, title: focusedJob.tabTitle ?? "Tab", level: 0 }] : null
+        : docContent?.tabs ?? null}
+      currentTab={focusedJob ? tabProgress?.find((t) => t.state === "typing")?.id ?? focusedJob.tabId : docContent?.tabId}
+      tabsDisabled={!!focusedJob || docContent?.status === "loading"}
+      onSelectTab={(id) => { if (focusedJob) return; setComposing(true); if (id && id !== docContent?.tabId) setSelectedTabId(id); if (!wide) setRailOpen(false); }}
       editor={focusedJob ? null : editor}
       jobs={jobs}
       focusedJobId={focusedJobId}
@@ -315,7 +342,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         mode={focusedJob ? "job" : "draft"}
         docs={docs}
         selectedDocId={selectedDocId}
-        onSelectDoc={setSelectedDocId}
+        onSelectDoc={(id) => { setComposing(true); setSelectedDocId(id); }}
         onNewDoc={newDoc}
         onRefreshDocs={refreshDocs}
         isCreatingDoc={isCreatingDoc}
@@ -327,10 +354,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         onReauth={onReauth}
         onSignOut={onSignOut}
         onRename={renameDoc}
+        tabs={<SectionSwitch active="sync" phone={false} />}
         menubar={
           <DocsMenubar
             editor={segmentEditor ?? editor}
-            editingDisabled={!!focusedJob}
+            editingDisabled={!!focusedJob || pageLocked}
             zoom={zoom}
             onZoom={setZoom}
             sidebarOpen={railOpen}
@@ -359,7 +387,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       <div className="ss-noprint ss-toolbar-wrap">
         <Toolbar
           editor={focusedJob ? viewer : segmentEditor ?? editor}
-          disabled={!!focusedJob}
+          disabled={!!focusedJob || pageLocked}
           zoom={zoom}
           scale={scale}
           onZoom={setZoom}
@@ -418,11 +446,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           <FindBar editor={editor} />
           <AnimatePresence>
             {!focusedJob && breaks.placing != null && <PlacingBar key="placing" minutes={breaks.placing} onDone={breaks.endPlacing} />}
+            {!focusedJob && docLoading && <OpeningBar key="opening" />}
             {focusedJob && live.placing != null && <PlacingBar key="placing-live" live minutes={live.placing} onDone={live.endPlacing} />}
           </AnimatePresence>
           <div className="ss-ruler-row">
             <div style={{ zoom: scale, position: "relative", left: shift / (scale || 1) }}>
-              <Ruler editor={focusedJob ? viewer : segmentEditor ?? editor} disabled={!!focusedJob} geometry={geometry} />
+              <Ruler editor={focusedJob ? viewer : segmentEditor ?? editor} disabled={!!focusedJob || pageLocked} geometry={geometry} />
             </div>
           </div>
 
@@ -432,10 +461,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             </motion.div>
           )}
           <motion.div
-            style={{ display: focusedJob ? "none" : undefined, position: "relative", left: shift }}
+            style={{ display: focusedJob ? "none" : undefined, position: "relative", left: shift, pointerEvents: docLoading ? "none" : undefined }}
+            aria-busy={docLoading || undefined}
             initial={{ opacity: 0, y: 12 }}
-            animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
-            transition={{ duration: 0.32, ease }}
+            animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: docLoading ? 0.45 : 1, y: 0 }}
+            transition={{ duration: docLoading ? 0.2 : 0.32, delay: docLoading ? 0.12 : 0, ease }}
           >
             <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} headerFooters={docContent?.status === "ready" ? headerFooters : undefined} footnotes={docContent?.status === "ready" ? footnoteProps : undefined} />
           </motion.div>
@@ -457,7 +487,9 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
                   now={now}
                   sourceWords={focusedSource ? countWords(focusedSource.text) : 0}
                   busy={busy}
-                  canEditAsNew={!!focusedSource}
+                  // (a sync typing into several tabs, from Compare & Sync, has no single page to edit again)
+                  canEditAsNew={!!focusedSource && !focusedSource.context?.tabs?.length}
+                  tabs={tabProgress}
                   onPause={() => jobAction("pause", focusedJob.id)}
                   onResume={() => jobAction("resume", focusedJob.id)}
                   onCancel={() => jobAction("cancel", focusedJob.id)}
@@ -472,7 +504,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
                   breaksMode={breaksMode}
                   onBreaksModeChange={setBreaksMode}
                   breakLength={breakLength}
-                  onBreakLengthChange={setBreakLength}
+                  onBreakLengthChange={breaks.editLength}
+                  placing={breaks.placing != null}
+                  canPlace={breaks.canPlace}
+                  onTogglePlacing={breaks.togglePlacing}
                   manualBreaks={breaks.rows}
                   onRemoveBreak={breaks.remove}
                   onClearBreaks={breaks.clear}
@@ -495,7 +530,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       </div>
 
       <WorkspaceDialogs editor={editor} dialogs={dialogs} pageSetup={pageSetup} pageless={pageless} onApplyPageSetup={page.applyPageSetup} onSetPageDefault={page.setPageDefault} textWidth={textWidthPt} />
-      <ContextMenu editor={focusedJob ? null : editor} />
+      <ContextMenu editor={focusedJob || pageLocked ? null : editor} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
       <Snackbar snack={snack} action={snack === BREAKS_CLEARED ? { label: "Undo", run: breaks.undoClear } : null} onDismiss={() => setSnack(null)} />

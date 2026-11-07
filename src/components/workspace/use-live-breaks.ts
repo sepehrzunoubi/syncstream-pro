@@ -17,6 +17,7 @@ import { BREAK_PILL_EVENT, BREAK_PLACE_EVENT, setBreakUi, type BreakPillDetail, 
 import { offsetToPos, tokenPositions } from "./pagination";
 import { isActive } from "./job-status";
 import { postJson } from "./api";
+import { escapeIsFree } from "./keys";
 import type { Setter, Source } from "./doc-state";
 
 export interface LiveBreakRow { index: number; at: number | null; minutes: number; state: LiveBreak["state"]; word?: string }
@@ -44,10 +45,12 @@ export function liveRows(job: PublicJob): LiveBreakRow[] {
   });
 }
 
-export function useLiveBreaks({ viewer, job, source, now, upsertJob, setSnack }: {
+export function useLiveBreaks({ viewer, job, source, shown, now, upsertJob, setSnack }: {
   viewer: Editor | null;
   job: PublicJob | null;
   source: Source | undefined;
+  /** The part of the source the live page shows (one tab of a sync typing into several): the rest has no place on it */
+  shown?: { from: number; to: number } | null;
   now: number;
   upsertJob: (job: PublicJob) => void;
   setSnack: Setter<string | null>;
@@ -63,32 +66,34 @@ export function useLiveBreaks({ viewer, job, source, now, upsertJob, setSnack }:
     if (!ctx?.doc || !ctx.ranges) return null;
     return segmentCharTokens(ctx.doc as EditorNode, ctx.ranges).flat();
   }, [source]);
+  const from = shown?.from ?? 0;
+  const to = shown?.to ?? text.length;
   const placeOf = useCallback((at: number): number | null => {
-    if (!viewer || !text) return null;
+    if (!viewer || !text || at <= from || at > to) return null;
     // The pill goes after the word, before the space or line end the break follows
     let g = Math.min(at, text.length) - 1;
-    while (g > 0 && /\s/.test(text[g])) g--;
-    if (g < 0) return null;
+    while (g > from && /\s/.test(text[g])) g--;
+    if (g < from) return null;
     if (map) {
-      const q = map[g];
+      const q = map[g - from];
       const positions = tokenPositions(viewer.state.doc);
       return q != null && positions[q] != null ? positions[q] + 1 : null;
     }
-    return offsetToPos(viewer.state.doc, g + 1);
-  }, [viewer, text, map]);
+    return offsetToPos(viewer.state.doc, g - from + 1);
+  }, [viewer, text, map, from, to]);
   /** The source offset a break after the viewer's word [from, to) has */
-  const offsetOf = useCallback((to: number): number | null => {
+  const offsetOf = useCallback((end: number): number | null => {
     if (!viewer || !text) return null;
     let g: number | null = null;
     if (map) {
       const positions = tokenPositions(viewer.state.doc);
-      const q = positions.lastIndexOf(to - 1);
-      if (q >= 0) { const k = map.lastIndexOf(q); if (k >= 0) g = k; }
+      const q = positions.lastIndexOf(end - 1);
+      if (q >= 0) { const k = map.lastIndexOf(q); if (k >= 0) g = k + from; }
     } else {
-      g = richFromEditorJSON(viewer.state.doc.cut(0, to).toJSON() as EditorNode).text.length - 1;
+      g = richFromEditorJSON(viewer.state.doc.cut(0, end).toJSON() as EditorNode).text.length - 1 + from;
     }
     return g == null || g < 0 ? null : afterWord(text, g);
-  }, [viewer, text, map]);
+  }, [viewer, text, map, from]);
 
   // The pills on the live page
   const liveKey = useRef("");
@@ -141,19 +146,28 @@ export function useLiveBreaks({ viewer, job, source, now, upsertJob, setSnack }:
   const endNow = () => send(future, { end: true });
   const setCurrentLength = (minutes: number) => send(future, { minutes });
 
-  // Placing on the live page: a click on a word not typed yet
-  const [breakLength, setBreakLength] = useState("");
+  // Placing on the live page: a click on a word not typed yet. Asked for on this sync (a length typed,
+  // or Place on page), and over with Done, Esc, another sync or this one finishing
+  const [breakLength, setLength] = useState("");
   const minutes = parseBreakLength(breakLength);
-  const [placingOff, setPlacingOff] = useState(false);
-  useEffect(() => { setPlacingOff(false); }, [breakLength]);
-  const placing = canEdit && minutes != null && !placingOff ? minutes : null;
+  const [placingFor, setPlacingFor] = useState<string | null>(null);
+  const placing = canEdit && minutes != null && placingFor === job?.id ? minutes : null;
+  const jobId = job?.id ?? null;
+  const setBreakLength = useCallback((v: string) => {
+    setLength(v);
+    if (parseBreakLength(v) != null && jobId && canEdit) setPlacingFor(jobId);
+  }, [jobId, canEdit]);
+  const endPlacing = useCallback(() => setPlacingFor(null), []);
+  const togglePlacing = useCallback(() => setPlacingFor((cur) => (cur === jobId || !canEdit ? null : jobId)), [jobId, canEdit]);
+  useEffect(() => { setLength(""); setPlacingFor(null); }, [jobId]);
+  useEffect(() => { if (!canEdit) setPlacingFor(null); }, [canEdit]);
   useEffect(() => {
     if (!viewer || viewer.isDestroyed) return;
     setBreakUi(viewer.view, { placing, placeLive: true, hover: null });
   }, [viewer, placing]);
   useEffect(() => {
     if (placing == null) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPlacingOff(true); };
+    const onKey = (e: KeyboardEvent) => { if (escapeIsFree(e, ["#ss-live-break-length"])) setPlacingFor(null); };
     const onPlace = (e: Event) => {
       const d = (e as CustomEvent<{ from: number; to: number; minutes: number }>).detail;
       const at = offsetOf(d.to);
@@ -162,27 +176,32 @@ export function useLiveBreaks({ viewer, job, source, now, upsertJob, setSnack }:
       if (at >= text.length) { setSnack("Nothing is typed after the last word"); return; }
       void add(at, d.minutes);
     };
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     window.addEventListener(BREAK_PLACE_EVENT, onPlace);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener(BREAK_PLACE_EVENT, onPlace); };
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener(BREAK_PLACE_EVENT, onPlace); };
   });
 
-  // A pill on the live page
-  const [popover, setPopover] = useState<{ row: LiveBreakRow; rect: DOMRect } | null>(null);
+  // A pill on the live page opens its popover. It names the break by its place, and shows it as it is
+  // now: once the break is no longer one that can change (it is being typed, or over), it closes
+  const [opened, setOpened] = useState<{ at: number; rect: DOMRect } | null>(null);
   useEffect(() => {
     const onPill = (e: Event) => {
       const d = (e as CustomEvent<BreakPillDetail>).detail;
-      if (!d.live) return;
+      if (!d.live || (viewer && d.dom !== viewer.view.dom)) return;
       const row = rows.find((r) => r.at === d.live!.at);
-      if (row && (row.state === "ahead" || row.state === "now")) setPopover({ row, rect: d.rect });
+      if (row && (row.state === "ahead" || row.state === "now")) setOpened({ at: d.live.at, rect: d.rect });
     };
     window.addEventListener(BREAK_PILL_EVENT, onPill);
     return () => window.removeEventListener(BREAK_PILL_EVENT, onPill);
-  }, [rows]);
-  useEffect(() => { setPopover(null); }, [job?.id]);
+  }, [rows, viewer]);
+  const openRow = opened ? rows.find((r) => r.at === opened.at && (r.state === "ahead" || r.state === "now")) : undefined;
+  const popover = opened && openRow ? { row: openRow, rect: opened.rect } : null;
+  useEffect(() => { if (opened && !openRow) setOpened(null); }, [opened, openRow]);
+  useEffect(() => { setOpened(null); }, [jobId]);
+  const closePopover = useCallback(() => setOpened(null), []);
 
   return {
-    rows, canEdit, sending, breakLength, setBreakLength, minutes, placing, endPlacing: () => setPlacingOff(true),
-    remove, changeLength, clearFuture, endNow, setCurrentLength, popover, closePopover: () => setPopover(null),
+    rows, canEdit, sending, breakLength, setBreakLength, minutes, placing, endPlacing, togglePlacing,
+    remove, changeLength, clearFuture, endNow, setCurrentLength, popover, closePopover,
   };
 }

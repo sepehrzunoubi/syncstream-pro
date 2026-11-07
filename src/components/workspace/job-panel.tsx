@@ -24,9 +24,11 @@ interface JobPanelProps {
   onEditAsNew: () => void;
   /** The breaks of a sync that can still change them */
   live?: ReturnType<typeof useLiveBreaks>;
+  /** A sync typing into several tabs: each, in typing order, and how far it is */
+  tabs?: { id: string; title: string; state: "done" | "typing" | "next" }[] | null;
 }
 
-export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, onResume, onCancel, onDismiss, onEditAsNew, live }: JobPanelProps) {
+export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, onResume, onCancel, onDismiss, onEditAsNew, live, tabs }: JobPanelProps) {
   const pct = progressOf(job);
   const running = job.status === "running" || job.status === "pending";
   const typedWords = Math.max(0, (job.liveWordCount ?? job.baselineWordCount) - job.baselineWordCount);
@@ -73,6 +75,21 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
           </React.Fragment>
         ))}
       </dl>
+
+      {tabs && tabs.length > 1 && (
+        <div>
+          <h3 className="mb-2 text-[14px] font-medium">Tabs</h3>
+          <ol className="ss-job-tabs" aria-label="Tabs, in the order they are typed">
+            {tabs.map((t, i) => (
+              <li key={i} data-state={t.state}>
+                <span className="ss-job-tab-dot" aria-hidden>{t.state === "done" ? <Check size={12} strokeWidth={3} /> : i + 1}</span>
+                <span className="min-w-0 flex-1 truncate">{t.title}</span>
+                <span className="text-[12px] text-[var(--ss-text-2)]">{t.state === "done" ? "Done" : t.state === "typing" ? (isActive(job) ? "Typing" : "Stopped here") : "Next"}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       {live?.canEdit ? <LiveBreaks live={live} job={job} /> : job.breaks.length > 0 && (
         <div>
@@ -126,6 +143,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
 /** A running sync's breaks, changeable after what it is typing now */
 function LiveBreaks({ live, job }: { live: NonNullable<JobPanelProps["live"]>; job: PublicJob }) {
   const typed = live.breakLength.trim().length > 0;
+  const placing = live.placing != null;
   const ahead = live.rows.filter((r) => r.state === "ahead");
   const current = live.rows.find((r) => r.state === "now");
   return (
@@ -160,18 +178,31 @@ function LiveBreaks({ live, job }: { live: NonNullable<JobPanelProps["live"]>; j
         </div>
       )}
       <label className="ss-field-label mt-3" htmlFor="ss-live-break-length">Add a break</label>
-      <input
-        id="ss-live-break-length"
-        className="ss-input"
-        placeholder="e.g. 33m"
-        autoComplete="off"
-        spellCheck={false}
-        value={live.breakLength}
-        aria-invalid={typed && live.minutes == null ? true : undefined}
-        onChange={(e) => live.setBreakLength(e.target.value)}
-      />
+      <div className="flex items-center gap-2">
+        <input
+          id="ss-live-break-length"
+          className="ss-input min-w-0 flex-1"
+          placeholder="e.g. 33m"
+          autoComplete="off"
+          spellCheck={false}
+          value={live.breakLength}
+          aria-invalid={typed && live.minutes == null ? true : undefined}
+          onChange={(e) => live.setBreakLength(e.target.value)}
+        />
+        <button
+          type="button"
+          className={`ss-btn ${placing ? "ss-btn-tonal" : "ss-btn-outlined"} flex-none px-4`}
+          aria-pressed={placing}
+          disabled={live.minutes == null}
+          onClick={live.togglePlacing}
+        >
+          Place on page
+        </button>
+      </div>
       <p className="ss-field-help" data-error={typed && live.minutes == null ? "true" : undefined}>
-        {live.minutes != null ? `${describeBreak(live.minutes)}. Click a word not typed yet on the page.` : typed ? "Try 33m or 1h 5m." : "Type a length, then click a word the sync hasn't typed yet."}
+        {live.minutes == null
+          ? typed ? "Try 33m or 1h 5m." : "Type a length, then click a word the sync hasn't typed yet."
+          : placing ? `${describeBreak(live.minutes)}. Click a word not typed yet on the page.` : `${describeBreak(live.minutes)}. Press Place on page, then click a word not typed yet.`}
       </p>
     </section>
   );

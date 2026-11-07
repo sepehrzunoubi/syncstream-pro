@@ -11,7 +11,12 @@
  * bullet, a page break brings its own newline, a table is preceded by a
  * newline, leading tabs set bullet levels and disappear, the final newline
  * and the newline before a table cannot be deleted, and a batch sent for an
- * old revision is refused.
+ * old revision is refused. Inline images (one index each, kept as
+ * inlineObjects with their address and size), footnotes (a reference of one
+ * index in the body; the footnote itself a segment that starts as a space and
+ * a newline), the document's header and footer, and its page style are
+ * modelled too: a request with a segmentId writes to that header, footer or
+ * footnote, whose indices start at 0.
  */
 
 import type { docs_v1 } from "googleapis";
@@ -25,6 +30,8 @@ type Item =
   | { k: "sb" }
   | { k: "c"; ch: string; ts: TextStyle }
   | { k: "pb"; ts: TextStyle }
+  | { k: "img"; id: string; ts: TextStyle }
+  | { k: "fn"; id: string; ts: TextStyle }
   | { k: "nl"; ts: TextStyle; ps: ParagraphStyle; bullet?: Bullet }
   | { k: "tbl"; columns: number; widths?: docs_v1.Schema$TableColumnProperties[] }
   | { k: "row" }
@@ -70,10 +77,18 @@ const NAMED_STYLES: docs_v1.Schema$NamedStyle[] = [
   { namedStyleType: "HEADING_6", textStyle: { fontSize: { magnitude: 11, unit: "PT" }, italic: true }, paragraphStyle: { keepWithNext: true } },
 ];
 
+interface Location { index: number; segmentId?: string }
 interface Request {
-  insertText?: { location: { index: number }; text: string };
-  insertPageBreak?: { location: { index: number } };
-  insertTable?: { rows: number; columns: number; location: { index: number } };
+  insertText?: { location: Location; text: string };
+  insertPageBreak?: { location: Location };
+  insertTable?: { rows: number; columns: number; location: Location };
+  insertInlineImage?: { location: Location; uri: string; objectSize?: docs_v1.Schema$Size };
+  createFootnote?: { location: Location };
+  createHeader?: { type?: string; sectionBreakLocation?: Location };
+  createFooter?: { type?: string; sectionBreakLocation?: Location };
+  deleteHeader?: { headerId: string };
+  deleteFooter?: { footerId: string };
+  updateDocumentStyle?: { documentStyle: docs_v1.Schema$DocumentStyle; fields: string };
   deleteContentRange?: { range: { startIndex: number; endIndex: number } };
   updateTextStyle?: { range: { startIndex: number; endIndex: number }; textStyle: TextStyle; fields: string };
   updateParagraphStyle?: { range: { startIndex: number; endIndex: number }; paragraphStyle: ParagraphStyle; fields: string };
@@ -89,6 +104,24 @@ interface Request {
   deleteTableColumn?: docs_v1.Schema$DeleteTableColumnRequest;
 }
 
+/** A header, footer or footnote: its items after a stand-in for the body's section break, so its index i is item i + 1 */
+interface Segment { kind: "header" | "footer" | "footnote"; items: Item[] }
+
+const DOCUMENT_STYLE: docs_v1.Schema$DocumentStyle = {
+  pageSize: { width: { magnitude: 612, unit: "PT" }, height: { magnitude: 792, unit: "PT" } },
+  marginTop: { magnitude: 72, unit: "PT" }, marginBottom: { magnitude: 72, unit: "PT" }, marginLeft: { magnitude: 72, unit: "PT" }, marginRight: { magnitude: 72, unit: "PT" },
+};
+
+/** "The provided URI must be publicly accessible and at most 2 kB in length" (InsertInlineImageRequest) */
+const insertableUri = (uri: unknown) => typeof uri === "string" && /^https?:\/\//i.test(uri) && uri.length <= 2000;
+
+/** Every index a request names, moved by `by` (a segment's indices are its items' less one) */
+function shifted<T>(v: T, by: number): T {
+  if (Array.isArray(v)) return v.map((x) => shifted(x, by)) as T;
+  if (!v || typeof v !== "object") return v;
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, (k === "index" || k === "startIndex" || k === "endIndex") && typeof x === "number" ? x + by : shifted(x, by)])) as T;
+}
+
 /** A table's cells by grid row and column (the covered ones too), each with what follows it up to the next */
 interface GridCell { cell: Extract<Item, { k: "cell" }>; content: Item[] }
 interface Grid { at: number; end: number; tbl: Extract<Item, { k: "tbl" }>; rows: GridCell[][] }
@@ -100,8 +133,14 @@ const evenColumn = (): docs_v1.Schema$TableColumnProperties => ({ widthType: "EV
 export class StubDocument {
   items: Item[] = [{ k: "sb" }, { k: "nl", ts: {}, ps: { namedStyleType: "NORMAL_TEXT" } }];
   lists: Record<string, docs_v1.Schema$List> = {};
+  /** Headers, footers and footnotes by id */
+  segments: Record<string, Segment> = {};
+  /** Inline images by object id: the address inserted and the size asked for */
+  images: Record<string, { uri: string; size?: docs_v1.Schema$Size }> = {};
+  documentStyle: docs_v1.Schema$DocumentStyle = clone(DOCUMENT_STYLE);
   revision = 1;
   private listSeq = 0;
+  private objectSeq = 0;
 
   constructor(public readonly documentId: string, public title: string) {}
 
@@ -112,37 +151,81 @@ export class StubDocument {
   // ── Reading ───────────────────────────────────────────────────────────────
 
   /** The text with position i holding the character at index i (structure as "\0", like indexedText) */
-  text(): string {
-    return this.items.map((it) => (it.k === "c" ? it.ch : it.k === "nl" ? "\n" : it.k === "pb" ? "\u000C" : "\0")).join("");
+  text(items: Item[] = this.items): string {
+    return items.map((it) => (it.k === "c" ? it.ch : it.k === "nl" ? "\n" : it.k === "pb" ? "\u000C" : it.k === "img" ? "\uFFFC" : "\0")).join("");
+  }
+
+  /** A header's, footer's or footnote's text, from its index 0 */
+  segmentText(id: string): string {
+    const seg = this.segments[id];
+    if (!seg) throw new Error(`stub: no segment ${id}`);
+    return this.text(seg.items).slice(1);
+  }
+
+  /** Everything a batch can change, to put back when one of its requests is refused */
+  checkpoint(): () => void {
+    const saved = clone({ items: this.items, lists: this.lists, segments: this.segments, images: this.images, documentStyle: this.documentStyle });
+    return () => Object.assign(this, saved);
   }
 
   toDocument(): docs_v1.Schema$Document {
-    const content: docs_v1.Schema$StructuralElement[] = [{ startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: {} } }];
-    let i = 1;
-    while (i < this.items.length) {
-      const it = this.items[i];
-      if (it.k === "tbl") {
-        const { element, end } = this.readTable(i);
-        content.push(element);
-        i = end;
-      } else if (it.k === "c" || it.k === "pb" || it.k === "nl") {
-        const { element, end } = this.readParagraph(i);
-        content.push(element);
-        i = end;
-      } else throw new Error(`stub: unexpected ${it.k} at ${i}`);
-    }
-    return {
+    const content: docs_v1.Schema$StructuralElement[] = [{ startIndex: 0, endIndex: 1, sectionBreak: { sectionStyle: {} } }, ...this.contentOf(this.items)];
+    const doc: docs_v1.Schema$Document = {
       documentId: this.documentId,
       title: this.title,
       revisionId: this.revisionId,
       body: { content },
       lists: clone(this.lists),
       namedStyles: { styles: clone(NAMED_STYLES) },
-      documentStyle: {
-        pageSize: { width: { magnitude: 612, unit: "PT" }, height: { magnitude: 792, unit: "PT" } },
-        marginTop: { magnitude: 72, unit: "PT" }, marginBottom: { magnitude: 72, unit: "PT" }, marginLeft: { magnitude: 72, unit: "PT" }, marginRight: { magnitude: 72, unit: "PT" },
-      },
+      documentStyle: clone(this.documentStyle),
     };
+    const segments = Object.entries(this.segments);
+    // A segment's indices start at 0: its items' less the stand-in section break
+    const read = (seg: Segment) => shifted(this.contentOf(seg.items), -1);
+    const headers = segments.filter(([, x]) => x.kind === "header");
+    const footers = segments.filter(([, x]) => x.kind === "footer");
+    const footnotes = segments.filter(([, x]) => x.kind === "footnote");
+    if (headers.length) doc.headers = Object.fromEntries(headers.map(([id, x]) => [id, { headerId: id, content: read(x) }]));
+    if (footers.length) doc.footers = Object.fromEntries(footers.map(([id, x]) => [id, { footerId: id, content: read(x) }]));
+    if (footnotes.length) doc.footnotes = Object.fromEntries(footnotes.map(([id, x]) => [id, { footnoteId: id, content: read(x) }]));
+    const images = Object.entries(this.images);
+    if (images.length) {
+      doc.inlineObjects = Object.fromEntries(images.map(([id, img]) => [id, {
+        objectId: id,
+        inlineObjectProperties: { embeddedObject: { imageProperties: { contentUri: img.uri, sourceUri: img.uri }, ...(img.size ? { size: clone(img.size) } : {}) } },
+      }]));
+    }
+    return doc;
+  }
+
+  /** The structural elements of items (the body's or a segment's), from index 1 */
+  private contentOf(items: Item[]): docs_v1.Schema$StructuralElement[] {
+    const body = this.items;
+    this.items = items;
+    try {
+      const content: docs_v1.Schema$StructuralElement[] = [];
+      let i = 1;
+      while (i < this.items.length) {
+        const it = this.items[i];
+        if (it.k === "tbl") {
+          const { element, end } = this.readTable(i);
+          content.push(element);
+          i = end;
+        } else if (it.k === "c" || it.k === "pb" || it.k === "nl" || it.k === "img" || it.k === "fn") {
+          const { element, end } = this.readParagraph(i);
+          content.push(element);
+          i = end;
+        } else throw new Error(`stub: unexpected ${it.k} at ${i}`);
+      }
+      return content;
+    } finally {
+      this.items = body;
+    }
+  }
+
+  /** Footnotes are numbered in the order their references come in the body */
+  private footnoteNumber(id: string): string {
+    return String(this.items.filter((x) => x.k === "fn").findIndex((x) => (x as { id: string }).id === id) + 1);
   }
 
   private readParagraph(start: number): { element: docs_v1.Schema$StructuralElement; end: number } {
@@ -159,6 +242,18 @@ export class StubDocument {
       if (it.k === "pb") {
         flush();
         elements.push({ startIndex: i, endIndex: i + 1, pageBreak: { textStyle: clone(it.ts) } });
+        i++;
+        continue;
+      }
+      if (it.k === "img") {
+        flush();
+        elements.push({ startIndex: i, endIndex: i + 1, inlineObjectElement: { inlineObjectId: it.id, textStyle: clone(it.ts) } });
+        i++;
+        continue;
+      }
+      if (it.k === "fn") {
+        flush();
+        elements.push({ startIndex: i, endIndex: i + 1, footnoteReference: { footnoteId: it.id, footnoteNumber: this.footnoteNumber(it.id), textStyle: clone(it.ts) } });
         i++;
         continue;
       }
@@ -243,35 +338,81 @@ export class StubDocument {
   /** Style of inserted text: the character before it in the paragraph, else the one after */
   private inheritedStyle(i: number): TextStyle {
     const prev = this.items[i - 1];
-    if (prev && (prev.k === "c" || prev.k === "pb")) return clone(prev.ts);
+    if (prev && (prev.k === "c" || prev.k === "pb" || prev.k === "img")) return clone(prev.ts);
     const next = this.items[i];
-    if (next && (next.k === "c" || next.k === "pb" || next.k === "nl")) return clone(next.ts);
+    if (next && (next.k === "c" || next.k === "pb" || next.k === "nl" || next.k === "img")) return clone(next.ts);
     return {};
   }
 
   // ── Writing ───────────────────────────────────────────────────────────────
 
-  batchUpdate(requests: Request[], requiredRevisionId?: string): void {
+  /** Applies every request or none; each one's reply, as Google gives them */
+  batchUpdate(requests: Request[], requiredRevisionId?: string): object[] {
     if (requiredRevisionId && requiredRevisionId !== this.revisionId) {
       throw bad(`The document has been modified since the specified revision (${requiredRevisionId} vs ${this.revisionId}); the batch was not applied`);
     }
     // Atomic: all or nothing
-    const before = { items: clone(this.items), lists: clone(this.lists) };
+    const restore = this.checkpoint();
+    const replies: object[] = [];
     try {
-      for (const r of requests) this.apply(r);
+      for (const r of requests) replies.push(this.apply(r));
     } catch (err) {
-      this.items = before.items;
-      this.lists = before.lists;
+      restore();
       throw err;
     }
     this.revision++;
+    return replies;
   }
 
-  private apply(r: Request): void {
+  /** The request applied where it names: the body, or a header, footer or footnote (its segmentId) */
+  private apply(r: Request): object {
+    const [key] = Object.keys(r);
+    const body = (r as Record<string, { location?: Location; range?: { segmentId?: string }; endOfSegmentLocation?: { segmentId?: string } }>)[key];
+    const segmentId = body?.location?.segmentId || body?.range?.segmentId || body?.endOfSegmentLocation?.segmentId;
+    if (!segmentId) return this.applyHere(this.atEnd(r));
+    const seg = this.segments[segmentId];
+    if (!seg) throw bad(`Invalid segment ID: ${segmentId}`);
+    if (key === "insertPageBreak" || key === "insertSectionBreak" || key === "createFootnote") throw bad(`${key} can only be inserted in the body`);
+    if (seg.kind === "footnote" && (key === "insertInlineImage" || key === "insertTable")) throw bad(`${key} can't be inserted in a footnote`);
+    // Written as the body is, the segment's items standing in for the body's
+    const own = this.items;
+    this.items = seg.items;
+    try {
+      return this.applyHere(this.atEnd(shifted(r, 1)));
+    } finally {
+      seg.items = this.items;
+      this.items = own;
+    }
+  }
+
+  /** An insert at endOfSegmentLocation: "immediately before the last newline" of where it writes */
+  private atEnd(r: Request): Request {
+    const [key] = Object.keys(r);
+    const body = (r as Record<string, Record<string, unknown>>)[key];
+    if (!body?.endOfSegmentLocation) return r;
+    const at: Record<string, unknown> = { ...body, location: { index: this.items.length - 1 } };
+    delete at.endOfSegmentLocation;
+    return { [key]: at } as Request;
+  }
+
+  private applyHere(r: Request): object {
+    if (r.insertInlineImage) return { insertInlineImage: { objectId: this.insertInlineImage(r.insertInlineImage) } };
+    if (r.createFootnote) return { createFootnote: { footnoteId: this.createFootnote(r.createFootnote.location.index) } };
+    if (r.createHeader) return { createHeader: { headerId: this.createSegment("header", r.createHeader) } };
+    if (r.createFooter) return { createFooter: { footerId: this.createSegment("footer", r.createFooter) } };
+    this.applyEdit(r);
+    return {};
+  }
+
+  /** A request whose reply is empty */
+  private applyEdit(r: Request): void {
     const [key] = Object.keys(r);
     if (r.insertText) return this.insertText(r.insertText.location.index, r.insertText.text);
     if (r.insertPageBreak) return this.insertPageBreak(r.insertPageBreak.location.index);
     if (r.insertTable) return this.insertTable(r.insertTable.location.index, r.insertTable.rows, r.insertTable.columns);
+    if (r.deleteHeader) return this.deleteSegment("header", r.deleteHeader.headerId);
+    if (r.deleteFooter) return this.deleteSegment("footer", r.deleteFooter.footerId);
+    if (r.updateDocumentStyle) return this.updateDocumentStyle(r.updateDocumentStyle.documentStyle, r.updateDocumentStyle.fields);
     if (r.deleteContentRange) return this.deleteContentRange(r.deleteContentRange.range.startIndex, r.deleteContentRange.range.endIndex);
     if (r.updateTextStyle) return this.updateTextStyle(r.updateTextStyle.range.startIndex, r.updateTextStyle.range.endIndex, r.updateTextStyle.textStyle, r.updateTextStyle.fields);
     if (r.updateParagraphStyle) return this.updateParagraphStyle(r.updateParagraphStyle.range.startIndex, r.updateParagraphStyle.range.endIndex, r.updateParagraphStyle.paragraphStyle, r.updateParagraphStyle.fields);
@@ -286,6 +427,64 @@ export class StubDocument {
     if (r.insertTableColumn) return this.insertTableColumn(r.insertTableColumn);
     if (r.deleteTableColumn) return this.deleteTableColumn(r.deleteTableColumn);
     throw bad(`The stub does not model ${key} requests`);
+  }
+
+  private nextId(prefix: string): string {
+    return `kix.${prefix}${++this.objectSeq}`;
+  }
+
+  /** One index in a paragraph; the image is fitted inside the size asked for (the stub keeps that size) */
+  insertInlineImage(ins: NonNullable<Request["insertInlineImage"]>): string {
+    if (!insertableUri(ins.uri)) throw bad("Invalid requests[0].insertInlineImage: the image URI must be a public http(s) address of at most 2 kB");
+    const index = ins.location.index;
+    this.assertInsertIndex(index);
+    for (const d of [ins.objectSize?.width, ins.objectSize?.height]) {
+      if (d && (d.unit !== "PT" || !((d.magnitude ?? 0) > 0))) throw bad("An image's size must be given in points, above 0");
+    }
+    const id = this.nextId("img");
+    this.items.splice(index, 0, { k: "img", id, ts: this.inheritedStyle(index) });
+    this.images[id] = { uri: ins.uri, ...(ins.objectSize ? { size: clone(ins.objectSize) } : {}) };
+    return id;
+  }
+
+  /** "The new Footnote segment will contain a space followed by a newline character" (CreateFootnoteRequest) */
+  createFootnote(index: number): string {
+    this.assertInsertIndex(index);
+    const id = this.nextId("fn");
+    this.items.splice(index, 0, { k: "fn", id, ts: this.inheritedStyle(index) });
+    this.segments[id] = { kind: "footnote", items: [{ k: "sb" }, { k: "c", ch: " ", ts: {} }, { k: "nl", ts: {}, ps: { namedStyleType: "NORMAL_TEXT" } }] };
+    return id;
+  }
+
+  /** The document's own header or footer (the stub models one section): an empty paragraph */
+  private createSegment(kind: "header" | "footer", req: { type?: string; sectionBreakLocation?: Location }): string {
+    if (req.type !== "DEFAULT") throw bad(`Only a DEFAULT ${kind} can be created`);
+    if (req.sectionBreakLocation && req.sectionBreakLocation.index !== 0) throw bad(`The stub models the ${kind} of the document's first section only`);
+    const field = kind === "header" ? "defaultHeaderId" : "defaultFooterId";
+    if (this.documentStyle[field]) throw bad(`A default ${kind} already exists`);
+    const id = this.nextId(kind === "header" ? "hdr" : "ftr");
+    this.segments[id] = { kind, items: [{ k: "sb" }, { k: "nl", ts: {}, ps: { namedStyleType: "NORMAL_TEXT" } }] };
+    this.documentStyle[field] = id;
+    return id;
+  }
+
+  private deleteSegment(kind: "header" | "footer", id: string): void {
+    if (this.segments[id]?.kind !== kind) throw bad(`Invalid ${kind} ID: ${id}`);
+    delete this.segments[id];
+    const field = kind === "header" ? "defaultHeaderId" : "defaultFooterId";
+    if (this.documentStyle[field] === id) delete this.documentStyle[field];
+  }
+
+  /** The page: each field named is set, or reset when the style leaves it out */
+  updateDocumentStyle(style: docs_v1.Schema$DocumentStyle, fields: string): void {
+    const keys = [...new Set((fields ?? "").split(",").map((f) => f.trim().split(".")[0]).filter(Boolean))];
+    if (!keys.length) throw bad("fields is required");
+    for (const key of keys) {
+      if (key === "defaultHeaderId" || key === "defaultFooterId") throw bad(`${key} can't be set`);
+      const v = (style as Record<string, unknown>)[key];
+      if (v == null) delete (this.documentStyle as Record<string, unknown>)[key];
+      else (this.documentStyle as Record<string, unknown>)[key] = clone(v);
+    }
   }
 
   insertText(index: number, text: string): void {
@@ -571,7 +770,11 @@ export class StubDocument {
         if (next && next.k === "tbl" && !(i + 1 < end)) throw bad("The newline before a table cannot be deleted without deleting the table");
       }
     }
-    this.items.splice(start, end - start);
+    // A footnote goes with its reference, an image's object with the image
+    for (const it of this.items.splice(start, end - start)) {
+      if (it.k === "fn") delete this.segments[it.id];
+      if (it.k === "img") delete this.images[it.id];
+    }
   }
 
   updateTextStyle(start: number, end: number, textStyle: TextStyle, fields: string): void {
@@ -579,7 +782,7 @@ export class StubDocument {
     const keys = fields.split(",").map((f) => f.trim()).filter(Boolean) as (keyof TextStyle)[];
     for (let i = start; i < end; i++) {
       const it = this.items[i];
-      if (it.k !== "c" && it.k !== "pb" && it.k !== "nl") continue;
+      if (it.k !== "c" && it.k !== "pb" && it.k !== "nl" && it.k !== "img" && it.k !== "fn") continue;
       for (const key of keys) {
         const v = (textStyle as Record<string, unknown>)[key];
         if (v == null) delete (it.ts as Record<string, unknown>)[key];

@@ -14,6 +14,23 @@ export interface DocTab {
   /** How deep it is nested under other tabs (0 at the top) */
   level: number;
   emoji?: string;
+  /** The tab it is nested under (absent at the top) */
+  parentId?: string;
+}
+
+/** A tab of a document read with its tabs, with where it sits */
+export interface RawTab {
+  id: string;
+  title: string;
+  level: number;
+  /** The tab it is nested under, null at the top */
+  parentId: string | null;
+  emoji?: string;
+  /** Its place in the document's tab order (parents before their children) */
+  index: number;
+  /** Its place among its parent's tabs (or the top-level tabs) */
+  siblingIndex: number;
+  tab: docs_v1.Schema$Tab;
 }
 
 /** A tab id as Docs gives them ("t.0", "t.abc123") */
@@ -28,12 +45,29 @@ function flatten(tabs: docs_v1.Schema$Tab[] | undefined, out: docs_v1.Schema$Tab
   return out;
 }
 
+/**
+ * Every tab with content, in the order Docs lists them (child tabs after their parent), each with
+ * its parent. The nesting is read from the tree, so it holds whatever the properties say.
+ */
+export function flattenTabs(doc: docs_v1.Schema$Document): RawTab[] {
+  const out: RawTab[] = [];
+  const walk = (tabs: docs_v1.Schema$Tab[] | undefined, parentId: string | null, level: number) => {
+    let sibling = 0;
+    for (const t of tabs ?? []) {
+      const p = t.tabProperties;
+      const id = p?.tabId;
+      if (id && t.documentTab) {
+        out.push({ id, title: p.title || "Untitled tab", level, parentId, ...(p.iconEmoji ? { emoji: p.iconEmoji } : {}), index: out.length, siblingIndex: sibling++, tab: t });
+      }
+      walk(t.childTabs, id ?? parentId, level + 1);
+    }
+  };
+  walk(doc.tabs, null, 0);
+  return out;
+}
+
 export function docTabs(doc: docs_v1.Schema$Document): DocTab[] {
-  return flatten(doc.tabs).flatMap((t) => {
-    const p = t.tabProperties;
-    if (!p?.tabId || !t.documentTab) return [];
-    return [{ id: p.tabId, title: p.title || "Untitled tab", level: p.nestingLevel ?? 0, ...(p.iconEmoji ? { emoji: p.iconEmoji } : {}) }];
-  });
+  return flattenTabs(doc).map((t) => ({ id: t.id, title: t.title, level: t.level, ...(t.emoji ? { emoji: t.emoji } : {}), ...(t.parentId ? { parentId: t.parentId } : {}) }));
 }
 
 export interface OpenTab {
@@ -83,7 +117,10 @@ export function openTab(doc: docs_v1.Schema$Document, tabId?: string | null): Op
 /** Where a request names a place in the document: each takes the tab it is in */
 const PLACES = new Set(["location", "range", "tableStartLocation", "endOfSegmentLocation", "sectionBreakLocation"]);
 /** Requests that name the tab themselves */
-const OWN_TAB = new Set(["updateDocumentStyle", "deleteHeader", "deleteFooter", "deletePositionedObject", "replaceImage"]);
+const OWN_TAB = new Set(["updateDocumentStyle", "updateNamedStyle", "deleteHeader", "deleteFooter", "deletePositionedObject", "replaceImage", "createDropdownDefinition", "updateDropdownDefinitionProperties", "deleteDropdownDefinition"]);
+
+/** A place or request that already names its tab keeps it: one batch can write to several tabs */
+const names = (v: object) => typeof (v as { tabId?: unknown }).tabId === "string" && !!(v as { tabId: string }).tabId;
 
 function mark(v: unknown, tabId: string): unknown {
   if (Array.isArray(v)) return v.map((x) => mark(x, tabId));
@@ -91,7 +128,7 @@ function mark(v: unknown, tabId: string): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
     const inner = mark(x, tabId);
-    out[k] = PLACES.has(k) && inner && typeof inner === "object" && !Array.isArray(inner) ? { ...(inner as object), tabId } : inner;
+    out[k] = PLACES.has(k) && inner && typeof inner === "object" && !Array.isArray(inner) && !names(inner) ? { ...(inner as object), tabId } : inner;
   }
   return out;
 }
@@ -100,7 +137,8 @@ function mark(v: unknown, tabId: string): unknown {
  * The requests aimed at a tab: each names it everywhere Docs takes one, so they reach it wherever
  * it has moved. A header or footer with no section given belongs to the tab's own document style:
  * the first tab's is Docs' default, another tab's is reached through its first section break (at
- * index 0). With no tab (a document read without its tabs) they go as they are.
+ * index 0). Text replaced everywhere is replaced in this tab only. A request that already names a
+ * tab keeps it. With no tab (a document read without its tabs) they go as they are.
  */
 export function inTab<T extends object>(requests: T[], tabId: string | null | undefined, first = false): T[] {
   if (!tabId) return requests;
@@ -108,8 +146,9 @@ export function inTab<T extends object>(requests: T[], tabId: string | null | un
     const [kind, body] = Object.entries(r)[0] ?? [];
     if (!kind || !body || typeof body !== "object") return r;
     let next = mark(body, tabId) as Record<string, unknown>;
-    if (OWN_TAB.has(kind)) next = { ...next, tabId };
+    if (OWN_TAB.has(kind) && !names(next)) next = { ...next, tabId };
     if ((kind === "createHeader" || kind === "createFooter") && !next.sectionBreakLocation && !first) next = { ...next, sectionBreakLocation: { index: 0, tabId } };
+    if (kind === "replaceAllText" && !next.tabsCriteria) next = { ...next, tabsCriteria: { tabIds: [tabId] } };
     return { [kind]: next } as T;
   });
 }

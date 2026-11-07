@@ -26,6 +26,8 @@ export interface ManualBreakRow {
   minutes: number;
   /** The word it follows */
   word: string;
+  /** Stays the same while the word moves (typing before it) */
+  id?: number;
 }
 
 interface SyncPanelProps {
@@ -41,6 +43,10 @@ interface SyncPanelProps {
   onClearBreaks: () => void;
   onHoverBreak: (row: ManualBreakRow | null) => void;
   onJumpToBreak: (row: ManualBreakRow) => void;
+  /** Manual: clicks on the page place breaks now; whether they can (an open page with new text) */
+  placing?: boolean;
+  canPlace?: boolean;
+  onTogglePlacing?: () => void;
   typoFrequency: number;
   onTypoFrequencyChange: (v: number) => void;
   startInMinutes: number;
@@ -199,30 +205,47 @@ export function SyncPanel(p: SyncPanelProps) {
   );
 }
 
-/** Manual: one length field (placing on the page starts as soon as it reads), and the breaks placed */
+/** Manual: a length field and "Place on page" (typing a length starts placing too), and the breaks placed */
 function ManualBreaks(p: SyncPanelProps) {
   const minutes = parseBreakLength(p.breakLength);
   const typed = p.breakLength.trim().length > 0;
+  const placing = !!p.placing;
   return (
     <div className="mt-3">
+      <p className="ss-field-help mb-3">Types at a natural pace, with a break after each word you mark{p.manualBreaks.length ? "." : ". None marked yet."}</p>
       <label className="ss-field-label" htmlFor="ss-break-length">Break length</label>
-      <input
-        id="ss-break-length"
-        className="ss-input"
-        inputMode="text"
-        autoComplete="off"
-        spellCheck={false}
-        placeholder="e.g. 33m"
-        value={p.breakLength}
-        disabled={p.disabled}
-        aria-invalid={typed && minutes == null ? true : undefined}
-        aria-describedby="ss-break-length-help"
-        onChange={(e) => p.onBreakLengthChange(e.target.value)}
-      />
+      <div className="flex items-center gap-2">
+        <input
+          id="ss-break-length"
+          className="ss-input min-w-0 flex-1"
+          inputMode="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="e.g. 33m"
+          value={p.breakLength}
+          disabled={p.disabled}
+          aria-invalid={typed && minutes == null ? true : undefined}
+          aria-describedby="ss-break-length-help"
+          onChange={(e) => p.onBreakLengthChange(e.target.value)}
+        />
+        <button
+          type="button"
+          className={`ss-btn ${placing ? "ss-btn-tonal" : "ss-btn-outlined"} flex-none px-4`}
+          aria-pressed={placing}
+          disabled={p.disabled || minutes == null || (!placing && !p.canPlace)}
+          onClick={p.onTogglePlacing}
+        >
+          Place on page
+        </button>
+      </div>
       <p id="ss-break-length-help" className="ss-field-help" data-error={typed && minutes == null ? "true" : undefined}>
-        {minutes != null
-          ? <><span className="text-[var(--ss-text)]">{describeBreak(minutes)}.</span> Click a word on the page: the break starts after it.</>
-          : typed ? "Try 33m or 1h 5m." : "Type a length, then click a word on the page."}
+        {minutes == null
+          ? typed ? "Try 33m or 1h 5m." : "Type a length, then click a word on the page."
+          : placing
+            ? <><span className="text-[var(--ss-text)]">{describeBreak(minutes)}.</span> Click a word on the page: the break starts after it.</>
+            : p.canPlace
+              ? <><span className="text-[var(--ss-text)]">{describeBreak(minutes)}.</span> Press Place on page, then click a word.</>
+              : <><span className="text-[var(--ss-text)]">{describeBreak(minutes)}.</span> Type or paste your new text on the page first.</>}
       </p>
       {p.manualBreaks.length > 0 && (
         <>
@@ -230,7 +253,7 @@ function ManualBreaks(p: SyncPanelProps) {
             <AnimatePresence initial={false}>
               {p.manualBreaks.map((b) => (
                 <motion.li
-                  key={`${b.from}-${b.to}`}
+                  key={b.id ?? `${b.from}-${b.to}`}
                   layout="position"
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}

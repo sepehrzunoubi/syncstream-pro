@@ -23,9 +23,12 @@ import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan
 import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
 import { reportError } from "./monitor";
 
-/** The document's Docs calls, each in the job's tab (`tabId`: none for a document without tabs) */
+/**
+ * The document's Docs calls, each in the tab being typed into (`tabId`: none for a document without
+ * tabs). A job typing into several tabs asks the snapshot for the words in all of them (`countTabs`).
+ */
 export interface DocsApi {
-  snapshot(accessToken: string, documentId: string, tabId?: string | null): Promise<DocSnapshot>;
+  snapshot(accessToken: string, documentId: string, tabId?: string | null, countTabs?: readonly string[] | null): Promise<DocSnapshot>;
   /** One atomic batchUpdate; refused by Google when the document moved past `requiredRevisionId` */
   batch(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string, tabId?: string | null): Promise<unknown>;
   deleteRange(accessToken: string, documentId: string, startIndex: number, endIndex: number, requiredRevisionId?: string, tabId?: string | null): Promise<unknown>;
@@ -39,7 +42,7 @@ export function errorStatus(err: unknown): number | undefined {
 }
 
 /** Google refused a batch because the document changed since it was read */
-const isStaleRevision = (err: unknown) => errorStatus(err) === 400 && /revision/i.test(err instanceof Error ? err.message : String(err));
+export const isStaleRevision = (err: unknown) => errorStatus(err) === 400 && /revision/i.test(err instanceof Error ? err.message : String(err));
 
 export interface RunnerDeps {
   store: SyncStore;
@@ -86,6 +89,25 @@ const PAUSE_CHECK_MS = 3_000;
 const BUSY_RETRY_SEC = 25;
 const CONTEXT_CHARS = 60;
 const LOST_PLACE = "Couldn't find where this sync was typing. The text around it may have been changed or deleted in the document.";
+/** LOST_PLACE for a job typing into several tabs, naming the one it lost its place in */
+const lostPlaceIn = (title: string) => `Couldn't find where this sync was typing in the tab "${title}". The text around it may have been changed or deleted there.`;
+
+/** The segment the source character at `offset` belongs to (the last one past the end), or -1 for a plan without segments */
+function segmentAt(plan: SyncPlan, job: SyncJob, offset: number): number {
+  const segments = plan.segments;
+  if (!segments?.length || job.spots?.length !== segments.length) return -1;
+  const j = segments.findIndex((s) => offset >= s.start && offset < s.end);
+  return j < 0 ? segments.length - 1 : j;
+}
+
+/** The tab the job types into next: its segment's, else the job's own */
+export function currentTab(plan: SyncPlan, job: SyncJob): { id: string; title: string } | null {
+  const j = segmentAt(plan, job, job.charsSent);
+  const id = (j >= 0 ? plan.segments![j].tabId : undefined) ?? job.tabId;
+  if (!id) return null;
+  const title = job.tabs?.find((t) => t.id === id)?.title ?? (id === job.tabId ? job.tabTitle : undefined) ?? "";
+  return { id, title };
+}
 
 class Interrupted extends Error {
   constructor(public readonly outcome: RunOutcome, public readonly job: SyncJob) {
@@ -120,10 +142,13 @@ export async function runJobWindow(
   }
 
   let job: SyncJob | null = null;
+  /** The plan, once read: which tab a failure was in */
+  let readPlan: SyncPlan | null = null;
   let handedOff = false;
   try {
     job = await store.getJob(jobId);
     const plan = job ? await store.getPlan(jobId) : null;
+    readPlan = plan;
     if (job) tag = { job: jobId, uid: uidTag(job.userId) };
     if (!job || !plan) {
       if (job && !isTerminal(job.status)) {
@@ -280,7 +305,9 @@ export async function runJobWindow(
     }
     if (status === 404) {
       merged.status = "error";
-      merged.error = /tab of the document is gone/.test(message) ? `The tab ${merged.tabTitle ? `"${merged.tabTitle}" ` : ""}this sync types into was deleted.` : "The document was deleted or is no longer shared with you.";
+      // The tab it was typing into when the tab went: one of several, or the job's
+      const title = readPlan ? currentTab(readPlan, merged)?.title : merged.tabTitle;
+      merged.error = /tab of the document is gone/.test(message) ? `The tab ${title ? `"${title}" ` : ""}this sync types into was deleted.` : "The document was deleted or is no longer shared with you.";
       merged.activity = "Error";
       merged.finishedAt = now();
       merged.accessToken = "";
@@ -499,14 +526,36 @@ class Context {
     return (this.sourceText = source);
   }
 
+  /** The tab the next character goes into: its segment's, else the job's */
+  private tab(): string | undefined {
+    return currentTab(this.plan, this.job)?.id;
+  }
+
+  /** The tabs whose words the live count adds up: a job typing into several */
+  private countTabs(): string[] | undefined {
+    return (this.job.tabs?.length ?? 0) > 1 ? this.job.tabs!.map((t) => t.id) : undefined;
+  }
+
+  /** Words in the job's other tabs, for the live count (one tab: none) */
+  private otherTabsWords(snap: DocSnapshot, tabId: string | undefined): number {
+    if (!snap.tabWords || !this.countTabs()) return 0;
+    let n = 0;
+    for (const [id, words] of Object.entries(snap.tabWords)) if (id !== tabId) n += words;
+    return n;
+  }
+
+  private lostPlace(): Error {
+    const tab = currentTab(this.plan, this.job);
+    return new Error(this.countTabs() && tab?.title ? lostPlaceIn(tab.title) : LOST_PLACE);
+  }
+
   /** Where the next character goes, for jobs typing inside the document (null: append at the end) */
   private place(): Place | null {
     const segments = this.plan.segments;
     const spots = this.job.spots;
     const offset = this.job.charsSent;
-    if (segments?.length && spots?.length === segments.length) {
-      let j = segments.findIndex((s) => offset >= s.start && offset < s.end);
-      if (j < 0) j = segments.length - 1;
+    const j = segmentAt(this.plan, this.job, offset);
+    if (segments && spots && j >= 0) {
       const seg = segments[j];
       const spot = spots[j];
       let fx = this.segmentFormats.get(j);
@@ -579,7 +628,9 @@ class Context {
 
   private async writeOnce(text: string, step: number, isSource: boolean): Promise<void> {
     const snapTimer = startTimer(this.now);
-    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, this.job.tabId));
+    const tabId = this.tab();
+    const countTabs = this.countTabs();
+    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, tabId, countTabs));
     const snapshotMs = snapTimer();
     const marker = this.job.inFlight;
     const markerMatches =
@@ -603,14 +654,15 @@ class Context {
         index = landedAt - text.length;
       } else {
         const at = relocate(snap.chars, before, place.state.cursor);
-        if (at == null) throw new Error(LOST_PLACE);
+        if (at == null) throw this.lostPlace();
         index = at;
         if (!place.state.opened && place.openAt) open.push({ insertText: { location: { index: place.openAt(at) }, text: "\n" } });
       }
     }
+    const otherWords = this.otherTabsWords(snap, tabId);
     if (alreadyLanded) {
       log.info("sync.write_skipped", { ...this.tag, action: this.job.currentAction, step, chars: text.length, snapshotMs });
-      this.job.liveWordCount = snap.wordCount;
+      this.job.liveWordCount = otherWords + snap.wordCount;
     } else {
       this.job.inFlight = { action: this.job.currentAction, step, text };
       await this.persist();
@@ -634,10 +686,10 @@ class Context {
         }
       }
       const batchTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined, this.job.tabId));
-      log.info("sync.write", { ...this.tag, action: this.job.currentAction, step, chars: text.length, requests: requests.length, docsMs: batchTimer(), snapshotMs, opened: open.length > 0, inPlace: !!place, charsSent: this.job.charsSent + (isSource ? text.length : 0), totalChars: this.job.totalChars });
+      await this.withToken((t) => this.deps.docs.batch(t, this.job.documentId, requests, snap.revisionId || undefined, tabId));
+      log.info("sync.write", { ...this.tag, action: this.job.currentAction, step, chars: text.length, requests: requests.length, docsMs: batchTimer(), snapshotMs, opened: open.length > 0, inPlace: !!place, charsSent: this.job.charsSent + (isSource ? text.length : 0), totalChars: this.job.totalChars, ...(countTabs ? { tab: tabId } : {}) });
       if (isSource && place?.repair) place.repaired();
-      this.job.liveWordCount = snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
+      this.job.liveWordCount = otherWords + snap.wordCount + countWords(text, place ? snap.chars.slice(Math.max(0, index - 1), index).replace(/\0/g, " ") : snap.tail);
     } else if (fx && isSource) {
       // The earlier attempt's requests landed with the text, so its list state did too
       nextList = fx.writeRequests(offset, offset + text.length, index, list).docList;
@@ -706,7 +758,8 @@ class Context {
   }
 
   private async eraseOnce(wrong: string): Promise<void> {
-    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, this.job.tabId));
+    const tabId = this.tab();
+    const snap = await this.withToken((t) => this.deps.docs.snapshot(t, this.job.documentId, tabId));
     const revision = snap.revisionId || undefined;
     const place = this.place();
     if (place) {
@@ -715,12 +768,12 @@ class Context {
       if (end == null) {
         // Already deleted by an earlier attempt?
         const at = relocate(snap.chars, before, place.state.cursor - wrong.length);
-        if (at == null) throw new Error(LOST_PLACE);
+        if (at == null) throw this.lostPlace();
         place.state.cursor = at;
         return;
       }
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end, revision, this.job.tabId));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, end - wrong.length, end, revision, tabId));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: true });
       place.state.cursor = end - wrong.length;
       return;
@@ -730,7 +783,7 @@ class Context {
     const start = Math.max(1, end - wrong.length);
     if (start < end) {
       const eraseTimer = startTimer(this.now);
-      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end, revision, this.job.tabId));
+      await this.withToken((t) => this.deps.docs.deleteRange(t, this.job.documentId, start, end, revision, tabId));
       log.info("sync.erase", { ...this.tag, action: this.job.currentAction, chars: wrong.length, docsMs: eraseTimer(), inPlace: false });
     }
   }

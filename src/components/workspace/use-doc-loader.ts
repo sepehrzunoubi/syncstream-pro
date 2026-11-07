@@ -3,7 +3,7 @@
  * back into it, and reloading it when it changes in Google Docs.
  */
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import type { Editor, JSONContent } from "@tiptap/react";
 import type { EditorNode } from "@/lib/rich-text";
 import { parsePageSetup, type PageSetup } from "@/lib/page-setup";
@@ -17,7 +17,15 @@ import type { DocTab } from "@/lib/doc-tabs";
 import type { SaveState } from "./use-autosave";
 import type { HfSetup, Segment, Segments } from "./use-header-footers";
 
-export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup, setPageless, setSegments, setHfSetup, setFootnotes }: {
+/** How long to wait before trying again to open a document Google was too busy or slow to give */
+const RETRY_MS = [1500, 4000, 9000];
+/** Reloads after this many saves in a row failed while the document changed in Google Docs */
+const MAX_FAILED_SAVES = 3;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const join = (a: EditorNode | null, b: EditorNode | null): EditorNode | null => (a && b ? { type: "doc", content: [...(a.content ?? []), ...(b.content ?? [])] } : a ?? b);
+
+export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup, setPageless, setSegments, setHfSetup, setFootnotes, createdDocRef }: {
   editor: Editor | null;
   refs: DocRefs;
   saveNow: () => Promise<boolean>;
@@ -39,8 +47,13 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
   setSegments: Setter<Segments>;
   setHfSetup: Setter<HfSetup>;
   setFootnotes: Setter<Record<string, EditorNode[]>>;
+  /** A document just made here: it takes the caret once it is open */
+  createdDocRef?: MutableRefObject<string | null>;
 }) {
-  const { docContentRef, baseRef, revisionRef, legacyTextRef, contentReq, contentStale, savingRef, docBusyRef, retried, tabRef } = refs;
+  const { docContentRef, baseRef, revisionRef, legacyTextRef, contentReq, contentStale, savingRef, docBusyRef, tabRef } = refs;
+  const failedSaves = useRef(0);
+  /** The document being opened (not a reload of the one shown), while it opens */
+  const opening = useRef<string | null>(null);
 
   /**
    * Show a Google Doc: the tab asked for (tabRef), or its first. `keep` is what the editor shows
@@ -48,6 +61,10 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
    */
   const loadDocContent = useCallback(async (docId: string, keep?: EditorNode) => {
     if (!editor) return;
+    // A reload of the page shown never gets in the way of another document opening
+    if (keep && opening.current && opening.current !== docId) return;
+    if (!keep) opening.current = docId;
+    const done = () => { if (!keep && opening.current === docId) opening.current = null; };
     const prev = docContentRef.current;
     const tab = tabRef.current;
     if (prev?.status === "ready" && (prev.docId !== docId || (!!tab && !!prev.tabId && prev.tabId !== tab))) {
@@ -57,19 +74,39 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       writeAdditions(prev.docId, hasPending(json) ? { revisionId: revisionRef.current, doc: json } : null, shownTab(prev));
     }
     const req = ++contentReq.current;
-    // Text typed before a document was open becomes additions to it
-    if (!keep && prev?.status !== "ready" && !readAdditions(docId, { id: tab || null })) {
+    // Text typed before a document was open becomes additions to it: with no document at all, or in
+    // this one when it couldn't be opened. Never what the page shows of another document (its
+    // additions are kept with it; it may still be on the page while this one opens)
+    const carry = !prev || (prev.docId === docId && prev.status === "failed");
+    const savedHere = readAdditions(docId, { id: tab || null });
+    if (!keep && carry && !savedHere) {
       const json = editor.getJSON() as EditorNode;
-      if (hasPending(json)) legacyTextRef.current = additionsOnly(json);
+      // (the page of a document that couldn't be opened already shows the text carried into it)
+      if (hasPending(json)) legacyTextRef.current = prev ? additionsOnly(json) : join(legacyTextRef.current, additionsOnly(json));
     }
     if (!keep) setDocContent({ docId, tabId: tab || null, tabs: prev?.docId === docId ? prev.tabs : undefined, status: "loading" });
     try {
       const startedWith = revisionRef.current;
-      const res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`);
-      const data = (await res.json().catch(() => ({}))) as { nodes?: EditorNode[]; revisionId?: string; empty?: boolean; pageSetup?: unknown; error?: string; tabs?: DocTab[]; tabId?: string | null; tabGone?: boolean };
-      if (res.status === 401) setScopeError(true);
-      if (!res.ok || !Array.isArray(data.nodes)) throw new Error(data.error || "Couldn't open this document");
-      if (req !== contentReq.current) return;
+      type Content = { nodes?: EditorNode[]; revisionId?: string; empty?: boolean; pageSetup?: unknown; error?: string; tabs?: DocTab[]; tabId?: string | null; tabGone?: boolean };
+      let data: Content = {};
+      // Google busy or slow (a 429, a 5xx, no answer): it stays "opening" and tries again a few times
+      for (let attempt = 0; ; attempt++) {
+        let res: Response | null = null;
+        try {
+          res = await fetch(`/api/docs/content?id=${encodeURIComponent(docId)}${tab ? `&tab=${encodeURIComponent(tab)}` : ""}`);
+          data = (await res.json().catch(() => ({}))) as Content;
+        } catch { data = { error: "You're offline, or Google can't be reached" }; }
+        if (req !== contentReq.current) return;
+        if (keep && opening.current && opening.current !== docId) return;
+        if (res?.status === 401) setScopeError(true);
+        if (res?.ok && Array.isArray(data.nodes)) break;
+        const again = !res || res.status === 429 || res.status >= 500;
+        if (keep || !again || attempt >= RETRY_MS.length) throw new Error(data.error || "Couldn't open this document");
+        const wait = Number(res?.headers.get("Retry-After"));
+        await sleep(Math.min(20_000, Math.max(RETRY_MS[attempt], Number.isFinite(wait) ? wait * 1000 : 0)));
+        if (req !== contentReq.current) return;
+      }
+      const nodes = data.nodes!;
       const revision = data.revisionId ?? "";
       const tabId = typeof data.tabId === "string" ? data.tabId : null;
       const tabs = Array.isArray(data.tabs) ? data.tabs : [];
@@ -90,7 +127,7 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       const next: Record<string, EditorNode[]> = {};
       for (const [id, v] of Object.entries(fns)) { const s = seg(v); if (s) next[id] = s.base; }
       setFootnotes(next);
-      const fresh: EditorNode = { type: "doc", content: groupColumns(data.nodes) };
+      const fresh: EditorNode = { type: "doc", content: groupColumns(nodes) };
       // A tab deleted in Google Docs: its new text isn't put back into another tab's paragraphs.
       // It goes at the end of the tab opened instead, still glowing, and the message says so
       let orphan: EditorNode | null = null;
@@ -124,6 +161,8 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       contentStale.current = false;
       setSaveState("idle");
       setDocContent({ docId, tabId, tabs, status: "ready", revisionId: revision, defaults: (data as { defaults?: DocDefaults }).defaults });
+      failedSaves.current = 0;
+      done();
       // From now on the tab is asked for by its id, so it stays this one if the tabs are reordered
       tabRef.current = tabId ?? "";
       setSelectedTabId(tabId ?? "");
@@ -134,20 +173,21 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
       if (keep) return; // keep editing what is shown
       console.error("Couldn't open the document:", err);
       baseRef.current = null;
-      // Show only the new text, still glowing; a sync would add it at the end of the document
-      loadDocument(editor, legacyTextRef.current ?? additionsOnly(editor.getJSON() as EditorNode), true);
+      // Show only this document's new text, still glowing (kept from before, or typed before it was
+      // opened); a sync would add it at the end of the document
+      const own = savedHere?.doc && hasPending(savedHere.doc) ? additionsOnly(savedHere.doc) : null;
+      const shown = join(legacyTextRef.current, own) ?? { type: "doc", content: [{ type: "paragraph" }] };
+      try { loadDocument(editor, shown, true); } catch { loadDocument(editor, { type: "doc", content: [{ type: "paragraph" }] }, true); }
       setDocJSON(editor.getJSON());
       setDocContent({ docId, tabId: tab || null, tabs: prev?.docId === docId ? prev.tabs : undefined, status: "failed", error: err instanceof Error ? err.message : "Couldn't open this document" });
-      // One automatic retry: most failures are a slow or expired Google response
-      if (!retried.current.has(docId)) {
-        retried.current.add(docId);
-        setTimeout(() => { if (docContentRef.current?.docId === docId && docContentRef.current.status === "failed") loadDocContent(docId); }, 2000);
-      }
+      done();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, saveNow]);
 
-  // Open the selected document (again after a sync into it finishes)
+  // Open the selected document (again after a sync into it finishes). It also runs when what the page
+  // shows changes, so a page left showing another document than the one picked (a reload of the old one
+  // landing last) opens the picked one again instead of staying stuck on the other
   useEffect(() => {
     if (!editor || !draftLoaded || !composing) return;
     if (!selectedDocId) {
@@ -160,11 +200,24 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
     }
     const sameTab = !selectedTabId || (docContent?.tabId ?? "") === selectedTabId;
     if (docContent?.docId === selectedDocId && sameTab && !contentStale.current) return;
+    // Already opening it
+    if (docContent?.docId === selectedDocId && sameTab && docContent.status === "loading") return;
     if (docBusy && docContent?.docId === selectedDocId && sameTab) return;
     tabRef.current = selectedTabId;
     loadDocContent(selectedDocId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, draftLoaded, composing, selectedDocId, selectedTabId, docBusy]);
+  }, [editor, draftLoaded, composing, selectedDocId, selectedTabId, docBusy, docContent?.docId, docContent?.tabId, docContent?.status]);
+
+  // A document just made takes the caret once it is open, as a new document does in Docs (unless the
+  // user has gone on to type somewhere else meanwhile)
+  useEffect(() => {
+    if (!createdDocRef?.current || !editor || docContent?.status !== "ready" || docContent.docId !== createdDocRef.current) return;
+    createdDocRef.current = null;
+    const a = document.activeElement;
+    if (a && a !== document.body && a.matches("input, textarea, select, [contenteditable='true']") && !editor.view.dom.contains(a)) return;
+    // Once the page is editable again (it unlocks as this same change lands)
+    requestAnimationFrame(() => { if (!editor.isDestroyed && editor.isEditable) editor.commands.focus("end"); });
+  }, [docContent, editor, createdDocRef]);
 
   // Mirror changes made in Google Docs: on coming back to this tab, and every few seconds while
   // it is visible (the doc may be open side by side), reload when Google's revision moved on
@@ -183,7 +236,13 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
           if (!data.revisionId || data.revisionId === revisionRef.current) return;
           if (docContentRef.current?.docId !== content.docId) return;
         }
-        if (!(await saveNow())) return;
+        // A change that can't be saved (refused, or a conflict) mustn't keep Google's newer copy away for
+        // good: after a few tries the page reloads from Google Docs, keeping the new text
+        if (!(await saveNow())) {
+          if (++failedSaves.current < MAX_FAILED_SAVES) return;
+          setSnack("Couldn't save your last change, and the document changed in Google Docs. SyncStream reloaded it from there and kept your new text.");
+        }
+        failedSaves.current = 0;
         loadDocContent(content.docId, editor.getJSON() as EditorNode);
       } finally {
         checking = false;
@@ -193,7 +252,29 @@ export function useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded,
     const id = setInterval(() => { void refresh(false); }, 6000);
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
-  }, [editor, saveNow, loadDocContent, docContentRef, docBusyRef, revisionRef]);
+  }, [editor, saveNow, loadDocContent, docContentRef, docBusyRef, revisionRef, setSnack]);
 
   return { loadDocContent };
+}
+
+/**
+ * The page can't be changed while it is locked (a document opening, a sync typing into it or starting).
+ * A caret it had when it locked comes back when it unlocks; never by scrolling the page, and never away
+ * from somewhere else the user has gone to meanwhile.
+ */
+export function usePageLock(editor: Editor | null, locked: boolean) {
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    if (locked) {
+      if (editor.isFocused) refocus.current = true;
+      editor.setEditable(false);
+      return;
+    }
+    editor.setEditable(true);
+    if (!refocus.current) return;
+    refocus.current = false;
+    const a = document.activeElement;
+    if (!a || a === document.body) editor.commands.focus(null, { scrollIntoView: false });
+  }, [editor, locked]);
 }

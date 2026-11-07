@@ -62,7 +62,7 @@ test.describe("Manual breaks", () => {
     await manualWithText(app, page);
     await expect(page.getByLabel("Total time")).toHaveCount(0);
     await page.getByLabel("Break length").fill("5m");
-    await expect(page.getByRole("status").filter({ hasText: "the 5 minutes break starts after it" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "A 5-minute break starts after the word you click" })).toBeVisible();
     const before = await layout(page);
     const caret = await page.evaluate(() => window.ssEditor!.state.selection.from);
     await clickWord(app, page, "later,");
@@ -103,7 +103,7 @@ test.describe("Manual breaks", () => {
     await page.getByRole("status").getByRole("button", { name: "Undo" }).click();
     await expect(pills).toHaveCount(2);
     // Done: clicks go back to placing the cursor
-    await page.getByRole("status").filter({ hasText: "Click a word" }).getByRole("button", { name: "Done" }).click();
+    await page.getByRole("status").filter({ hasText: "starts after the word you click" }).getByRole("button", { name: "Done" }).click();
     await clickWord(app, page, "more");
     await expect(pills).toHaveCount(2);
     // A length it can't read says how to write one, and doesn't place

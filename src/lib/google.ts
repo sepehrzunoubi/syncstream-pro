@@ -1,7 +1,7 @@
 import { google, type docs_v1 } from "googleapis";
 import { indexedText } from "./doc-import";
 import { log } from "./log";
-import { inTab, openTab, type OpenTab } from "./doc-tabs";
+import { flattenTabs, inTab, openTab, type OpenTab } from "./doc-tabs";
 import { exportGlyphs, nameLists, unnamedLists } from "./list-glyphs";
 
 async function withRetry<T>(
@@ -57,16 +57,24 @@ export async function getTokensFromCode(code: string, redirectUri?: string) {
   return tokens;
 }
 
-export async function listRecentDocs(accessToken: string, maxResults = 15) {
+/** A value inside a Drive query's quotes: its backslashes and quotes escaped */
+export const driveQueryString = (v: string) => v.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+/**
+ * The user's Google Docs, most recently changed first, never ones in the trash. With `search`,
+ * only those whose name contains it.
+ */
+export async function listRecentDocs(accessToken: string, maxResults = 15, search?: string | null) {
   const client = getOAuth2Client();
   client.setCredentials({ access_token: accessToken });
 
   const drive = google.drive({ version: "v3", auth: client });
+  const name = (search ?? "").trim().slice(0, 200);
   const res = await withRetry(() =>
     drive.files.list({
-      q: "mimeType='application/vnd.google-apps.document'",
+      q: `mimeType='application/vnd.google-apps.document' and trashed=false${name ? ` and name contains '${driveQueryString(name)}'` : ""}`,
       orderBy: "modifiedTime desc",
-      pageSize: maxResults,
+      pageSize: Math.max(1, Math.min(100, Math.floor(maxResults))),
       fields: "files(id, name, modifiedTime)",
     })
   );
@@ -78,19 +86,30 @@ export async function listRecentDocs(accessToken: string, maxResults = 15) {
   }));
 }
 
+/** A Drive file's fields, for a document the user can see (404 when they can't) */
+async function driveFile(accessToken: string, fileId: string, fields: string) {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const drive = google.drive({ version: "v3", auth: client, timeout: 20_000 });
+  return (await withRetry(() => drive.files.get({ fileId, fields, supportsAllDrives: true }))).data;
+}
+
+/** Whether the user can edit the document (false: they can only view or comment on it) */
+export async function canEditDocument(accessToken: string, documentId: string): Promise<boolean> {
+  return (await driveFile(accessToken, documentId, "capabilities(canEdit)")).capabilities?.canEdit === true;
+}
+
+/** The document's name in Drive */
+export async function getDocName(accessToken: string, documentId: string): Promise<string> {
+  return (await driveFile(accessToken, documentId, "name")).name || "Untitled document";
+}
+
 export async function createGoogleDoc(
   accessToken: string,
   title: string = "Untitled Document"
 ): Promise<{ id: string; name: string }> {
-  const client = getOAuth2Client();
-  client.setCredentials({ access_token: accessToken });
-
-  const docs = google.docs({ version: "v1", auth: client });
-  const res = await withRetry(() =>
-    docs.documents.create({
-      requestBody: { title },
-    })
-  );
+  // Never retried: a create that timed out may still have made the document, and a retry would make a second
+  const res = await docsClient(accessToken).documents.create({ requestBody: { title } });
 
   return {
     id: res.data.documentId!,
@@ -107,6 +126,8 @@ export interface DocSnapshot {
   /** The body with position i holding the character at Docs index i (see indexedText) */
   chars: string;
   revisionId: string;
+  /** Words in each tab asked for, by id (a tab that is gone has none) */
+  tabWords?: Record<string, number>;
 }
 
 /** A tab that isn't in the document (any more): what a deleted tab reads as */
@@ -120,12 +141,42 @@ export class TabGoneError extends Error {
  * without tabs has its content. Throws TabGoneError when that tab isn't there.
  */
 export async function getDocument(accessToken: string, documentId: string, tabId?: string | null): Promise<OpenTab> {
-  const docs = docsClient(accessToken);
-  const res = await withRetry(() => docs.documents.get({ documentId, includeTabsContent: true }));
-  const open = openTab(res.data, tabId);
+  const open = openTab(await readDocument(accessToken, documentId), tabId);
   if (!open) throw new TabGoneError();
   await nameUnnamedLists(accessToken, documentId, open);
   return open;
+}
+
+/** documents.get with every tab's content */
+async function readDocument(accessToken: string, documentId: string): Promise<docs_v1.Schema$Document> {
+  const docs = docsClient(accessToken);
+  return (await withRetry(() => docs.documents.get({ documentId, includeTabsContent: true }))).data;
+}
+
+/** How many tabs' lists are named at once (each is an export of that tab) */
+const NAMING_AT_ONCE = 4;
+
+/**
+ * The document as Docs gives it, with every tab, each tab's lists named as getDocument names them
+ * (so what is imported from it matches what the editor shows for that tab)
+ */
+export async function getRawDocument(accessToken: string, documentId: string): Promise<docs_v1.Schema$Document> {
+  const doc = await readDocument(accessToken, documentId);
+  const tabs = flattenTabs(doc);
+  if (!tabs.length) {
+    const open = openTab(doc);
+    if (open) await nameUnnamedLists(accessToken, documentId, open);
+    return doc;
+  }
+  const pending = tabs.map((t) => ({ t, open: openTab(doc, t.id)! })).filter((x) => unnamedLists(x.open.doc).length);
+  for (let i = 0; i < pending.length; i += NAMING_AT_ONCE) {
+    await Promise.all(pending.slice(i, i + NAMING_AT_ONCE).map(async ({ t, open }) => {
+      await nameUnnamedLists(accessToken, documentId, open);
+      // (the tab's lists are the ones its open copy named; kept with the tab whatever openTab shares)
+      if (t.tab.documentTab) t.tab.documentTab.lists = open.doc.lists;
+    }));
+  }
+  return doc;
 }
 
 /**
@@ -168,9 +219,42 @@ export async function getRevisionId(accessToken: string, documentId: string): Pr
   return doc.data.revisionId ?? "";
 }
 
-/** One documents.get that yields everything the runner needs about the target doc. */
-export async function getDocSnapshot(accessToken: string, documentId: string, tabId?: string | null): Promise<DocSnapshot> {
-  return snapshotOf((await getDocument(accessToken, documentId, tabId)).doc);
+/**
+ * One documents.get that yields everything the runner needs about the target doc: the tab it types
+ * into (TabGoneError when that is gone) and, for a job typing into several, the words in `countTabs`
+ */
+export async function getDocSnapshot(accessToken: string, documentId: string, tabId?: string | null, countTabs?: readonly string[] | null): Promise<DocSnapshot> {
+  const doc = await readDocument(accessToken, documentId);
+  const open = openTab(doc, tabId);
+  if (!open) throw new TabGoneError();
+  // (lists aren't named: nothing a snapshot gives depends on their glyphs)
+  const snap = snapshotOf(open.doc);
+  return countTabs?.length ? { ...snap, tabWords: tabWordCounts(doc, countTabs) } : snap;
+}
+
+/** Words in text as a snapshot counts them: images and structure separate words */
+const wordsOf = (chars: string) => {
+  const words = chars.replace(/[\u0000\uFFFC]/g, " ").trim();
+  return words ? words.split(/\s+/).length : 0;
+};
+
+/** Words in each of these tabs of a document read with its tabs, by id (a tab that isn't there has none) */
+export function tabWordCounts(doc: docs_v1.Schema$Document, tabIds: readonly string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const id of tabIds) {
+    const open = openTab(doc, id);
+    if (open) out[id] = wordsOf(indexedText(open.doc));
+  }
+  return out;
+}
+
+/** Words in these tabs together (a job's baseline); with none, in the first tab */
+export function wordsInTabs(doc: docs_v1.Schema$Document, tabIds: readonly string[]): number {
+  if (!tabIds.length) {
+    const open = openTab(doc);
+    return open ? wordsOf(indexedText(open.doc)) : 0;
+  }
+  return Object.values(tabWordCounts(doc, tabIds)).reduce((a, b) => a + b, 0);
 }
 
 export function snapshotOf(data: docs_v1.Schema$Document, tailChars = 400): DocSnapshot {
@@ -186,8 +270,7 @@ export function snapshotOf(data: docs_v1.Schema$Document, tailChars = 400): DocS
     }
   }
   const chars = indexedText(data);
-  const words = chars.replace(/[\u0000\uFFFC]/g, " ").trim();
-  const wordCount = words ? words.split(/\s+/).length : 0;
+  const wordCount = wordsOf(chars);
   // Google Docs always ends the body with a trailing newline that is not user text.
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
   return { endIndex, tail: body.slice(-tailChars), wordCount, chars, revisionId: data.revisionId ?? "" };
@@ -275,9 +358,47 @@ export async function exportPdf(accessToken: string, documentId: string, tabId?:
  * revision was read, so indices computed from it are never applied stale.
  */
 export async function batchUpdate(accessToken: string, documentId: string, requests: object[], requiredRevisionId?: string, tabId?: string | null) {
-  if (requests.length === 0) return;
+  await batchUpdateWithReplies(accessToken, documentId, requests, { requiredRevisionId, tabId });
+}
+
+export interface BatchOptions {
+  /** Refused (400) when the document moved past this revision */
+  requiredRevisionId?: string;
+  /** The tab the requests go to; a request that names its own tab keeps it */
+  tabId?: string | null;
+  /** Whether that tab is the document's first (a header or footer there is the document's own) */
+  first?: boolean;
+}
+
+/** One request's reply: the ids of what it made (a tab, header, footer, footnote, image), or nothing */
+export type BatchReply = docs_v1.Schema$Response & Record<string, unknown>;
+
+/** As batchUpdate, with each request's reply, in order */
+export async function batchUpdateWithReplies(accessToken: string, documentId: string, requests: object[], opts: BatchOptions = {}): Promise<BatchReply[]> {
+  if (requests.length === 0) return [];
   const docs = docsClient(accessToken);
-  await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests: inTab(requests, tabId), ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}) } }));
+  const { requiredRevisionId, tabId, first } = opts;
+  const res = await withRetry(() => docs.documents.batchUpdate({ documentId, requestBody: { requests: inTab(requests, tabId, first), ...(requiredRevisionId ? { writeControl: { requiredRevisionId } } : {}) } }));
+  return (res.data.replies ?? []) as BatchReply[];
+}
+
+/** A new tab, made as Docs makes one (blank, Google's default styles): its id */
+export async function createTab(accessToken: string, documentId: string, props: { title: string; parentTabId?: string | null; index?: number; iconEmoji?: string | null }): Promise<string> {
+  const tabProperties: docs_v1.Schema$TabProperties = {
+    ...(props.title.trim() ? { title: props.title.trim() } : {}),
+    ...(props.parentTabId ? { parentTabId: props.parentTabId } : {}),
+    ...(props.index != null ? { index: props.index } : {}),
+    ...(props.iconEmoji ? { iconEmoji: props.iconEmoji } : {}),
+  };
+  const replies = await batchUpdateWithReplies(accessToken, documentId, [{ addDocumentTab: { tabProperties } }]);
+  const tabId = replies[0]?.addDocumentTab?.tabProperties?.tabId;
+  if (!tabId) throw new Error("Google Docs made the tab but didn't say which it is");
+  return tabId;
+}
+
+/** Give a tab another name */
+export async function renameTab(accessToken: string, documentId: string, tabId: string, title: string): Promise<void> {
+  await batchUpdateWithReplies(accessToken, documentId, [{ updateDocumentTabProperties: { tabProperties: { tabId, title }, fields: "title" } }]);
 }
 
 export async function insertAtIndex(

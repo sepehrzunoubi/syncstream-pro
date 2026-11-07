@@ -1,12 +1,34 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { Setter } from "./doc-state";
 
-/** The snackbar's message: hints from the editor show here, and it hides itself */
+/** Something went wrong: it stays until it is dismissed or another message takes its place */
+const PROBLEM = /^(Couldn['’]t|Can['’]t|Google didn['’]t|Google is taking too long|Your Google sign-in|You['’]re offline)/;
+
+/** How long a message shows: long enough to read it (null: until dismissed) */
+export function snackDuration(text: string): number | null {
+  if (PROBLEM.test(text)) return null;
+  return Math.min(15_000, Math.max(6000, text.length * 60));
+}
+
+/**
+ * The snackbar's message: hints from the editor show here, and it hides itself. The same message
+ * again shows for its full time again.
+ */
 export function useSnack(): [string | null, Setter<string | null>] {
-  const [snack, setSnack] = useState<string | null>(null);
+  const [state, setState] = useState<{ text: string; n: number } | null>(null);
+  const setSnack: Setter<string | null> = useCallback((next) => {
+    setState((cur) => {
+      const text = typeof next === "function" ? next(cur?.text ?? null) : next;
+      if (text == null) return null;
+      // An update that leaves it as it is (setSnack((s) => s)) doesn't start it over
+      if (typeof next === "function" && cur && text === cur.text) return cur;
+      return { text, n: (cur?.n ?? 0) + 1 };
+    });
+  }, []);
+  const snack = state?.text ?? null;
   useEffect(() => {
     const onHint = () => setSnack(`Use ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}V to paste, or ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}Shift+V to paste without formatting`);
     const onLocked = () => setSnack("That part of the document can't be changed here. Tables' shapes, chips and section breaks are edited in Google Docs.");
@@ -15,13 +37,15 @@ export function useSnack(): [string | null, Setter<string | null>] {
     window.addEventListener("ss-locked-hint", onLocked);
     window.addEventListener("ss-image-failed", onImageFailed);
     return () => { window.removeEventListener("ss-paste-hint", onHint); window.removeEventListener("ss-locked-hint", onLocked); window.removeEventListener("ss-image-failed", onImageFailed); };
-  }, []);
+  }, [setSnack]);
   // Snackbar auto-hide
   useEffect(() => {
-    if (!snack) return;
-    const id = setTimeout(() => setSnack(null), 6000);
+    if (!state) return;
+    const ms = snackDuration(state.text);
+    if (ms == null) return;
+    const id = setTimeout(() => setState((cur) => (cur === state ? null : cur)), ms);
     return () => clearTimeout(id);
-  }, [snack]);
+  }, [state]);
   return [snack, setSnack];
 }
 

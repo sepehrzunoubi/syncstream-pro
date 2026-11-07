@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { docTabs, inTab, isTabId, openTab } from "./doc-tabs";
+import { docTabs, flattenTabs, inTab, isTabId, openTab } from "./doc-tabs";
 
 test("a request names its tab in every place Docs takes one, and those that name it themselves name it", () => {
   const requests = [
@@ -53,7 +53,13 @@ test("a document read with its tabs gives each tab where a document without tabs
     childTabs,
   });
   const doc = { documentId: "d", title: "T", revisionId: "r1", tabs: [tab("t.0", "One", "a\n"), tab("t.2", "Two", "b\n", [tab("t.3", "", "c\n", [], 1)])] };
-  assert.deepEqual(docTabs(doc), [{ id: "t.0", title: "One", level: 0 }, { id: "t.2", title: "Two", level: 0 }, { id: "t.3", title: "Untitled tab", level: 1 }]);
+  assert.deepEqual(docTabs(doc), [{ id: "t.0", title: "One", level: 0 }, { id: "t.2", title: "Two", level: 0 }, { id: "t.3", title: "Untitled tab", level: 1, parentId: "t.2" }]);
+  assert.deepEqual(flattenTabs(doc).map(({ id, parentId, level, index, siblingIndex }) => ({ id, parentId, level, index, siblingIndex })), [
+    { id: "t.0", parentId: null, level: 0, index: 0, siblingIndex: 0 },
+    { id: "t.2", parentId: null, level: 0, index: 1, siblingIndex: 1 },
+    { id: "t.3", parentId: "t.2", level: 1, index: 2, siblingIndex: 0 },
+  ]);
+  assert.equal(flattenTabs(doc)[2].tab, doc.tabs[1].childTabs[0], "the raw tab, to open or read further");
   const kid = openTab(doc, "t.3")!;
   assert.equal(kid.tabId, "t.3");
   assert.equal(kid.first, false);
@@ -75,4 +81,26 @@ test("a document read with its tabs gives each tab where a document without tabs
 test("tab ids are checked before they reach Google", () => {
   for (const ok of ["t.0", "t.abc123", "t.9x_y-z"]) assert.equal(isTabId(ok), true, ok);
   for (const bad of ["", "t 0", "t/../x", "t.0&x=1", 5, null, "x".repeat(101)]) assert.equal(isTabId(bad), false, String(bad));
+});
+
+test("a request that already names its tab keeps it, so one batch can write to several tabs", () => {
+  const requests = [
+    { insertText: { location: { index: 1, tabId: "t.other" }, text: "x" } },
+    { insertText: { location: { index: 2 }, text: "y" } },
+    { updateDocumentStyle: { tabId: "t.other", documentStyle: {}, fields: "marginTop" } },
+    { createHeader: { type: "DEFAULT", sectionBreakLocation: { index: 0, tabId: "t.other" } } },
+    { updateNamedStyle: { namedStyle: { namedStyleType: "NORMAL_TEXT" }, fields: "textStyle" } },
+    { replaceAllText: { containsText: { text: "a" }, replaceText: "b" } },
+    { addDocumentTab: { tabProperties: { title: "New", parentTabId: "t.web" } } },
+    { updateDocumentTabProperties: { tabProperties: { tabId: "t.web", title: "Renamed" }, fields: "title" } },
+  ];
+  const out = inTab(requests, "t.web") as unknown as Record<string, Record<string, unknown>>[];
+  assert.deepEqual(out[0].insertText.location, { index: 1, tabId: "t.other" });
+  assert.deepEqual(out[1].insertText.location, { index: 2, tabId: "t.web" });
+  assert.equal(out[2].updateDocumentStyle.tabId, "t.other");
+  assert.deepEqual(out[3].createHeader.sectionBreakLocation, { index: 0, tabId: "t.other" });
+  assert.equal(out[4].updateNamedStyle.tabId, "t.web", "named styles are per tab");
+  assert.deepEqual(out[5].replaceAllText.tabsCriteria, { tabIds: ["t.web"] }, "not every tab's text");
+  assert.deepEqual(out[6], requests[6], "making a tab names no place");
+  assert.deepEqual(out[7], requests[7]);
 });

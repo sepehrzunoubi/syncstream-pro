@@ -32,6 +32,8 @@ const nextConfig = {
   // Turning the optimizer off also takes its endpoint, and its security advisories, out of the
   // self-hosted Docker image.
   images: { unoptimized: true },
+  // A native module (images re-hosted or read from PDFs on the server): loaded at run time, never bundled
+  serverExternalPackages: ["@napi-rs/canvas"],
 };
 
 export default nextConfig;
