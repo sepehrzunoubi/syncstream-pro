@@ -31,12 +31,14 @@ interface CompareFake {
   loads: URLSearchParams[];
   starts: CompareStartBody[];
   /** How the next start answers */
-  startAnswer: "ok" | "changed";
+  startAnswer: "ok" | "changed" | "busy";
+  /** Images of the reference a start says it couldn't copy */
+  droppedImages: number;
 }
 
 /** Signed in, with the fixtures' Google, the two documents in Drive and the compare routes faked */
 async function openCompare(page: Page, api: FakeGoogle, session?: Record<string, unknown>): Promise<CompareFake> {
-  const fake: CompareFake = { loads: [], starts: [], startAnswer: "ok" };
+  const fake: CompareFake = { loads: [], starts: [], startAnswer: "ok", droppedImages: 0 };
   api.docs = [
     { id: LEFT, name: "Team notes", modifiedTime: new Date().toISOString() },
     { id: RIGHT, name: "Team notes (final)", modifiedTime: new Date(Date.now() - 86_400_000).toISOString() },
@@ -64,7 +66,9 @@ async function openCompare(page: Page, api: FakeGoogle, session?: Record<string,
         wpm: 32, baselineWordCount: 0, breaks: [], completedBreaks: [], lastUpdate: now, sourceText: NEW_LINE, context: null,
       };
       api.jobs = [job, ...api.jobs];
-      return json(route, { job });
+      // As the route does when a sync is already typing into your document: which one it is
+      if (fake.startAnswer === "busy") { fake.startAnswer = "ok"; return json(route, { error: "A sync is already typing into your document. Wait for it to finish, or cancel it, first.", code: "busy", jobId: job.id }, 409); }
+      return json(route, { job, ...(fake.droppedImages ? { droppedImages: fake.droppedImages } : {}) });
     }
     return json(route, { error: "e2e: no compare fake" }, 404);
   });
@@ -253,5 +257,28 @@ test.describe("Compare & Sync", () => {
     // And the switch goes back to Compare & Sync
     await page.getByRole("link", { name: "Compare & Sync" }).first().click();
     await page.waitForURL(/\/dashboard\/compare$/);
+  });
+
+  test("a sync already typing into your document is one click away when Start is refused", async ({ page, api, app }) => {
+    void app;
+    const fake = await openCompare(page, api, PICKED);
+    await compared(page);
+    fake.startAnswer = "busy";
+    await page.getByRole("button", { name: "Start sync" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: "already typing into your document" });
+    await expect(alert).toBeVisible();
+    await alert.getByRole("button", { name: "Open that sync" }).click();
+    await page.waitForURL(/\/dashboard$/);
+    await expect(page.getByRole("button", { name: "Back to editing" })).toBeVisible();
+  });
+
+  test("images the sync couldn't copy are said when the editor opens on it", async ({ page, api, app }) => {
+    void app;
+    const fake = await openCompare(page, api, PICKED);
+    await compared(page);
+    fake.droppedImages = 2;
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await page.waitForURL(/\/dashboard$/);
+    await expect(page.getByText("2 images from the reference couldn't be copied, so the sync leaves them out")).toBeVisible();
   });
 });

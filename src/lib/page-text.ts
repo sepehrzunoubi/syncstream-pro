@@ -5,9 +5,11 @@
  * content without reproducing Docs' layout engine.
  */
 
+import { loadPdfJs } from "./pdfjs";
+
 /** Text of each page of a PDF, in order */
 export async function pdfPageTexts(data: ArrayBuffer | Uint8Array): Promise<string[]> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdfjs = await loadPdfJs();
   const doc = await pdfjs.getDocument({ data: data instanceof Uint8Array ? data : new Uint8Array(data), useSystemFonts: true }).promise;
   const pages: string[] = [];
   for (let i = 1; i <= doc.numPages; i++) {

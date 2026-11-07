@@ -13,6 +13,7 @@ import { BreakMarks, SyncBreak } from "./break-marks";
 import { DocsLineBreaks } from "./line-breaks";
 import { LinkLook } from "./link-look";
 import { Find } from "./find";
+import { tableLinesPlugin } from "./table-lines";
 import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
 import TextAlign from "@tiptap/extension-text-align";
 import {
@@ -1200,6 +1201,8 @@ const idAttr = (name: string) => ({ [name]: { default: null, parseHTML: () => nu
 const spanAttr = { span: { default: null, parseHTML: () => null, rendered: false }, endSpan: { default: null, parseHTML: () => null, rendered: false } };
 const DocTable = Table.extend({
   addAttributes() { return { ...this.parent?.(), ...idAttr("tid"), ...spanAttr }; },
+  // Docs' paragraph before every table, kept on the page too (see table-lines.ts)
+  addProseMirrorPlugins() { return [...(this.parent?.() ?? []), tableLinesPlugin()]; },
 }).configure({ resizable: false, HTMLAttributes: { class: "ss-table" } });
 const DocTableRow = TableRow.extend({ addAttributes() { return { ...this.parent?.(), ...idAttr("rid"), ...spanAttr }; } });
 /**

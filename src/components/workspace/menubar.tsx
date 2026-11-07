@@ -109,6 +109,9 @@ interface DocsMenubarProps {
   selectedDocId: string;
   onSelectDoc: (id: string) => void;
   onRefreshDocs: () => void;
+  /** File > Import PDF: open its dialog; disabled while the page can't take one */
+  onImportPdf?: () => void;
+  importPdfDisabled?: boolean;
   /** Rename the open document, when it can be */
   onRename: (() => void) | null;
   docUrl: string | null;
@@ -179,6 +182,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Sep />
           <Item onSelect={p.onRefreshDocs}>Refresh list</Item>
         </Sub>
+        {p.onImportPdf && <Item disabled={p.importPdfDisabled} onSelect={afterMenu(p.onImportPdf)}>Import PDF…</Item>}
         <Item onSelect={() => router.push("/dashboard/compare")}>Compare &amp; Sync</Item>
         <Item disabled={!p.onRename} onSelect={afterMenu(() => p.onRename?.())}>Rename</Item>
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>

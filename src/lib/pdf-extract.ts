@@ -13,6 +13,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { docsFont, fontMetrics, naturalLineHeight, type DocsFont } from "./pdf-fonts";
+import { loadPdfJs } from "./pdfjs";
 
 export interface PdfFont {
   id: string;
@@ -151,11 +152,6 @@ const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type PdfJs = any;
-let pdfjsPromise: Promise<PdfJs> | null = null;
-function loadPdfJs(): Promise<PdfJs> {
-  pdfjsPromise ??= import("pdfjs-dist/legacy/build/pdf.mjs");
-  return pdfjsPromise;
-}
 
 /** pdf.js's own font and CMap data, so PDFs that only name a standard font (Helvetica) still measure right */
 function dataDirs(): { standardFontDataUrl?: string; cMapUrl?: string } {
@@ -178,7 +174,7 @@ export interface OpenedPdf {
 
 /** Open a PDF. Throws PdfOpenError when it needs a password or isn't a PDF. */
 export async function openPdf(bytes: Uint8Array): Promise<OpenedPdf> {
-  const pdfjs = await loadPdfJs();
+  const pdfjs: PdfJs = await loadPdfJs();
   const task = pdfjs.getDocument({
     // pdf.js takes ownership of (and detaches) the buffer it is given
     data: new Uint8Array(bytes),

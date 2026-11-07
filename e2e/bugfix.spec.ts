@@ -196,6 +196,26 @@ test.describe("New Google Doc", () => {
     expect(await app.text()).not.toContain(FIXTURE_DOC_NAME);
   });
 
+  test("a table inserted on the first line of a new doc keeps the line Docs has before it, so the save never deletes it", async ({ app, page, api }) => {
+    await app.open();
+    await page.getByRole("navigation", { name: "Syncs" }).getByRole("button", { name: "New Google Doc" }).click();
+    await expect.poll(() => api.creates.length).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused && window.ssEditor!.isEditable)).toBe(true);
+    const before = api.edits.length;
+    await page.evaluate(() => window.ssEditor!.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run());
+    // As Docs will have it: an empty line, the table, a line after it
+    await expect.poll(() => page.evaluate(() => (window.ssEditor!.getJSON().content ?? []).map((n) => n.type))).toEqual(["paragraph", "table", "paragraph"]);
+    // (this fake Google doesn't apply edits, so the editor may send the new table again on its next save)
+    await expect.poll(() => api.requests("insertTable").length).toBeGreaterThanOrEqual(1);
+    // The save makes the table and takes nothing out: no delete of the line before it
+    const sent = api.edits.slice(before).flatMap((e) => e.requests.map((r) => Object.keys(r)[0]));
+    expect(sent).not.toContain("deleteContentRange");
+    // Backspace on that line can't take it away either (Docs can't), and typing in a cell still works
+    await page.evaluate(() => window.ssEditor!.chain().focus().setTextSelection(1).run());
+    await page.keyboard.press("Backspace");
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.getJSON().content?.[0]?.type)).toBe("paragraph");
+  });
+
   test("a second click while Google makes the document makes only one; Refresh list right after keeps it open", async ({ app, page, api }) => {
     api.createDelay = 800;
     api.listLag = 2;

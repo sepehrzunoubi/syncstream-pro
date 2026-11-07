@@ -1326,3 +1326,116 @@ button.ss-cmp-tab:hover:not([aria-current="page"]) { background: var(--ss-hover)
 .ss-cmp-step-cta { flex: none; padding: 0 4px; font-size: 14px; font-weight: 500; color: var(--ss-blue); }
 .ss-cmp-problem-icon { display: grid; place-items: center; width: 56px; height: 56px; margin-bottom: 16px; border-radius: 50%; background: var(--ss-soft); color: var(--ss-text-2); }
 /* ═══ end of Compare & Sync ═══ */
+
+/* ════════════════════════════════════════════════════════════════════════
+   Import PDF: the Sync settings card and the dialog (pdf-import-dialog.tsx).
+   Everything below is this feature's own; it builds on the tokens above.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* The card under the sync settings */
+.ss-pdf-card { display: flex; gap: 12px; padding: 14px 16px 16px; border-radius: 16px; background: var(--ss-surface); box-shadow: 0 0 0 1px #e3e3e3; }
+.ss-pdf-card-icon { display: grid; flex: none; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--ss-sync-tint); color: var(--ss-sync-bar); }
+.ss-pdf-card-title { margin: 0; font-size: 14px; font-weight: 500; line-height: 20px; color: var(--ss-text); }
+.ss-pdf-card-body { margin: 2px 0 12px; font-size: 13px; line-height: 18px; color: var(--ss-text-3); }
+.ss-pdf-card-btn { height: 36px; padding: 0 16px; }
+.ss-pdf-card-btn[disabled] { pointer-events: none; }
+/* Once the page has something on it: the same action, in a line */
+.ss-pdf-link { display: inline-flex; align-items: center; gap: 6px; height: 32px; margin: -4px 0 0 -8px; padding: 0 10px 0 8px; border-radius: 16px; font-size: 13px; font-weight: 500; color: var(--ss-sync-bar); transition: background-color 0.15s; }
+.ss-pdf-link:hover { background: var(--ss-sync-tint); }
+.ss-pdf-link:focus-visible { outline: 2px solid var(--ss-sync-bar); outline-offset: 1px; }
+.ss-pdf-link[disabled] { pointer-events: none; color: var(--ss-text-3); }
+
+/* The dialog */
+.ss-pdf { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ss-pdf-drop {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 32px 20px 28px;
+  border: 1.5px dashed #c4c7c5; border-radius: 16px; background: #fafbfd; text-align: center; cursor: pointer;
+  transition: border-color 150ms, background-color 150ms;
+}
+.ss-pdf-drop:hover { border-color: var(--ss-outline); background: var(--ss-soft); }
+.ss-pdf-drop[data-over] { border-color: var(--ss-blue); background: var(--ss-sync-tint); }
+.ss-pdf-drop:has(.ss-pdf-file-input:focus-visible) { outline: 2px solid var(--ss-blue); outline-offset: 2px; }
+.ss-pdf-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+.ss-pdf-drop-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 6px; border-radius: 50%; background: var(--ss-sync-tint); color: var(--ss-sync-bar); transition: transform 200ms cubic-bezier(0.2, 0, 0, 1); }
+.ss-pdf-drop[data-over] .ss-pdf-drop-icon { transform: translateY(-2px); background: var(--ss-surface); }
+.ss-pdf-drop-title { font-size: 15px; font-weight: 500; line-height: 22px; color: var(--ss-text); }
+.ss-pdf-choose { color: var(--ss-blue); }
+.ss-pdf-drop:hover .ss-pdf-choose { text-decoration: underline; text-underline-offset: 2px; }
+.ss-pdf-drop-sub { font-size: 12px; line-height: 16px; color: var(--ss-text-3); }
+.ss-pdf-note { margin: 0; font-size: 13px; line-height: 19px; color: var(--ss-text-2); }
+.ss-pdf-problem { display: flex; gap: 10px; margin: 0; padding: 10px 12px; border-radius: 12px; background: #fce8e6; font-size: 13px; line-height: 19px; color: #8c1d18; }
+
+/* The file being read */
+.ss-pdf-file { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 12px 8px 8px; border-radius: 12px; background: var(--ss-soft); }
+.ss-pdf-file-icon { display: grid; flex: none; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: #fce8e6; color: #c5221f; }
+.ss-pdf-file-name { flex: 1; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 500; color: var(--ss-text); white-space: nowrap; text-overflow: ellipsis; }
+.ss-pdf-file-size { flex: none; font-size: 12px; color: var(--ss-text-3); font-variant-numeric: tabular-nums; }
+
+/* Reading it, step by step */
+.ss-pdf-steps { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 4px 0 4px 4px; list-style: none; }
+.ss-pdf-steps li { display: flex; align-items: center; gap: 12px; min-height: 36px; font-size: 14px; color: var(--ss-text-3); transition: color 200ms; }
+.ss-pdf-steps li[data-state="now"] { color: var(--ss-text); font-weight: 500; }
+.ss-pdf-steps li[data-state="done"] { color: var(--ss-text-2); }
+.ss-pdf-step-dot { display: grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px #c4c7c5; color: var(--ss-blue); transition: background-color 200ms, box-shadow 200ms; }
+.ss-pdf-steps li[data-state="now"] .ss-pdf-step-dot { box-shadow: none; }
+.ss-pdf-steps li[data-state="done"] .ss-pdf-step-dot { background: var(--ss-blue); box-shadow: none; color: #fff; animation: ss-pdf-pop 260ms cubic-bezier(0.2, 0, 0, 1); }
+.ss-pdf-step-pct { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--ss-text-3); font-variant-numeric: tabular-nums; }
+@keyframes ss-pdf-pop { from { transform: scale(0.6); } }
+
+/* What was read */
+.ss-pdf-summary { display: flex; flex-direction: column; gap: 8px; }
+.ss-pdf-summary-line { margin: 0; font-size: 15px; font-weight: 500; line-height: 22px; color: var(--ss-text); }
+.ss-pdf-facts { display: grid; gap: 4px; margin: 0; }
+.ss-pdf-facts div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; font-size: 13px; line-height: 18px; }
+.ss-pdf-facts dt { color: var(--ss-text-3); }
+.ss-pdf-facts dd { margin: 0; color: var(--ss-text-2); overflow-wrap: anywhere; }
+.ss-pdf-warn { display: flex; gap: 10px; padding: 10px 12px; border-radius: 12px; background: #fef7e0; color: #5c4300; }
+.ss-pdf-warn-icon { flex: none; margin-top: 1px; color: #b06000; }
+.ss-pdf-warn-title { margin: 0 0 2px; font-size: 13px; font-weight: 500; line-height: 19px; }
+.ss-pdf-warn ul { margin: 0; padding: 0 0 0 16px; font-size: 13px; line-height: 19px; }
+.ss-pdf-dest-note { margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--ss-sync-tint); font-size: 13px; line-height: 19px; color: #0842a0; }
+.ss-pdf-confirm { margin: 0; padding: 12px 14px; border-radius: 12px; background: #fce8e6; font-size: 14px; line-height: 20px; color: #8c1d18; }
+
+/* Where it goes */
+.ss-pdf-choices { min-width: 0; margin: 0; padding: 0; border: 0; }
+.ss-pdf-choices .ss-field-label { margin-bottom: 0; }
+.ss-pdf-choices-help { margin: 0 0 10px; font-size: 12px; line-height: 16px; color: var(--ss-text-3); }
+.ss-pdf-choice-list { display: flex; flex-direction: column; gap: 8px; }
+.ss-pdf-choice {
+  position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px 12px 12px; border-radius: 14px;
+  background: var(--ss-surface); box-shadow: 0 0 0 1px #dadce0; cursor: pointer; transition: box-shadow 150ms, background-color 150ms;
+}
+.ss-pdf-choice:hover { background: #fafbfd; box-shadow: 0 0 0 1px #c4c7c5; }
+.ss-pdf-choice[data-on] { background: #f5f8fe; box-shadow: 0 0 0 2px var(--ss-blue); }
+.ss-pdf-choice[data-on][data-danger] { background: #fdf6f5; box-shadow: 0 0 0 2px var(--ss-danger); }
+.ss-pdf-choice input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.ss-pdf-choice:has(input:focus-visible) { outline: 2px solid rgba(11, 87, 208, 0.35); outline-offset: 3px; }
+.ss-pdf-choice-icon { display: grid; flex: none; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--ss-soft); color: var(--ss-text-2); transition: background-color 150ms, color 150ms; }
+.ss-pdf-choice[data-on] .ss-pdf-choice-icon { background: var(--ss-pressed); color: var(--ss-on-pressed); }
+.ss-pdf-choice[data-danger] .ss-pdf-choice-icon { color: var(--ss-danger); }
+.ss-pdf-choice[data-on][data-danger] .ss-pdf-choice-icon { background: #f9dedc; color: #8c1d18; }
+.ss-pdf-choice-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.ss-pdf-choice-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 14px; font-weight: 500; line-height: 20px; color: var(--ss-text); }
+.ss-pdf-choice[data-danger] .ss-pdf-choice-title { color: var(--ss-danger); }
+.ss-pdf-choice-body { font-size: 13px; line-height: 18px; color: var(--ss-text-3); overflow-wrap: anywhere; }
+.ss-pdf-badge { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 10px; background: #e6f4ea; font-size: 11px; font-weight: 500; letter-spacing: 0.2px; color: #137333; }
+.ss-pdf-choice-dot { flex: none; width: 20px; height: 20px; margin-top: 8px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--ss-outline); transition: box-shadow 150ms; }
+.ss-pdf-choice[data-on] .ss-pdf-choice-dot { box-shadow: inset 0 0 0 2px var(--ss-blue), inset 0 0 0 5px var(--ss-surface), inset 0 0 0 10px var(--ss-blue); }
+.ss-pdf-choice[data-on][data-danger] .ss-pdf-choice-dot { box-shadow: inset 0 0 0 2px var(--ss-danger), inset 0 0 0 5px var(--ss-surface), inset 0 0 0 10px var(--ss-danger); }
+
+/* Replacing: red, and asked twice */
+.ss-pdf-btn-danger { background: var(--ss-danger); color: #fff; }
+.ss-pdf-btn-danger:hover:not(:disabled) { background: #a1221b; box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px 1px rgba(0,0,0,.15); }
+.ss-pdf-btn-danger-quiet { background: #f9dedc; color: #8c1d18; }
+.ss-pdf-btn-danger-quiet:hover:not(:disabled) { background: #f4cfcb; }
+
+/* Putting it on the page */
+.ss-pdf-applying { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 4px; font-size: 14px; color: var(--ss-text-2); outline: none; }
+.ss-pdf-applying svg { flex: none; color: var(--ss-blue); }
+
+@media (max-width: 480px) {
+  .ss-pdf-drop { padding: 24px 16px 22px; }
+  .ss-pdf-choice { padding: 10px 12px 10px 10px; gap: 10px; }
+  .ss-pdf-choice-icon { width: 32px; height: 32px; }
+}
+/* ═══ end of Import PDF ═══ */

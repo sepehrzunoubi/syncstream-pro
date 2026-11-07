@@ -9,6 +9,8 @@ import { getSchema } from "@tiptap/core";
 import { EditorState, TextSelection, type Command } from "@tiptap/pm/state";
 import { addColumnAfter, addRowAfter, deleteColumn, deleteRow } from "@tiptap/pm/tables";
 import { editorExtensions } from "../../src/components/workspace/extensions";
+import { blankWithPdf, replaceWithPdf } from "../../src/components/workspace/use-pdf-import";
+import { tableLinesPlugin } from "../../src/components/workspace/table-lines";
 import { importDoc } from "../../src/lib/doc-import";
 import { additions, adoptStructure, directEdits } from "../../src/lib/doc-model";
 import { EDIT_REQUESTS } from "../../src/lib/docs-requests";
@@ -292,4 +294,76 @@ test("deleting the document's last paragraph leaves the one before it with its o
   ], (base) => [base[0]]);
   assert.deepEqual(text(target), ["Title"]);
   assert.deepEqual(after.map((p) => [(p.content ?? []).map((c) => c.text ?? "").join(""), p.attrs?.styleName]), [["Title", "h1"]]);
+});
+
+test("Import PDF: a PDF that starts with a table, put on a blank page or in place of a document's content, is saved (Docs has a paragraph before every table)", async () => {
+  const cell = (text: string): EditorNode => ({ type: "tableCell", attrs: { colspan: 1, rowspan: 1 }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text, marks: [{ type: "syncAdd" }] }] }] });
+  const pdf: EditorNode[] = [
+    { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [cell("Name"), cell("Score")] }] },
+    { type: "paragraph", attrs: {}, content: [{ type: "text", text: "After the table.", marks: [{ type: "syncAdd" }] }] },
+  ];
+  for (const [name, setup, page] of [
+    ["blank", [], () => blankWithPdf(pdf)],
+    ["replace", [{ insertText: { location: { index: 1 }, text: "Old title\nOld text" } }], (base: EditorNode) => replaceWithPdf(base, pdf)],
+  ] as const) {
+    const docs = createStrictStubDocs({ ...STRICT });
+    const id = await docs.create(name);
+    if (setup.length) await docs.batchUpdate(id, setup as never);
+    const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+    // (each round is applied as the stub applies it: one Docs refuses throws here)
+    const { base, editor } = await autosave(docs, id, start, (page as (b: EditorNode) => EditorNode)(start));
+    assert.equal(directEdits(base, editor).requests.length, 0, `${name}: nothing left to save`);
+    const read = importDoc(await docs.get(id)).nodes;
+    assert.deepEqual(read.map((n) => (n.type === "table" ? "table" : text([n])[0])), ["", "table", ""], name);
+    assert.deepEqual(additions(base, editor).segments.map((x) => x.text), ["Name", "Score", "After the table."], name);
+  }
+});
+
+/**
+ * The page as the editor leaves it after `content` goes in: with the paragraph Docs has before a
+ * table, and ending with a paragraph (StarterKit's trailing node), as on a real page
+ */
+function asEditorHasIt(content: EditorNode[]): EditorNode {
+  if (content[content.length - 1]?.type !== "paragraph") content = [...content, { type: "paragraph", attrs: {}, content: [] }];
+  const empty = EditorState.create({ schema, plugins: [tableLinesPlugin()] });
+  const { state } = empty.applyTransaction(empty.tr.replaceWith(0, empty.doc.content.size, schema.nodeFromJSON({ type: "doc", content }).content));
+  return state.doc.toJSON() as EditorNode;
+}
+
+test("a table put at the very start of a document (Insert > Table on a new blank doc, or one pasted there) is saved, and so are later edits", async () => {
+  const cell = (text = ""): EditorNode => ({ type: "tableCell", attrs: { colspan: 1, rowspan: 1 }, content: [{ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] }] });
+  const table = (a: string, b: string): EditorNode => ({ type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [cell(a), cell(b)] }] });
+  const para = (text: string): EditorNode => ({ type: "paragraph", attrs: {}, content: text ? [{ type: "text", text }] : [] });
+  // As each comes onto the page: Insert > Table puts the table before the empty line it was in;
+  // a paste can leave the page as the table alone, or two tables one after the other
+  for (const [name, page] of [
+    ["inserted", [table("", ""), para("")]],
+    ["pasted", [table("Name", "Score")]],
+    ["two tables", [table("A", "B"), table("C", "D"), para("After")]],
+  ] as const) {
+    const docs = createStrictStubDocs({ ...STRICT });
+    const id = await docs.create(name);
+    const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+    const editorDoc = asEditorHasIt([...page] as EditorNode[]);
+    // (each round is applied as the stub applies it: one Docs refuses throws here)
+    const { base, editor } = await autosave(docs, id, start, editorDoc);
+    assert.equal(directEdits(base, editor).requests.length, 0, `${name}: nothing left to save`);
+    // A later edit after the table still saves
+    const more = asEditorHasIt([...(editor.content ?? []), para("Typed after")]);
+    const after = await autosave(docs, id, base, more);
+    assert.equal(directEdits(after.base, after.editor).requests.length, 0, `${name}: the later edit is saved too`);
+  }
+});
+
+test("the page keeps Docs' paragraph before a table: at the start, after another table, after a section break; never twice", () => {
+  const cell = (): EditorNode => ({ type: "tableCell", attrs: { colspan: 1, rowspan: 1 }, content: [{ type: "paragraph", attrs: {}, content: [] }] });
+  const table: EditorNode = { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [cell()] }] };
+  const para = (text: string, attrs: Record<string, unknown> = {}): EditorNode => ({ type: "paragraph", attrs, content: text ? [{ type: "text", text }] : [] });
+  const shape = (doc: EditorNode) => (doc.content ?? []).map((n) => (n.type === "table" ? "table" : n.attrs?.locked ? "locked" : `p:${(n.content ?? []).map((c) => c.text ?? "").join("")}`));
+  assert.deepEqual(shape(asEditorHasIt([table, para("x")])), ["p:", "table", "p:x"]);
+  assert.deepEqual(shape(asEditorHasIt([para("a"), table, table, para("")])), ["p:a", "table", "p:", "table", "p:"]);
+  assert.deepEqual(shape(asEditorHasIt([para("a"), table, para("b")])), ["p:a", "table", "p:b"], "a table after text is left as it is");
+  assert.deepEqual(shape(asEditorHasIt([para("a"), para("", { locked: true, kind: "section", sectionType: "NEXT_PAGE" }), table])), ["p:a", "locked", "p:", "table", "p:"], "after a section break");
+  const once = asEditorHasIt([table]);
+  assert.deepEqual(shape(asEditorHasIt(once.content ?? [])), ["p:", "table", "p:"], "and the fix is made once");
 });

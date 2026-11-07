@@ -2,6 +2,8 @@
 
 A utility for **human-cadence text synchronization into Google Docs**. The dashboard is a Google Docs look-alike editor: open one of your Docs, see it exactly as Docs lays it out, edit it (edits save straight to Docs), add text that glows, and start a sync that types the glowing text in at a human pace.
 
+Two more ways to start: **Compare & Sync** brings one document up to date from another (everything the reference has that yours lacks, typed into the exact places, tab by tab), and **Import PDF** rebuilds a PDF on the page so it can be synced into a Doc.
+
 Sign in with any Google account and start syncing. There is no license key or allow-list.
 
 ## Tech Stack
@@ -101,12 +103,14 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── auth/        # OAuth login, callback, logout, me
+│   │   ├── compare/     # load (both documents, every tab) and start (set-up, then one sync across tabs)
 │   │   ├── cron/        # sync-watchdog (daily safety net for lost queue messages)
 │   │   ├── docs/        # List, create, read (content), edit, rename, revision (change polling), pages (Google's page breaks from the PDF export)
 │   │   ├── health/      # Live check of every configured service (signed-in users)
 │   │   ├── images/      # Upload pasted images and serve them so Google Docs can fetch them
+│   │   ├── pdf/         # import: a PDF rebuilt as editor content
 │   │   └── sync/        # start / list / status / pause / resume / cancel / dismiss / source / process
-│   ├── dashboard/       # Authenticated workspace (layout loads fonts, docs.css holds the Docs styles)
+│   ├── dashboard/       # Authenticated workspace (layout loads fonts, docs.css holds the Docs styles); compare/ is Compare & Sync
 │   ├── privacy/, tos/   # Legal pages
 │   └── page.tsx         # Landing page with Google sign-in
 ├── components/
@@ -132,6 +136,7 @@ src/
 │   │   ├── sync-panel.tsx       # Total time, breaks, typos, start time, plan
 │   │   ├── job-panel.tsx        # Status and controls of a running sync
 │   │   └── sync-rail.tsx        # List of syncs
+│   ├── compare/                 # Compare & Sync: document pickers, the two pages, tabs, changes and settings
 │   ├── dashboard/login-screen.tsx  # Landing page
 │   └── ui/                      # Button, particles
 ├── lib/
@@ -141,6 +146,9 @@ src/
 │   ├── doc-import.ts    # Reads an existing Google Doc into the editor (styles, lists, tables, breaks, headers, footnotes, page setup)
 │   ├── doc-tabs.ts      # Document tabs: one tab read where a document without tabs has its content, and every write aimed at it
 │   ├── doc-model.ts     # Compares the editor with the saved doc: direct edits to save, additions to sync
+│   ├── compare.ts, compare-text.ts  # Compare & Sync engine: tab matching, paragraph and word alignment, the merged tabs
+│   ├── compare-server.ts  # Reads both documents, sets up tabs/tables/footnotes, builds the multi-tab sync
+│   ├── pdf-import.ts, pdf-*.ts  # A PDF rebuilt as editor content: structure tree or layout, fonts, lists, tables, images
 │   ├── page-setup.ts    # Paper sizes, margins, orientation; the Docs documentStyle requests
 │   ├── page-text.ts, page-offsets.ts  # Google's page breaks: text per PDF page, matched back to the document
 │   ├── list-labels.ts   # Bullet and numbering glyphs per preset and level
@@ -188,10 +196,13 @@ The dashboard is laid out like Google Docs: a File, Edit, View, Insert and Forma
 - **Not supported.** Comments cannot be added, because the Google Docs API has no way to create a comment anchored to text.
 
 - **Total time.** Auto types at a natural pace (roughly 35 words per minute plus pauses). A target duration is met exactly: a longer target inserts away-time between paragraphs, a shorter one drops automatic breaks and types faster, down to a realistic floor.
-- **Breaks.** Auto picks a few based on text length, None disables them, Custom lets you choose up to eight from 5 minutes to 3 hours. They run in order, spread through the text at paragraph or sentence ends.
+- **Breaks.** Automatic picks a few based on text length, None turns them off, and Manual puts each break exactly where you want it: type a length (33m, 1h 5m), press Place on page, and click a word of the new text; the break starts right after it. Manual types at a natural pace plus your breaks. While a sync runs, the breaks show on its live page, and the ones still ahead can be added, changed or removed, and the break it is on ended or lengthened.
 - **Typos.** From rare to frequent. Each typo types a plausible slip, waits briefly, deletes it and types the correct words.
 - **Start.** Now, or in 5 minutes to 12 hours. Scheduled syncs run on the server.
 - **Several at once.** Start as many syncs as you like, each to its own document. The list on the left lets you switch between them.
+
+- **Compare & Sync.** Pick your document and a reference (recent documents, search, a pasted link, or a new blank document). SyncStream finds everything the reference has that yours doesn't, in every tab, and shows your document as it will be beside the reference: what will be typed glows on yours and is highlighted on the reference. Tabs are matched by title, then content; a blank Tab 1 takes the reference's title; missing tabs are made, nested as they are there; tabs only you have are kept. Words, sentences, paragraphs, list items, tables (whole, rows, cell text), images, page breaks and footnotes go exactly where the reference has them, in its formatting. Nothing of yours is deleted, moved or restyled: text you have elsewhere, words spelled a little differently, formatting and spacing differences are left as they are and listed. Each change can be left out, each reference tab sent elsewhere, and breaks placed like anywhere else. The sync types it all top to bottom, tab by tab; what can't be typed (tabs, table structure, footnotes, headers) is set up when it starts. If either document changes before you start, the comparison is shown again.
+- **Import PDF.** Under the sync settings (offered up front on an empty page, such as a new Google Doc, and in a line once the page has text), or File > Import PDF, rebuilds a PDF on the page: paragraphs, headings, nested lists, tables, images, links, fonts, sizes, colours, spacing, page size and margins. It then glows like any new text: edit it, place breaks, and sync it. On a document that already has content, you choose: a new Google Doc for the PDF (recommended), add it after what's there, or replace what's there. Tagged PDFs (Google Docs' own) come back exactly; others are rebuilt from their layout. Scanned PDFs have no text to import.
 
 ## Operations
 
@@ -229,7 +240,9 @@ Budgets are per minute, keyed by the signed-in user (a hashed id) or, before sig
 | `POST /api/docs/create` | user | 20 | |
 | `POST /api/docs/rename` | user | 30 | |
 | `POST /api/images` | user | 30 | Uploads into Redis |
-| `POST /api/sync/start` | user | 10 | Plans a job and publishes to QStash |
+| `POST /api/sync/start`, `POST /api/compare/start` | user | 10 | Plans a job and publishes to QStash |
+| `GET /api/compare/load` | user | 30 | Reads two whole documents |
+| `POST /api/pdf/import` | user | 10 | Rebuilds a PDF (up to 4 MB) |
 | `GET /api/sync/list`, `GET /api/sync/status`, `GET /api/sync/source` | user | 240 | Polled while a sync runs |
 | `POST /api/sync/pause`, `resume`, `cancel`, `dismiss` | user | 60 | |
 | `GET /api/health` | IP | 30 | |

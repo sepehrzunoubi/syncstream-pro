@@ -33,7 +33,12 @@ const nextConfig = {
   // self-hosted Docker image.
   images: { unoptimized: true },
   // A native module (images re-hosted or read from PDFs on the server): loaded at run time, never bundled
-  serverExternalPackages: ["@napi-rs/canvas"],
+  serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
+  // pdf.js reads these by paths worked out at run time, which the build's tracing can't follow:
+  // its standard fonts (a PDF that only names Helvetica still measures right) and character maps
+  outputFileTracingIncludes: {
+    "/api/pdf/import": ["./node_modules/pdfjs-dist/standard_fonts/**/*", "./node_modules/pdfjs-dist/cmaps/**/*"],
+  },
 };
 
 export default nextConfig;
