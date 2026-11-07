@@ -458,6 +458,25 @@ test("too much to store in one sync: refused with a clear message before anythin
   assert.equal(plain(many, many.all()[99].id), "Words");
 });
 
+test("new tabs go where the reference has them: between, before and under the tabs you have", async () => {
+  const left = stub("left-doc-0000310", "Mine", [
+    { id: "t.a", title: "Intro", text: "Hello there, this is the start." },
+    { id: "t.c", title: "Ending", text: "Goodbye, this is the end." },
+  ]);
+  stub("right-doc-000310", "Ref", [
+    { id: "r.p", title: "Preface", text: "A word before we begin." },
+    { id: "r.a", title: "Intro", text: "Hello there, this is the start.", children: [{ id: "r.n", title: "Notes", text: "A note on the start." }] },
+    { id: "r.b", title: "Middle", text: "Here is the middle part." },
+    { id: "r.c", title: "Ending", text: "Goodbye, this is the end." },
+  ]);
+  await start("left-doc-0000310", "right-doc-000310");
+  assert.deepEqual(left.roots.map((t) => t.title), ["Preface", "Intro", "Middle", "Ending"]);
+  assert.deepEqual(left.roots[1].children.map((t) => t.title), ["Notes"]);
+  assert.equal(plain(left, left.roots[2].id), "Here is the middle part.");
+  assert.equal(plain(left, left.roots[1].children[0].id), "A note on the start.");
+  assert.equal(plain(left, "t.a"), "Hello there, this is the start.");
+});
+
 test("a 50-page copy fits in one sync: its plan and the live page's context are each under Redis's 1 MB", async () => {
   const words = "the quick brown fox jumps over a lazy dog while seven happy writers draft long essays about history".split(" ");
   const lines: string[] = [];

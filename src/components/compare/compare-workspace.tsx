@@ -387,12 +387,15 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
 
   // ── Start ──
   const [startError, setStartError] = useState<string | null>(null);
-  useEffect(() => { setStartError(null); }, [pair]);
+  /** The sync already typing into LEFT, when that is why it didn't start */
+  const [busyJob, setBusyJob] = useState<string | null>(null);
+  useEffect(() => { setStartError(null); setBusyJob(null); }, [pair]);
   const blocked = !data ? "Pick both documents first" : !data.canEdit ? "You can only view your document, so it can't be changed" : busy ? "Reading the documents" : null;
   const start = useCallback(async () => {
     if (!data || !applied || starting || blocked) return;
     setStarting(true);
     setStartError(null);
+    setBusyJob(null);
     setNotice(null);
     try {
       const manualMode = settings.breaksMode === "manual";
@@ -413,7 +416,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
         startInMinutes: settings.startInMinutes,
         seed,
       };
-      const { ok, status, data: res } = await postJson<{ job: PublicJob; code?: string }>("/api/compare/start", body);
+      const { ok, status, data: res } = await postJson<{ job: PublicJob; code?: string; jobId?: string; droppedImages?: number }>("/api/compare/start", body);
       if (status === 401) { setScopeError(true); throw new Error("Your Google sign-in expired. Choose Reconnect Google account in the account menu."); }
       if (status === 409 && res.code === "changed") {
         // Read both again; the tab choices, left-out changes and breaks carry over (they go by the reference)
@@ -423,8 +426,12 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
         if (!wide) setSnack(CHANGED);
         return;
       }
+      if (status === 409 && res.code === "busy" && typeof res.jobId === "string") setBusyJob(res.jobId);
       if (!ok || !res.job) throw new Error(res.error || `Couldn't start the sync (HTTP ${status})`);
-      writeFocusHandoff(data.left.documentId, res.job.id);
+      const dropped = typeof res.droppedImages === "number" && res.droppedImages > 0 ? res.droppedImages : 0;
+      writeFocusHandoff(data.left.documentId, res.job.id, dropped
+        ? `${dropped === 1 ? "1 image" : `${dropped} images`} from the reference couldn't be copied, so the sync leaves ${dropped === 1 ? "it" : "them"} out`
+        : undefined);
       // The changes now belong to the sync; the editor opens on it
       setSession((s) => ({ ...s, skip: [], breaks: [], settings: { ...s.settings, startInMinutes: 0 } }));
       router.push("/dashboard");
@@ -625,6 +632,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
       starting={starting}
       blocked={blocked}
       startError={startError}
+      onOpenBusy={busyJob && data ? () => { writeFocusHandoff(data.left.documentId, busyJob); router.push("/dashboard"); } : undefined}
       notice={panelNotice}
     />
   ) : (

@@ -79,6 +79,8 @@ interface ComparePanelProps {
   /** Why Start can't run now, when it can't */
   blocked: string | null;
   startError: string | null;
+  /** Opens the sync already typing into your document, when that is why it didn't start */
+  onOpenBusy?: () => void;
   notice: React.ReactNode;
 }
 
@@ -419,6 +421,9 @@ function StartCard(p: ComparePanelProps & { nothing: boolean }) {
           {p.startError && (
             <motion.p key="err" role="alert" className="mt-3 overflow-hidden rounded-lg bg-[#fce8e6] px-3 py-2 text-[13px] leading-5 text-[#8c1d18]" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.18, ease }}>
               {p.startError}
+              {p.onOpenBusy && (
+                <button type="button" className="ml-1 font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={p.onOpenBusy}>Open that sync</button>
+              )}
             </motion.p>
           )}
         </AnimatePresence>

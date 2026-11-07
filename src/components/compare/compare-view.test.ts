@@ -133,6 +133,10 @@ test("the editor takes a sync handoff only while it is fresh", () => {
   assert.equal(readFocusHandoff(raw(now + 60_000), now), null);
   assert.equal(readFocusHandoff("garbage", now), null);
   assert.equal(readFocusHandoff(null, now), null);
+  const noted = (note: unknown) => JSON.stringify({ documentId: "D", jobId: "J", at: now, note });
+  assert.equal(readFocusHandoff(noted("1 image couldn't be copied"), now)?.note, "1 image couldn't be copied");
+  assert.equal(readFocusHandoff(noted(42), now)?.note, undefined, "only text is said");
+  assert.equal(readFocusHandoff(noted("x".repeat(301)), now)?.note, undefined);
 });
 
 test("a change reads as what it adds: paragraphs a line each, a table by its shape, a footnote by its words", () => {

@@ -264,13 +264,38 @@ export async function prepareCompare(g: CompareGoogle, input: {
     if (t?.kind === "tab") return t.leftTabId;
     return created.get(rightTabId) ?? null;
   };
+  // LEFT's tabs under each parent, in order, kept up to date as tabs are made
+  const children = new Map<string | null, string[]>();
+  for (const t of sides.left.tabs) children.set(t.parentId, [...(children.get(t.parentId) ?? []), t.id]);
+  const rightTabs = sides.right.tabs;
+  /** Where among LEFT's tabs under `parentTabId` a new tab goes: after the tab its nearest earlier
+   *  sibling in the reference went into, else before the one its nearest later sibling went into */
+  const placeOf = (rightTabId: string, parentTabId: string | null): number | undefined => {
+    const here = rightTabs.find((x) => x.id === rightTabId);
+    const under = children.get(parentTabId) ?? [];
+    const siblings = rightTabs.filter((x) => x.parentId === (here?.parentId ?? null));
+    const at = siblings.findIndex((x) => x.id === rightTabId);
+    for (let i = at - 1; i >= 0; i--) {
+      const k = under.indexOf(targetOf(siblings[i].id) ?? "");
+      if (k >= 0) return k + 1;
+    }
+    for (let i = at + 1; i < siblings.length; i++) {
+      const k = under.indexOf(targetOf(siblings[i].id) ?? "");
+      if (k >= 0) return k;
+    }
+    return undefined;
+  };
   for (const t of work) {
     if (t.target.kind === "new") {
       const parentTabId = targetOf(t.target.parentRightTabId);
+      const index = placeOf(t.rightTabId, parentTabId);
       latest = null;
       setUp = true;
-      const id = await g.createTab(input.leftId, { title: t.target.title, ...(parentTabId ? { parentTabId } : {}), ...(t.target.emoji ? { iconEmoji: t.target.emoji } : {}) });
+      const id = await g.createTab(input.leftId, { title: t.target.title, ...(parentTabId ? { parentTabId } : {}), ...(index != null ? { index } : {}), ...(t.target.emoji ? { iconEmoji: t.target.emoji } : {}) });
       created.set(t.rightTabId, id);
+      const under = [...(children.get(parentTabId) ?? [])];
+      under.splice(index ?? under.length, 0, id);
+      children.set(parentTabId, under);
     } else if (t.target.kind === "tab" && t.target.rename) {
       latest = null;
       setUp = true;

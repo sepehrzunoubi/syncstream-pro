@@ -79,8 +79,9 @@ export const POST = withRoute(async (req: NextRequest) => {
   const store = getStore();
   const ids = await store.listUserJobIds(user.userId).catch(() => [] as string[]);
   const mine = await Promise.all(ids.map((id) => store.getJob(id).catch(() => null)));
-  if (mine.some((j) => j && j.documentId === leftId && !isTerminal(j.status))) {
-    return NextResponse.json({ error: "A sync is already typing into your document. Wait for it to finish, or cancel it, first.", code: "busy" }, { status: 409 });
+  const typing = mine.find((j) => j && j.documentId === leftId && !isTerminal(j.status));
+  if (typing) {
+    return NextResponse.json({ error: "A sync is already typing into your document. Wait for it to finish, or cancel it, first.", code: "busy", jobId: typing.id }, { status: 409 });
   }
 
   try {

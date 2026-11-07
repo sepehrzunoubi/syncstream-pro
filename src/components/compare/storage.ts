@@ -97,11 +97,17 @@ export function saveSession(s: CompareSession) {
   try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch { /* storage full or blocked */ }
 }
 
-export interface FocusHandoff { documentId: string; jobId: string; at: number }
+export interface FocusHandoff {
+  documentId: string;
+  jobId: string;
+  at: number;
+  /** What the editor tells the user as it opens (something the sync leaves out) */
+  note?: string;
+}
 
 /** Compare & Sync started a sync: the editor opens on its live view */
-export function writeFocusHandoff(documentId: string, jobId: string) {
-  try { localStorage.setItem(FOCUS_KEY, JSON.stringify({ documentId, jobId, at: Date.now() } satisfies FocusHandoff)); } catch { /* storage blocked */ }
+export function writeFocusHandoff(documentId: string, jobId: string, note?: string) {
+  try { localStorage.setItem(FOCUS_KEY, JSON.stringify({ documentId, jobId, at: Date.now(), ...(note ? { note } : {}) } satisfies FocusHandoff)); } catch { /* storage blocked */ }
 }
 
 /** A fresh handoff, read once: it is removed whatever it holds */
@@ -109,7 +115,8 @@ export function readFocusHandoff(raw: string | null, now: number): FocusHandoff 
   try {
     const v = raw ? (JSON.parse(raw) as Partial<FocusHandoff>) : null;
     if (!v || !str(v.documentId, 200) || !str(v.jobId, 200) || typeof v.at !== "number") return null;
-    return now - v.at >= 0 && now - v.at <= FOCUS_MAX_AGE_MS ? { documentId: v.documentId, jobId: v.jobId, at: v.at } : null;
+    if (!(now - v.at >= 0 && now - v.at <= FOCUS_MAX_AGE_MS)) return null;
+    return { documentId: v.documentId, jobId: v.jobId, at: v.at, ...(str(v.note, 300) ? { note: v.note } : {}) };
   } catch { return null; }
 }
 
