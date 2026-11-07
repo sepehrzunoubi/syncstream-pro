@@ -500,6 +500,26 @@ function regionsOf(base: Tok[], target: Tok[], match: number[]): Region[] {
  * type" rather than "type at the start of the next one", which keeps the
  * next paragraph's style out of the addition.
  */
+/** A list paragraph's list and level, for telling which neighbour new list items belong with */
+const listKey = (attrs: Record<string, unknown> | undefined): string | null => (attrs?.list ? `${String(attrs.list)}:${Number(attrs.level ?? 0)}` : null);
+
+/** Whether new paragraphs `r` start with a list item at the level of the paragraph after them, and not of the one before */
+function joinsNext(base: Tok[], target: Tok[], r: Region): boolean {
+  let firstNl: Tok | undefined;
+  for (let q = r.ts; q < r.te && !firstNl; q++) if (target[q].k === "nl") firstNl = target[q];
+  const key = firstNl?.k === "nl" ? listKey(firstNl.attrs) : null;
+  if (!key) return false;
+  const before = base[r.bs - 1];
+  if (before?.k === "nl" && listKey(before.attrs) === key) return false;
+  // The paragraph after: text, not a table or a locked block
+  for (let q = r.bs; q < base.length; q++) {
+    const t = base[q];
+    if (t.k === "st" || t.k === "block") return false;
+    if (t.k === "nl") return listKey(t.attrs) === key;
+  }
+  return false;
+}
+
 function rotate(base: Tok[], target: Tok[], match: number[]): void {
   for (const r of regionsOf(base, target, match)) {
     if (r.be !== r.bs || r.te === r.ts || r.ts === 0 || r.bs === 0) continue;
@@ -507,6 +527,10 @@ function rotate(base: Tok[], target: Tok[], match: number[]): void {
     const before = target[r.ts - 1];
     if (last.k !== "nl" || before.k !== "nl") continue;
     if (match[r.ts - 1] !== r.bs - 1 || base[r.bs - 1].k !== "nl") continue;
+    // New list items typed after an item of another level would land at the wrong level (Docs puts a
+    // lone new bullet at level 0, with the indent only faked). Typed at the start of the next item,
+    // when that one is at their level, they take its bullet and level, as Enter there would give them
+    if (r.pending && joinsNext(base, target, r)) continue;
     if (!r.pending) {
       // A direct edit only when both paragraphs are styled alike: otherwise the style of the wrong one would be sent
       if (JSON.stringify(paragraphFromAttrs(last.attrs)) !== JSON.stringify(paragraphFromAttrs(before.attrs))) continue;

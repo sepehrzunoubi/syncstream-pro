@@ -135,6 +135,23 @@ test("missing paragraphs in the middle and at the end, a heading among them", as
   assert.equal(r.sync.segments, 2);
 });
 
+test("a missing first sub-item takes its level: typed in front of the next item at that level", async () => {
+  // Levels from leading tabs, as Docs reads them when the bullets are made
+  const left = "Fruit\n\tCherry\n\tPlum\nVegetables";
+  const right = "Fruit\n\tApple\n\tCherry\n\tPlum\nVegetables";
+  const r = await compareAndSync([ins(left), bullets(1, left.length + 1)], [ins(right), bullets(1, right.length + 1)]);
+  assertSameAsReference(r);
+  const levels = (importDoc(r.out).nodes).map((n) => [((n.content ?? [])[0]?.text ?? ""), n.attrs?.level ?? null]);
+  assert.deepEqual(levels, [["Fruit", 0], ["Apple", 1], ["Cherry", 1], ["Plum", 1], ["Vegetables", 0]]);
+});
+
+test("a missing last sub-item, after one at its level, joins the list there", async () => {
+  const left = "Fruit\n\tApple\nVegetables";
+  const right = "Fruit\n\tApple\n\tCherry\nVegetables";
+  const r = await compareAndSync([ins(left), bullets(1, left.length + 1)], [ins(right), bullets(1, right.length + 1)]);
+  assertSameAsReference(r);
+});
+
 test("missing list items join LEFT's list", async () => {
   const r = await compareAndSync(
     [ins("Shopping:\nApples\nCheese\nThat's all."), bullets(11, 25)],
