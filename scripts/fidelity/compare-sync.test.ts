@@ -233,3 +233,37 @@ test("a large blank-document copy stays exact (past the old diff limit)", async 
   assertSameAsReference(r);
   assert.deepEqual(r.saved, [], "nothing of LEFT saved over");
 });
+
+test("missing list items with a highlight and a link, and a missing sub-item, typed as the reference has them", async () => {
+  const hl = { backgroundColor: { color: { rgbColor: { red: 0.96, green: 0.8, blue: 0.8 } } } };
+  // Leading tabs nest an item when its bullets are made
+  const right = "Head\nAlpha item\n\tAlpha one\n\tAlpha two\n\tAlpha three\nBravo item\nCharlie item\nAfter";
+  const left = "Head\nAlpha item\n\tAlpha one\n\tAlpha three\nCharlie item\nAfter";
+  // "Bravo item" once the bullets have taken the three tabs before it
+  const bravo = right.indexOf("Bravo") + 1 - 3;
+  const r = await compareAndSync(
+    [ins(left), bullets(6, left.length - 5)],
+    [ins(right), bullets(6, right.length - 5), styled(bravo, bravo + 5, hl, "backgroundColor"), styled(bravo + 6, bravo + 10, { link: { url: "https://b.example" } }, "link")],
+  );
+  assertSameAsReference(r);
+  const item = importDoc(r.out).nodes.find((n) => n.content?.[0]?.text?.startsWith("Bravo"))!;
+  assert.deepEqual(item.content!.map((c) => [c.text, c.marks?.some((m) => m.type === "highlight") ?? false, c.marks?.some((m) => m.type === "link") ?? false]), [["Bravo", true, false], [" ", false, false], ["item", false, true]]);
+});
+
+test("Chinese and Japanese text: the missing characters are typed in place, without spaces", async () => {
+  const r = await compareAndSync([ins("日本語のテキストです。\n这是一个句子。")], [ins("日本語の長いテキストです。\n这是一个很长的句子。")]);
+  assertSameAsReference(r);
+  assert.equal(r.sync.segments, 2);
+});
+
+// Needs doc-model's directEdits to leave a paragraph's style to the addition when the paragraph is an
+// empty line the addition brings (see paragraphHasPending): today the start restyles LEFT's heading
+// (or takes its bullet away) until the sync has typed past it
+test("a heading whose section LEFT lacks keeps its style while the section is typed", async () => {
+  const r = await compareAndSync(
+    [ins("Heading A\nHeading B\nBody B."), named(1, 10, "HEADING_1"), named(11, 20, "HEADING_1")],
+    [ins("Heading A\nIntro text here.\nMore.\n\nHeading B\nBody B."), named(1, 10, "HEADING_1"), named(35, 44, "HEADING_1")],
+  );
+  assert.deepEqual(r.saved, [], "nothing of LEFT is set before the sync types");
+  assertSameAsReference(r);
+});

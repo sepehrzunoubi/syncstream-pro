@@ -24,10 +24,19 @@ export function normalize(s: string): string {
 }
 
 const WORD_CHAR = /[\p{L}\p{N}\p{M}_]/u;
+/**
+ * Scripts written without spaces between words (Chinese, Japanese, Thai and their neighbours): each
+ * character is a word of its own, so a missing character or two is found, and nothing is spaced
+ */
+const UNSPACED = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Thai}\p{sc=Lao}\p{sc=Khmer}\p{sc=Myanmar}]/u;
 export const isWordChar = (ch: string | undefined) => !!ch && WORD_CHAR.test(ch);
+/** A letter or digit of a script that puts spaces between its words */
+export const isSpacedWordChar = (ch: string | undefined) => isWordChar(ch) && !UNSPACED.test(ch!);
 export const isSpaceChar = (ch: string | undefined) => !!ch && /[\s\u00A0]/.test(ch);
 
-const WORDS = /[\p{L}\p{N}\p{M}_]+(?:['\u2019][\p{L}\p{N}\p{M}_]+)*/gu;
+const SOLO = String.raw`[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Thai}\p{sc=Lao}\p{sc=Khmer}\p{sc=Myanmar}]\p{M}*`;
+const LETTER = String.raw`(?:(?!${SOLO})[\p{L}\p{N}\p{M}_])`;
+const WORDS = new RegExp(String.raw`${SOLO}|${LETTER}+(?:['\u2019]${LETTER}+)*`, "gu");
 
 /** The words of a text, normalized */
 export function wordsOf(text: string): string[] {
@@ -50,9 +59,10 @@ export interface Unit {
   norm: string;
 }
 
-// A word (with the invisible characters inside it, and apostrophes between its letters), a run of
-// spaces, invisible characters on their own, or any other single character
-const UNIT = /[\p{L}\p{N}\p{M}_](?:[\p{L}\p{N}\p{M}_\u00AD\u200B-\u200D\u2060\uFEFF]|['\u2019](?=[\p{L}\p{N}\p{M}_]))*|[\s\u00A0]+|[\u00AD\u200B-\u200D\u2060\uFEFF]+|[^]/gu;
+// A character of a script without spaces, a word (with the invisible characters inside it, and
+// apostrophes between its letters), a run of spaces, invisible characters on their own, or any other
+// single character
+const UNIT = new RegExp(String.raw`${SOLO}|${LETTER}(?:${LETTER}|[\u00AD\u200B-\u200D\u2060\uFEFF]|['\u2019](?=${LETTER}))*|[\s\u00A0]+|[\u00AD\u200B-\u200D\u2060\uFEFF]+|[^]`, "gu");
 
 /** The units of a stretch of text that starts at content token `offset` */
 export function textUnits(text: string, offset: number): Unit[] {
@@ -60,8 +70,11 @@ export function textUnits(text: string, offset: number): Unit[] {
   for (const m of text.matchAll(UNIT)) {
     const raw = m[0];
     const from = offset + (m.index ?? 0);
-    const kind: UnitKind = WORD_CHAR.test(raw[0]) ? "w" : /^[\s\u00A0]/.test(raw) ? "s" : IS_INVISIBLE.test(raw) ? "z" : "p";
-    out.push({ kind, from, to: from + raw.length, raw, norm: kind === "s" ? " " : kind === "z" ? "" : normalize(raw) });
+    const first = String.fromCodePoint(raw.codePointAt(0)!);
+    const kind: UnitKind = WORD_CHAR.test(first) ? "w" : /^[\s\u00A0]/.test(raw) ? "s" : IS_INVISIBLE.test(raw) ? "z" : "p";
+    // (Plain ASCII needs only its case and backquote folded: most words, and much faster)
+    const norm = kind === "s" ? " " : kind === "z" ? "" : /^[\x21-\x7e]+$/.test(raw) ? raw.toLowerCase().replace(/`/g, "'") : normalize(raw);
+    out.push({ kind, from, to: from + raw.length, raw, norm });
   }
   return out;
 }
@@ -113,7 +126,7 @@ function editDistance(a: string, b: string, max: number): number {
  * A longest common subsequence of two sequences under `eq`, as index pairs in order (Myers' diff
  * after trimming the common start and end). Past `maxEdits` the middle is left unmatched.
  */
-export function lcsPairs(n: number, m: number, eq: (i: number, j: number) => boolean, maxEdits = 1500): [number, number][] {
+export function lcsPairs(n: number, m: number, eq: (i: number, j: number) => boolean, maxEdits = 1500, giveUp?: (from: number, n: number, m: number) => [number, number][]): [number, number][] {
   let pre = 0;
   while (pre < n && pre < m && eq(pre, pre)) pre++;
   let suf = 0;
@@ -156,43 +169,114 @@ export function lcsPairs(n: number, m: number, eq: (i: number, j: number) => boo
       }
       while (x > 0 && y > 0) { x--; y--; middle.push([pre + x, pre + y]); }
       out.push(...middle.reverse());
-    }
+    } else if (giveUp) out.push(...giveUp(pre, N, M));
   }
   for (let k = suf; k > 0; k--) out.push([n - k, m - k]);
   return out;
 }
 
 /**
- * Pairs of equal keys of two sequences, in order (null keys never pair): keys found once on each
- * side anchor first (patience), what's between them is matched the same way, and stretches with
- * no such key by a longest common subsequence when they are small enough.
+ * A longest common subsequence of two sequences of ids, however different they are: Myers' diff, then
+ * Hirschberg's (which needs room for one row only) where they differ too much for Myers' to follow.
+ * Past `maxCells` pairs to weigh, the middle is left unmatched.
  */
-export function anchorPairs(a: (string | null)[], b: (string | null)[]): [number, number][] {
+export function lcsAll(a: Int32Array, b: Int32Array, maxCells = 40_000_000): [number, number][] {
+  return lcsPairs(a.length, b.length, (i, j) => a[i] === b[j], 1500, (from, n, m) => (n * m <= maxCells ? hirschberg(a.subarray(from, from + n), b.subarray(from, from + m), from) : []));
+}
+
+/** Hirschberg's longest common subsequence of `a` and `b`, as pairs shifted by `shift` */
+function hirschberg(a: Int32Array, b: Int32Array, shift: number): [number, number][] {
   const out: [number, number][] = [];
-  const run = (alo: number, ahi: number, blo: number, bhi: number) => {
-    while (alo < ahi && blo < bhi && a[alo] != null && a[alo] === b[blo]) out.push([alo++, blo++]);
+  const fwd = new Int32Array(b.length + 1);
+  const bwd = new Int32Array(b.length + 1);
+  const run = (a0: number, a1: number, b0: number, b1: number) => {
+    while (a0 < a1 && b0 < b1 && a[a0] === b[b0]) out.push([shift + a0++, shift + b0++]);
     const tail: [number, number][] = [];
-    while (ahi > alo && bhi > blo && a[ahi - 1] != null && a[ahi - 1] === b[bhi - 1]) tail.push([--ahi, --bhi]);
-    if (alo < ahi && blo < bhi) {
-      const count = new Map<string, { a: number; b: number; ai: number; bi: number }>();
-      for (let i = alo; i < ahi; i++) { const k = a[i]; if (k == null) continue; const c = count.get(k) ?? { a: 0, b: 0, ai: i, bi: -1 }; c.a++; count.set(k, c); }
-      for (let j = blo; j < bhi; j++) { const k = b[j]; if (k == null) continue; const c = count.get(k); if (c) { c.b++; c.bi = j; } }
-      const unique: [number, number][] = [];
-      for (const c of count.values()) if (c.a === 1 && c.b === 1) unique.push([c.ai, c.bi]);
-      unique.sort((x, y) => x[0] - y[0]);
-      const anchors = increasing(unique);
-      if (anchors.length) {
-        let pa = alo;
-        let pb = blo;
-        for (const [i, j] of anchors) { run(pa, i, pb, j); out.push([i, j]); pa = i + 1; pb = j + 1; }
-        run(pa, ahi, pb, bhi);
-      } else if ((ahi - alo) * (bhi - blo) <= 250_000) {
-        for (const [i, j] of lcsPairs(ahi - alo, bhi - blo, (i, j) => a[alo + i] != null && a[alo + i] === b[blo + j], 1000)) out.push([alo + i, blo + j]);
+    while (a1 > a0 && b1 > b0 && a[a1 - 1] === b[b1 - 1]) tail.push([shift + --a1, shift + --b1]);
+    if (a1 - a0 === 1) { for (let j = b0; j < b1; j++) if (a[a0] === b[j]) { out.push([shift + a0, shift + j]); break; } }
+    else if (a1 > a0 && b1 > b0) {
+      const mid = (a0 + a1) >> 1;
+      const w = b1 - b0;
+      // How much of each start of b's stretch the first half has, and of each end of it the second half
+      fwd.fill(0, 0, w + 1);
+      for (let i = a0; i < mid; i++) {
+        const x = a[i];
+        let diag = 0;
+        for (let j = 1; j <= w; j++) { const up = fwd[j]; fwd[j] = x === b[b0 + j - 1] ? diag + 1 : up > fwd[j - 1] ? up : fwd[j - 1]; diag = up; }
       }
+      bwd.fill(0, 0, w + 1);
+      for (let i = a1 - 1; i >= mid; i--) {
+        const x = a[i];
+        let diag = 0;
+        for (let j = 1; j <= w; j++) { const up = bwd[j]; bwd[j] = x === b[b1 - j] ? diag + 1 : up > bwd[j - 1] ? up : bwd[j - 1]; diag = up; }
+      }
+      let cut = 0;
+      let best = -1;
+      for (let k = 0; k <= w; k++) { const v = fwd[k] + bwd[w - k]; if (v > best) { best = v; cut = k; } }
+      run(a0, mid, b0, b0 + cut);
+      run(mid, a1, b0 + cut, b1);
     }
     out.push(...tail.reverse());
   };
   run(0, a.length, 0, b.length);
+  return out;
+}
+
+/**
+ * Pairs of equal keys of two sequences, in order (null keys never pair): keys found once on each
+ * side anchor first (patience), what's between them is matched the same way, and stretches with
+ * no such key from their common start, then by a longest common subsequence when they are small
+ * enough. Where a key comes more than once, each takes its earliest partner: an item that follows
+ * another (a list item's sub-item) pairs with the one that follows it there too, not with a later
+ * one that looks the same.
+ */
+export function anchorPairs(a: (string | null)[], b: (string | null)[]): [number, number][] {
+  const out: [number, number][] = [];
+  const run = (alo: number, ahi: number, blo: number, bhi: number) => {
+    if (alo >= ahi || blo >= bhi) return;
+    const count = new Map<string, { a: number; b: number; ai: number; bi: number }>();
+    for (let i = alo; i < ahi; i++) { const k = a[i]; if (k == null) continue; const c = count.get(k) ?? { a: 0, b: 0, ai: i, bi: -1 }; c.a++; count.set(k, c); }
+    for (let j = blo; j < bhi; j++) { const k = b[j]; if (k == null) continue; const c = count.get(k); if (c) { c.b++; c.bi = j; } }
+    const unique: [number, number][] = [];
+    for (const c of count.values()) if (c.a === 1 && c.b === 1) unique.push([c.ai, c.bi]);
+    unique.sort((x, y) => x[0] - y[0]);
+    const anchors = increasing(unique);
+    if (anchors.length) {
+      let pa = alo;
+      let pb = blo;
+      for (const [i, j] of anchors) { run(pa, i, pb, j); out.push([i, j]); pa = i + 1; pb = j + 1; }
+      run(pa, ahi, pb, bhi);
+      return;
+    }
+    // (Not their common end: with no key found once on each side, that pairs a last item with the
+    // reference's last one of its kind, past the ones that follow what it follows)
+    const from = alo;
+    while (alo < ahi && blo < bhi && a[alo] != null && a[alo] === b[blo]) out.push([alo++, blo++]);
+    if (alo > from) run(alo, ahi, blo, bhi);
+    else if ((ahi - alo) * (bhi - blo) <= 250_000) for (const [i, j] of earliestLcs(ahi - alo, bhi - blo, (i, j) => a[alo + i] != null && a[alo + i] === b[blo + j])) out.push([alo + i, blo + j]);
+  };
+  run(0, a.length, 0, b.length);
+  return out;
+}
+
+/** A longest common subsequence whose pairs each take the earliest partner they can */
+function earliestLcs(n: number, m: number, eq: (i: number, j: number) => boolean): [number, number][] {
+  const W = m + 1;
+  // How much of what's left of both can still pair, from each place on
+  const rest = new Int32Array((n + 1) * W);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) rest[i * W + j] = eq(i, j) ? rest[(i + 1) * W + j + 1] + 1 : Math.max(rest[(i + 1) * W + j], rest[i * W + j + 1]);
+  }
+  const out: [number, number][] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    const here = rest[i * W + j];
+    if (!here) break;
+    if (eq(i, j) && rest[(i + 1) * W + j + 1] + 1 === here) out.push([i++, j++]);
+    else if (rest[i * W + j + 1] === here) j++;
+    else i++;
+  }
   return out;
 }
 

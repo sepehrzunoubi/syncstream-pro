@@ -530,11 +530,15 @@ export function diff(base: Tok[], target: Tok[], forTyping = true, firstIndex = 
   return { match, regions, index };
 }
 
-/** Whether target paragraph ending at nl token j has additions in it */
-function paragraphHasPending(target: Tok[], j: number): boolean {
+/**
+ * Whether target paragraph ending at nl token j has additions in it, or starts at a paragraph break an
+ * addition brings (an empty line typed with it): either way its style waits for the addition
+ */
+function paragraphHasPending(target: Tok[], j: number, added?: Uint8Array): boolean {
   for (let q = j - 1; q >= 0; q--) {
     const t = target[q];
-    if (t.k === "nl" || t.k === "block" || t.k === "st") return false;
+    if (t.k === "nl") return !!added?.[q];
+    if (t.k === "block" || t.k === "st") return false;
     if (isPending(t)) return true;
   }
   return false;
@@ -904,6 +908,8 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
   const prevNl = (tokens: Tok[], from: number) => { for (let q = from; q >= 0; q--) { const t = tokens[q]; if (t.k === "nl") return t; } return undefined; };
   const regionAt = new Map<number, Region>();
   for (const r of regions) regionAt.set(r.ts, r);
+  const added = new Uint8Array(target.length);
+  for (const r of regions) if (r.pending) added.fill(1, r.ts, r.te);
   for (let j = 0; j < target.length; j++) {
     const r = regionAt.get(j);
     if (r && r.te > r.ts) {
@@ -942,7 +948,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     const t = target[j];
     if (t.k === "nl") {
       const docsNl = base[keptNl.get(i) ?? i] as Extract<Tok, { k: "nl" }>;
-      saved.push(paragraphHasPending(target, j) ? docsNl : stripPending(t));
+      saved.push(paragraphHasPending(target, j, added) ? docsNl : stripPending(t));
       docsAttrs.set(saved.length - 1, docsNl.attrs);
     } else saved.push(stripPending(t));
   }

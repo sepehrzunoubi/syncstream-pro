@@ -101,7 +101,7 @@ function gdoc(blocks: B[], extra: Extra = {}): docs_v1.Schema$Document {
       { namedStyleType: "HEADING_2", textStyle: { fontSize: PT(16) }, paragraphStyle: { spaceAbove: PT(18), spaceBelow: PT(6) } },
     ] },
     lists: {
-      "kix.bullets": { listProperties: { nestingLevels: [{ glyphSymbol: "●", indentFirstLine: PT(18), indentStart: PT(36) }, { glyphSymbol: "○", indentFirstLine: PT(54), indentStart: PT(72) }] } },
+      "kix.bullets": { listProperties: { nestingLevels: Array.from({ length: 9 }, (_, n) => ({ glyphSymbol: ["●", "○", "■"][n % 3], indentFirstLine: PT(18 + 36 * n), indentStart: PT(36 + 36 * n) })) } },
       "kix.numbers": { listProperties: { nestingLevels: [{ glyphType: "DECIMAL", glyphFormat: "%0.", indentFirstLine: PT(18), indentStart: PT(36) }, { glyphType: "ALPHA", glyphFormat: "%1.", indentFirstLine: PT(54), indentStart: PT(72) }] } },
     },
   };
@@ -792,4 +792,189 @@ test("new tabs nest under their parent's tab, no deeper than Docs allows", () =>
 test("invisible characters and a different apostrophe don't make words differ", () => {
   const tab = one(["Zero\u200bwidth and it\u2019s fine."], ["Zerowidth and it's fine."]);
   assert.deepEqual(tab.changes, []);
+});
+
+// ── Hard cases ──────────────────────────────────────────────────────────────
+
+/** A list item with a linked word, as the reference's link lists have them */
+const linked = (text: string, url: string, level = 1): P => ({ p: [{ t: text, s: { link: { url } } }], list: "number", level });
+const hrefs = (doc: EditorNode) => (doc.content ?? []).map((p) => (p.content ?? []).find((c) => c.marks?.some((m) => m.type === "link"))?.marks?.find((m) => m.type === "link")?.attrs?.href ?? null);
+
+test("items that read the same pair with the one under the same item, not the reference's last one", () => {
+  // Each draft has a "Link" item under it, each to its own page; LEFT has drafts 0, 2 and 4
+  const right: B[] = [];
+  for (let i = 0; i < 6; i++) right.push({ p: `Email draft number ${i} to send`, list: "number" }, linked("Link", `https://e.example/${i}`));
+  const tab = one(right.filter((_, i) => Math.floor(i / 2) % 2 === 0), right);
+  checkInvariants(tab, rightDoc(right));
+  assert.equal(textOf(tab.merged), textOf(imp(right).nodes));
+  // Every link sits under its own draft: LEFT's under theirs, the copied ones under theirs
+  assert.deepEqual(hrefs(tab.merged).filter((_, i) => i % 2), [0, 1, 2, 3, 4, 5].map((i) => `https://e.example/${i}`));
+  assert.equal(kept(tab, "formatting"), 0);
+});
+
+test("a sub-item a little different from the reference's pairs with the one under its own item", () => {
+  const right: B[] = [];
+  for (let i = 0; i < 4; i++) right.push({ p: `Vendor number ${i} overview`, list: "bullet" }, { p: [{ t: "See the pricing page now", s: { link: { url: `https://v.example/${i}` } } }], list: "bullet", level: 1 });
+  // LEFT has vendor 2 with its sub-item missing a word
+  const left: B[] = [{ p: "Vendor number 2 overview", list: "bullet" }, { p: [{ t: "See the pricing page", s: { link: { url: "https://v.example/2" } } }], list: "bullet", level: 1 }];
+  const tab = one(left, right);
+  assert.equal(textOf(tab.merged), textOf(imp(right).nodes));
+  // LEFT's sub-item gets the missing word; the next vendor's sub-item is copied with its own link
+  assert.equal(tab.merged.content![5].content![0].text, "See the pricing page");
+  assert.deepEqual(hrefs(tab.merged).filter((_, i) => i % 2), [0, 1, 2, 3].map((i) => `https://v.example/${i}`));
+});
+
+test("a long stretch with no paragraph the same on both sides still pairs, past a long missing part", () => {
+  // Every LEFT paragraph lacks its last word, and 100 paragraphs in the middle are missing: no anchor
+  // anywhere, and too many pairs to weigh them all
+  const right = Array.from({ length: 300 }, (_, i) => `Paragraph ${i} has words like alpha${i} and beta${i % 7} in it, then ends here.`);
+  const left = right.filter((_, i) => i < 100 || i >= 200).map((t) => t.replace(" here.", "."));
+  const tab = one(left, right);
+  assert.equal(textOf(tab.merged), right.join("\n"), "nothing of LEFT is added a second time");
+  assert.equal(kept(tab, "onlyLeft"), 0);
+  assert.equal(tab.changes.filter((c) => c.kind === "text").length, 200);
+});
+
+test("tabs with the same title pair by their text", () => {
+  const right = side("r", [{ id: "x1", title: "Notes", doc: doc(["First notes tab text, about the launch plan."]) }, { id: "x2", title: "Notes", doc: doc(["Second notes tab text, about the budget review."]) }]);
+  // LEFT has the second's text only
+  const one_ = compareDocs(side("l", [{ id: "a", title: "Notes", doc: doc(["Second notes tab text, about the budget review."]) }]), right);
+  assert.deepEqual(one_.tabs.map((t) => t.target.kind === "tab" ? t.target.leftTabId : t.target.kind), ["new", "a"]);
+  assert.equal(one_.totals.words, 8, "only the first tab's text is copied, into a new tab");
+  // Both, in the other order
+  const both = compareDocs(side("l", [{ id: "b", title: "Notes", doc: doc(["Second notes tab text, about the budget review."]) }, { id: "a", title: "notes", doc: doc(["First notes tab text, about the launch plan."]) }]), right);
+  assert.deepEqual(both.tabs.map((t) => t.target), [{ kind: "tab", leftTabId: "a" }, { kind: "tab", leftTabId: "b" }]);
+  assert.equal(both.totals.words, 0);
+});
+
+test("titles that differ only by case, emoji or punctuation are the same title", () => {
+  const right = side("r", [{ id: "x", title: "📌 Sources", doc: doc(["Alpha source line."]) }, { id: "y", title: "CONTACTS:", doc: doc(["Bob at example."]) }]);
+  const res = compareDocs(side("l", [{ id: "a", title: "Sources", doc: doc([]) }, { id: "b", title: "contacts", doc: doc([]) }]), right);
+  assert.deepEqual(res.tabs.map((t) => t.target), [{ kind: "tab", leftTabId: "a" }, { kind: "tab", leftTabId: "b" }]);
+  assert.equal(res.totals.newTabs, 0);
+});
+
+test("a tab goes where its text is, not into the first tab that uses the same words", () => {
+  // Three reference tabs on one subject, all in the same ten words; LEFT has the third's text under another name
+  const para = (seed: number) => {
+    let x = seed;
+    const word = () => ["agents", "payments", "data", "market", "the", "and", "of", "for", "web", "tools"][(x = (x * 1103515245 + 12345) % 2147483648) % 10];
+    return Array.from({ length: 6 }, () => `${Array.from({ length: 12 }, word).join(" ")}.`);
+  };
+  const right = side("r", [{ id: "r1", title: "Main research", doc: doc(para(1)) }, { id: "r2", title: "Payments", doc: doc(para(2)) }, { id: "r3", title: "Web data", doc: doc(para(3)) }]);
+  const res = compareDocs(side("l", [{ id: "a", title: "My notes", doc: doc(para(3).slice(0, 4)) }]), right);
+  assert.deepEqual(res.tabs.map((t) => t.target.kind === "tab" ? t.target.leftTabId : t.target.kind), ["new", "new", "a"]);
+  // A default-named tab with text that isn't any reference tab's stays as it is
+  const other = compareDocs(side("l", [{ id: "t.0", title: "Tab 1", doc: doc(["Something else entirely, typed here."]) }]), right);
+  assert.ok(other.tabs.every((t) => t.target.kind === "new"));
+});
+
+test("Chinese, Japanese and Thai: the missing characters are found, and no spaces are added", () => {
+  for (const [left, right] of [
+    ["日本語のテキストです", "日本語の長いテキストです"],
+    ["这是一个句子", "这是一个很长的句子"],
+    ["สวัสดีครับ", "สวัสดีตอนเช้าครับ"],
+  ]) {
+    const tab = one([left], [right]);
+    checkInvariants(tab, rightDoc([right]));
+    assert.equal(textOf(tab.merged), right, `${left} → ${right}`);
+    assert.deepEqual(kinds(tab), ["text"], "typed into LEFT's paragraph, not added beside it");
+  }
+  // A few characters LEFT has inside a longer sentence aren't text it has elsewhere
+  const short = one(["Intro.", "東京は大きい都市です。"], ["Intro.", "大きい都市", "東京は大きい都市です。"]);
+  assert.equal(textOf(short.merged), "Intro.\n大きい都市\n東京は大きい都市です。");
+});
+
+test("other punctuation or another number where LEFT has its own isn't put beside it", () => {
+  const punct = one(["Hello, world. This is it"], ["Hello world! This is it."]);
+  assert.equal(textOf(punct.merged), "Hello, world. This is it.", "the missing full stop is added, the “!” isn't");
+  assert.equal(kept(punct, "spelling"), 1);
+  for (const [left, right] of [["Due 2024-05-01 for review.", "Due 2024-05-02 for review."], ["Version 1.2 of the plan, for the team.", "Version 1.3 of the plan, for the team."], ["Smith (2020) wrote the review of it.", "Smith [2021] wrote the review of it."]]) {
+    const tab = one([left], [right]);
+    assert.deepEqual(tab.changes, [], left);
+    assert.equal(textOf(tab.merged), left);
+  }
+  // A number LEFT doesn't have is still added
+  assert.equal(textOf(one(["Revenue was million in 2023."], ["Revenue was 12 million in 2023."]).merged), "Revenue was 12 million in 2023.");
+});
+
+test("a change left out keeps LEFT's empty last paragraph it was to go into", () => {
+  const cases: [B[], B[]][] = [
+    [[""], ["Alpha line.", "Beta line."]],
+    [["Alpha line.", ""], ["Alpha line.", "Beta line."]],
+    [[{ table: [["A", ""]] }, ""], [{ table: [["A", "B text"]] }, ""]],
+  ];
+  for (const [left, right] of cases) {
+    const all = one(left, right);
+    const none = one(left, right, { skip: all.changes.map((c) => c.id) });
+    assert.deepEqual(none.merged, none.base, JSON.stringify(left));
+  }
+});
+
+test("a heading between two items of a list reads the same as one that isn't", () => {
+  const right: B[] = [{ p: "Topic one", list: "bullet" }, { p: "Section two", named: "HEADING_1" }, { p: "Topic two", list: "bullet" }];
+  const tab = one([{ p: "Section two", named: "HEADING_1" }, { p: "Topic two", list: "bullet" }], right);
+  assert.equal(kept(tab, "paragraphStyle"), 0);
+  assert.equal(textOf(tab.merged), "Topic one\nSection two\nTopic two");
+});
+
+test("new sub-items go under the item they belong to, before an item only LEFT has", () => {
+  const right: B[] = [{ p: "Market overview", list: "bullet" }, { p: "Size estimate", list: "bullet", level: 1 }, { p: "Growth rate", list: "bullet", level: 2 }, { p: "Competitors", list: "bullet" }];
+  const tab = one([{ p: "Market overview", list: "bullet" }, { p: "My own top note", list: "bullet" }, { p: "Competitors", list: "bullet" }], right);
+  assert.equal(textOf(tab.merged), "Market overview\nSize estimate\nGrowth rate\nMy own top note\nCompetitors");
+  // An empty line between the new sub-items doesn't stop them
+  const spaced = one([{ p: "Market overview", list: "bullet" }, { p: "My own top note", list: "bullet" }, { p: "Competitors", list: "bullet" }], [right[0], right[1], "", right[2], right[3]]);
+  assert.equal(textOf(spaced.merged), "Market overview\nSize estimate\n\nGrowth rate\nMy own top note\nCompetitors");
+  // Under a heading only LEFT has: a section's text stays with its own heading
+  const sections = one(
+    [{ p: "Part A", named: "HEADING_1" }, "A text.", { p: "My part", named: "HEADING_1" }, { p: "Part C", named: "HEADING_1" }],
+    [{ p: "Part A", named: "HEADING_1" }, "A text.", "More A text.", { p: "Part B", named: "HEADING_1" }, "B text.", { p: "Part C", named: "HEADING_1" }],
+  );
+  assert.equal(textOf(sections.merged), "Part A\nA text.\nMore A text.\nMy part\nPart B\nB text.\nPart C");
+});
+
+test("missing nested items at levels 2 to 5, and whole sub-lists, go where the reference has them", () => {
+  const item = (text: string, level: number): P => ({ p: text, list: "bullet", level });
+  const right: B[] = [
+    { p: "Overview of the segment", named: "HEADING_1" },
+    item("Definition", 0), item("Software that helps agents", 1), item("Data processing", 2), item("Crawlers that index sites", 3), item("Structured output", 4), item("Schema for each page", 5), item("Harnesses", 2),
+    item("Market", 0), item("Size", 1), item("Growth", 2), item("Buyers", 1),
+    item("Risks", 0), item("Trust", 1),
+  ];
+  const lvl = (b: B) => (typeof b === "object" && "p" in b ? b.level ?? 0 : -1);
+  for (const left of [right.filter((b) => lvl(b) < 3), right.filter((b) => lvl(b) !== 2 && lvl(b) !== 4), right.filter((_, i) => i < 8 || i === 12), right.filter((b) => lvl(b) <= 0)]) {
+    const tab = one(left, right);
+    checkInvariants(tab, rightDoc(right));
+    assert.equal(textOf(tab.merged), textOf(imp(right).nodes));
+    assert.deepEqual(tab.merged.content!.map((p) => p.attrs?.level ?? null), imp(right).nodes.map((p) => p.attrs?.level ?? null), "each item at its level");
+  }
+});
+
+test("the reference's last paragraph LEFT has elsewhere isn't typed into LEFT's empty last line", () => {
+  const tab = one(["Closing words here today.", "Intro text.", ""], ["Intro text.", "Closing words here today."]);
+  assert.deepEqual(tab.changes, []);
+  assert.equal(kept(tab, "moved"), 1);
+});
+
+test("a very long paragraph with many words missing gets them in place, not a second copy beside it", () => {
+  const vocabulary = ["agents", "pay", "for", "data", "with", "cards", "wallets", "tokens", "and", "rails", "in", "the", "market"];
+  const words = Array.from({ length: 2400 }, (_, i) => `${vocabulary[(i * 7 + (i >> 3)) % vocabulary.length]}${i % 5 ? "" : i % 26}`);
+  const right = `${words.join(" ")}.`;
+  const tab = one([`${words.filter((_, i) => i % 3 !== 1).join(" ")}.`], [right]);
+  assert.equal(textOf(tab.merged), right);
+  assert.ok(tab.changes.every((c) => c.kind === "text"));
+});
+
+test("two sentences that share most of their words aren't merged into one", () => {
+  const swapped = one(["Prices rise for buyers in Europe, and fall for sellers in Asia."], ["Prices fall for buyers in Europe, and rise for sellers in Asia."]);
+  assert.equal(textOf(swapped.merged), "Prices rise for buyers in Europe, and fall for sellers in Asia.\nPrices fall for buyers in Europe, and rise for sellers in Asia.");
+  // A template line under another heading: the reference's line is its own paragraph
+  const template = one(
+    [{ p: "Subsegment two", named: "HEADING_1" }, { p: "Industry subsegment start-up competitors (from the market map)", list: "bullet" }],
+    [{ p: "Subsegment two", named: "HEADING_1" }, { p: "Industry subsegment mature competitors (from the market map)", list: "bullet" }],
+  );
+  assert.deepEqual(kinds(template), ["list"]);
+  assert.ok(!textOf(template.merged).includes("start-up mature"));
+  // One word another is still typed beside LEFT's (as with Monday and Tuesday)
+  assert.deepEqual(kinds(one(["The new model raises prices for small business buyers across all regions this year."], ["The new model lowers prices for small business buyers across all regions this year."])), ["text"]);
 });

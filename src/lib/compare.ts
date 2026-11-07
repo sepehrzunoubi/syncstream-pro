@@ -20,7 +20,8 @@ import {
   countWords,
   hashId,
   isSpaceChar,
-  isWordChar,
+  isSpacedWordChar,
+  lcsAll,
   lcsPairs,
   normalize,
   preview,
@@ -187,13 +188,21 @@ function unitsOf(p: Para): Unit[] {
   return p.units;
 }
 
-/** How a paragraph looks, as a sync would set it (list glyph styles aside) */
+/**
+ * How a paragraph looks, as a sync would set it (list glyph styles aside, and whether it sits between
+ * two items of a list, which is where it is rather than how it looks)
+ */
 const lookOf = (attrs: Record<string, unknown> | undefined) => {
   const f = paragraphFromAttrs(attrs);
   delete f.preset;
   delete f.glyph;
+  delete f.cont;
   return JSON.stringify(f);
 };
+/** How deep a block sits in the outline: a title, then headings by level, text, then list items by level */
+const HEADING_DEPTH: Record<string, number> = { title: 0, subtitle: 1, h1: 1, h2: 2, h3: 3, h4: 4, h5: 5, h6: 6 };
+const depthOf = (b: Block) => (b.t !== "p" ? 10 : b.node.attrs?.list ? 11 + (Number(b.node.attrs.level) || 0) : HEADING_DEPTH[String(b.node.attrs?.styleName ?? "")] ?? 10);
+const isBlank = (b: Block) => b.t === "p" && b.key == null && !b.chip;
 const isHeading = (p: Para) => /^(h[1-6]|title|subtitle)$/.test(String(p.node.attrs?.styleName ?? ""));
 const isListItem = (p: Para) => !!p.node.attrs?.list;
 const imageCount = (p: Para) => p.atoms.filter((a) => a.kind === "img").length;
@@ -227,8 +236,9 @@ function similarity(l: Block, r: Block): number {
 /**
  * Whether a LEFT block is the reference block with pieces missing: at least `least` of LEFT's words
  * are in it in order (or nearly all of them, sentences moved around); for paragraphs, not when a
- * third of LEFT's words stand where the reference has other words (that's a rewrite: the reference's
- * paragraph is added as it is). More of both in common scores higher.
+ * third of LEFT's words (or two words and a sixth or so of them) stand where the reference has other
+ * words (that's a rewrite: the reference's paragraph is added as it is). More of both in common
+ * scores higher.
  */
 function pairScore(l: Para | Table, r: Para | Table, least: number, rewrites = true): number {
   const lw = l.words.length;
@@ -258,7 +268,9 @@ function pairScore(l: Para | Table, r: Para | Table, least: number, rewrites = t
       pi = i;
       pj = j;
     }
-    if (replaced && replaced * 3 >= lw) return 0;
+    // (Two words or more where the reference has others, in a short paragraph, make another sentence
+    // too: "prices rise … and fall" isn't "prices fall … and rise" with words missing)
+    if (replaced && (replaced * 3 >= lw || (replaced >= 2 && replaced >= 0.15 * lw))) return 0;
   }
   return 1 + n / Math.max(lw, rw);
 }
@@ -278,25 +290,25 @@ function pairBlocks(L: Block[], R: Block[]): [number, number][] {
   return out;
 }
 
-/** The best pairing of what's between two anchors, by similarity (in order) */
+/**
+ * The best pairing of what's between two anchors, by similarity (in order). Where two pairings are as
+ * good, each block takes its earliest partner (a sub-item pairs with the one under the same item).
+ */
 function pairGap(L: Block[], R: Block[], l0: number, l1: number, r0: number, r1: number): [number, number][] {
   const n = l1 - l0;
   const m = r1 - r0;
   if (n * m > 40_000) {
-    // Too many to weigh every pair: each LEFT block takes the best of the next few reference ones (the
-    // first that is nearly all of it, when one is)
+    // Too many to weigh every pair: the likely ones first, then what's between them the same way
+    const chain = likelyPairs(L, R, l0, l1, r0, r1);
     const out: [number, number][] = [];
-    let from = r0;
-    for (let i = l0; i < l1; i++) {
-      let best = -1;
-      let bestScore = 0;
-      for (let j = from; j < Math.min(r1, from + 64); j++) {
-        const s = similarity(L[i], R[j]);
-        if (s > bestScore) { best = j; bestScore = s; }
-        if (s >= 1.9) break;
-      }
-      if (best >= 0) { out.push([i, best]); from = best + 1; }
+    let pl = l0;
+    let pr = r0;
+    for (const [i, j] of chain) {
+      out.push(...pairGap(L, R, pl, i, pr, j), [i, j]);
+      pl = i + 1;
+      pr = j + 1;
     }
+    if (chain.length) out.push(...pairGap(L, R, pl, l1, pr, r1));
     return out;
   }
   const W = m + 1;
@@ -311,15 +323,73 @@ function pairGap(L: Block[], R: Block[], l0: number, l1: number, r0: number, r1:
       total[i * W + j] = best;
     }
   }
+  // From the end: a pair only where leaving either block out does worse, so ties go to earlier
+  // partners; but an empty line takes the latest empty line it can (LEFT's last one, which ends the
+  // document or cell, then comes after everything added)
   const out: [number, number][] = [];
   let i = n;
   let j = m;
   while (i > 0 && j > 0) {
+    const here = total[i * W + j];
+    if (!here) break;
     const s = sim[(i - 1) * m + j - 1];
-    if (s > 0 && total[i * W + j] === total[(i - 1) * W + j - 1] + s) { out.push([l0 + i - 1, r0 + j - 1]); i--; j--; }
-    else if (total[(i - 1) * W + j] >= total[i * W + j - 1]) i--;
-    else j--;
+    const pair = s > 0 && total[(i - 1) * W + j - 1] + s === here;
+    if (pair && isBlank(L[l0 + i - 1]) && isBlank(R[r0 + j - 1])) { out.push([l0 + i - 1, r0 + j - 1]); i--; j--; }
+    else if (total[i * W + j - 1] === here) j--;
+    else if (total[(i - 1) * W + j] === here) i--;
+    else { out.push([l0 + i - 1, r0 + j - 1]); i--; j--; }
   }
+  return out.reverse();
+}
+
+/**
+ * Pairs for a stretch too long to weigh every pair: each LEFT block weighed against the reference
+ * blocks that have its rarest words, then the heaviest run of those pairs in order (however far
+ * apart they are: a long missing part between two blocks doesn't stop them pairing)
+ */
+function likelyPairs(L: Block[], R: Block[], l0: number, l1: number, r0: number, r1: number): [number, number][] {
+  const has = new Map<string, number[]>();
+  for (let j = r0; j < r1; j++) {
+    const b = R[j];
+    if (b.t === "lock") continue;
+    for (const w of new Set(b.words)) { const list = has.get(w); if (list) list.push(j); else has.set(w, [j]); }
+  }
+  const found: { i: number; j: number; s: number }[] = [];
+  const hits = new Map<number, number>();
+  for (let i = l0; i < l1; i++) {
+    const b = L[i];
+    if (b.t === "lock" || !b.words.length) continue;
+    const rare = [...new Set(b.words)].filter((w) => has.has(w)).sort((x, y) => has.get(x)!.length - has.get(y)!.length || (x < y ? -1 : 1));
+    hits.clear();
+    let seen = 0;
+    for (const w of rare.slice(0, 8)) {
+      if (seen > 512) break;
+      for (const j of has.get(w)!) hits.set(j, (hits.get(j) ?? 0) + 1);
+      seen += has.get(w)!.length;
+    }
+    const best = [...hits].sort((x, y) => y[1] - x[1] || x[0] - y[0]).slice(0, 16);
+    for (const [j] of best) { const s = similarity(b, R[j]); if (s > 0) found.push({ i, j, s }); }
+  }
+  // The heaviest chain increasing in both (pairs of one LEFT block never chain: later partners first)
+  found.sort((x, y) => x.i - y.i || y.j - x.j);
+  const size = r1 - r0;
+  const treeBest = new Float64Array(size + 1);
+  const treeAt = new Int32Array(size + 1).fill(-1);
+  const total = new Float64Array(found.length);
+  const prev = new Int32Array(found.length).fill(-1);
+  let top = -1;
+  found.forEach((p, k) => {
+    // The best chain ending before reference block j (a Fenwick tree of maxima)
+    let best = 0;
+    let at = -1;
+    for (let q = p.j - r0; q > 0; q -= q & -q) if (treeBest[q] > best) { best = treeBest[q]; at = treeAt[q]; }
+    total[k] = best + p.s;
+    prev[k] = at;
+    for (let q = p.j - r0 + 1; q <= size; q += q & -q) if (total[k] > treeBest[q]) { treeBest[q] = total[k]; treeAt[q] = k; }
+    if (top < 0 || total[k] > total[top]) top = k;
+  });
+  const out: [number, number][] = [];
+  for (let k = top; k >= 0; k = prev[k]) out.push([found[k].i, found[k].j]);
   return out.reverse();
 }
 
@@ -366,7 +436,10 @@ function itemsOf(L: Block[], R: Block[], notes: Notes): Item[] {
   if (li >= 0 && ri >= 0 && (!last || (last[0] < li && last[1] < ri))) {
     const l = L[li];
     const r = R[ri];
-    if (l.t === "p" && !l.chip && !l.atoms.length && r.t === "p" && r.key != null && lookOf(l.node.attrs) === lookOf(r.node.attrs)) fill = [li, ri];
+    // (Not with a paragraph LEFT has elsewhere: that one isn't copied again, see settle)
+    const paired = new Set(pairs.map(([i]) => i));
+    const elsewhere = r.t === "p" && L.some((b, i) => !paired.has(i) && b.t === "p" && b.key === r.key);
+    if (l.t === "p" && !l.chip && !l.atoms.length && r.t === "p" && r.key != null && !elsewhere && lookOf(l.node.attrs) === lookOf(r.node.attrs)) fill = [li, ri];
   }
   if (fill) pairs.push(fill);
   const items: Item[] = [];
@@ -374,11 +447,16 @@ function itemsOf(L: Block[], R: Block[], notes: Notes): Item[] {
   let pr = 0;
   for (const [i, j] of [...pairs, [L.length, R.length] as [number, number]]) {
     // Between two pairs: LEFT's own blocks, the reference's new ones, then LEFT's empty lines (a
-    // container's last paragraph among them, which nothing can be typed after)
+    // container's last paragraph among them, which nothing can be typed after). New blocks nested
+    // deeper than LEFT's first own one (sub-items, a section's text) go first: they belong to what
+    // comes before, and after LEFT's own item or heading they would land under it
     let blanks = i;
     while (blanks > pl && L[blanks - 1].t === "p" && (L[blanks - 1] as Para).key == null) blanks--;
+    let lead = pr;
+    if (blanks > pl) for (let q = pr; q < j && (isBlank(R[q]) || depthOf(R[q]) > depthOf(L[pl])); q++) if (!isBlank(R[q])) lead = q + 1;
+    for (let q = pr; q < lead; q++) items.push({ k: "R", b: R[q] });
     for (let q = pl; q < blanks; q++) items.push({ k: "L", b: L[q] });
-    for (let q = pr; q < j; q++) items.push({ k: "R", b: R[q] });
+    for (let q = lead; q < j; q++) items.push({ k: "R", b: R[q] });
     for (let q = blanks; q < i; q++) items.push({ k: "L", b: L[q] });
     if (i < L.length) items.push({ k: "M", l: L[i], r: R[j], ...(fill && fill[0] === i ? { fill: true } : {}) });
     pl = i + 1;
@@ -417,6 +495,42 @@ function sameImage(a: EditorNode, b: EditorNode): boolean {
 }
 
 /**
+ * The units both paragraphs have, in order. A long paragraph is first anchored on the words both have
+ * (words found once on each side, then the rest between them), and each stretch between is compared
+ * on its own: compared in one go, a paragraph of a few hundred words with many words missing is more
+ * than the comparison can follow, and LEFT's text and the reference's would end up side by side.
+ */
+function alignUnits(l: Para, r: Para, same: (i: number, j: number) => boolean): [number, number][] {
+  const lu = unitsOf(l);
+  const ru = unitsOf(r);
+  if (lu.length + ru.length <= 1500) return lcsPairs(lu.length, ru.length, same);
+  const key = (u: Unit) => (u.kind === "w" || u.kind === "p" ? `${u.kind}:${u.norm}` : null);
+  const anchors = anchorPairs(lu.map(key), ru.map(key));
+  // Each unit as a number, the same for units that are the same (an image by its size)
+  const ids = new Map<string, number>();
+  const idOf = (u: Unit, p: Para) => {
+    const k = u.kind === "s" ? "s" : u.kind === "x" && u.raw === "img" ? `img:${sizeOf(p.atoms[u.from].node).join("x")}` : `${u.kind}:${u.norm}`;
+    let id = ids.get(k);
+    if (id === undefined) ids.set(k, (id = ids.size));
+    return id;
+  };
+  const out: [number, number][] = [];
+  let pi = 0;
+  let pj = 0;
+  for (const [i, j] of [...anchors, [lu.length, ru.length] as [number, number]]) {
+    if (i > pi && j > pj) {
+      const a = Int32Array.from(lu.slice(pi, i), (u) => idOf(u, l));
+      const b = Int32Array.from(ru.slice(pj, j), (u) => idOf(u, r));
+      for (const [x, y] of lcsAll(a, b)) if (same(pi + x, pj + y)) out.push([pi + x, pj + y]);
+    }
+    if (i < lu.length) out.push([i, j]);
+    pi = i + 1;
+    pj = j + 1;
+  }
+  return out;
+}
+
+/**
  * The reference's words missing from a paragraph both have: a word-level comparison (words the same
  * once normalized first, then words a typo apart), and each run of the reference's missing words put
  * where the reference has it, after LEFT's own words in the same place
@@ -432,7 +546,7 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
     if (a.kind === "x") return a.raw === b.raw && (a.raw !== "img" || sameImage(l.atoms[a.from].node, r.atoms[b.from].node));
     return a.norm === b.norm;
   };
-  const exact = lcsPairs(lu.length, ru.length, same);
+  const exact = alignUnits(l, r, same);
   // Between those, words a typo apart are the same word
   const pairs: [number, number][] = [];
   let pi = 0;
@@ -466,7 +580,8 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
   let prevJ = -1;
   for (const [i, j] of [...pairs, [lu.length, ru.length] as [number, number]]) {
     // LEFT's own words here stay; the reference's go after them
-    const ownWords = lu.slice(prevI + 1, i).filter((u) => u.kind === "w").map((u) => u.norm);
+    const own = lu.slice(prevI + 1, i).filter((u) => u.kind !== "s");
+    const ownWords = own.filter((u) => u.kind === "w").map((u) => u.norm);
     if (ownWords.length) { keep(notes, "onlyLeft", lu.slice(prevI + 1, i).map((u) => u.raw).join("").trim()); notes.pool.push(ownWords); }
     let a = prevJ + 1;
     let b = j;
@@ -480,6 +595,9 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
     if (a < b) {
       const run = ru.slice(a, b);
       if (run.every((u) => u.kind === "s")) keep(notes, "spacing");
+      // Other punctuation or another number where LEFT has its own ("." for "!", 2023 for 2024): put
+      // next to LEFT's it would read as nonsense ("world.!", "12 15 million"), so LEFT's stays
+      else if (own.length && [...own, ...run].every(minor)) { if (!ownWords.length) keep(notes, "spelling", `${quoted(own.map((u) => u.raw).join(""))} / ${quoted(run.map((u) => u.raw).join("").trim())}`); }
       else {
         const first = r.atoms[run[0].from];
         const last = r.atoms[run[run.length - 1].to - 1];
@@ -487,8 +605,8 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
           at,
           from: run[0].from,
           to: run[run.length - 1].to,
-          padBefore: isWordChar(charOf(before)) && isWordChar(charOf(first)),
-          padAfter: isWordChar(charOf(after)) && isWordChar(charOf(last)),
+          padBefore: isSpacedWordChar(charOf(before)) && isSpacedWordChar(charOf(first)),
+          padAfter: isSpacedWordChar(charOf(after)) && isSpacedWordChar(charOf(last)),
           words: run.filter((u) => u.kind === "w").map((u) => u.norm),
         });
       }
@@ -498,6 +616,9 @@ function diffParagraph(l: Para, r: Para, notes: Notes): Insert[] {
   }
   return inserts;
 }
+
+/** Punctuation, a symbol, a number or spaces: what a paragraph can have another of without its words changing */
+const minor = (u: Unit) => u.kind === "s" || u.kind === "p" || (u.kind === "w" && /^\p{N}+$/u.test(u.norm));
 
 /** Whether two tables have the same columns and no merged cells, so rows can be added */
 function plainGrid(t: Table): number | null {
@@ -559,6 +680,9 @@ function planTable(l: Table, r: Table, notes: Notes): TablePlan {
   return { rows, shape: false };
 }
 
+/** Enough text to tell it's the same text elsewhere: four words, and a dozen letters (a script without spaces has a word per character) */
+const movable = (words: string[]) => words.length >= 4 && words.reduce((n, w) => n + w.length, 0) >= 12;
+
 /**
  * Content the reference has twice as often as LEFT is copied, content LEFT has elsewhere isn't: a
  * reference paragraph that is one of LEFT's unpaired ones, or a run of 4 words or more LEFT has in
@@ -590,9 +714,9 @@ function settle(notes: Notes) {
       if (it.k === "R" && it.b.t === "p" && it.b.key != null) {
         const theirs = keys.get(it.b.key)?.shift();
         if (theirs) { theirs.moved = true; consume(it.b.words); it.drop = "moved"; }
-        else if (it.b.words.length >= 4 && consume(it.b.words)) it.drop = "moved";
+        else if (movable(it.b.words) && consume(it.b.words)) it.drop = "moved";
       } else if (it.k === "R" && it.b.t === "lock") it.drop = "unsupported";
-      else if (it.k === "M") for (const ins of it.inserts ?? []) if (ins.words.length >= 4 && consume(ins.words)) ins.moved = true;
+      else if (it.k === "M") for (const ins of it.inserts ?? []) if (movable(ins.words) && consume(ins.words)) ins.moved = true;
     }
     // Empty lines only between paragraphs both have (or at the end) are spacing, not content
     for (let s = 0; s < seq.length;) {
@@ -805,7 +929,8 @@ function buildSeq(items: Item[], ctx: Ctx): EditorNode[] {
     const kind: ChangeKind = ctx.cell ? "cell" : paras.every(isListItem) ? "list" : paras.every((p) => !p.words.length && imageCount(p) > 0) ? "image" : paras.every((p) => p.atoms.length > 0 && p.atoms.every((a) => a.kind === "pb")) ? "pageBreak" : "paragraph";
     const right: [number, number] = [firstTok(g[0].p), lastTok(g[g.length - 1].p) + 1];
     const { id, skipped } = change(ctx, kind, right, { words: countWords(text), preview: preview(text) || objectsPreview(atoms), where: ctx.cell ?? ctx.where, when: "typed", images, footnotes });
-    if (skipped) return;
+    // Left out: LEFT's empty last paragraph it was to go into stays as it is
+    if (skipped) { for (const x of g) if (x.into) out.push(x.into.node); return; }
     for (const x of g) out.push(x.into ? splice(x.into.node, new Map([[0, copyAtoms(x.p, 0, x.p.atoms.length, ctx, id)]])) : newParagraph(x.p, ctx, id));
   };
   for (const it of items) {
@@ -862,6 +987,7 @@ function buildMatched(it: Extract<Item, { k: "M" }>, ctx: Ctx): EditorNode {
 
 function buildParagraph(l: Para, r: Para, inserts: Insert[], ctx: Ctx): EditorNode {
   const at = new Map<number, EditorNode[]>();
+  const where = inserts.length && /\S/.test(l.text) ? `in ${quoted(l.text)}` : null;
   for (const ins of inserts) {
     if (ins.moved) continue;
     const atoms = r.atoms.slice(ins.from, ins.to);
@@ -871,7 +997,7 @@ function buildParagraph(l: Para, r: Para, inserts: Insert[], ctx: Ctx): EditorNo
     const { id, skipped } = change(ctx, kind, [atoms[0].tok, atoms[atoms.length - 1].tok + 1], {
       words: countWords(text),
       preview: preview(text) || objectsPreview(atoms),
-      where: /\S/.test(l.text) ? `in ${quoted(l.text)}` : ctx.cell ?? ctx.where,
+      where: where ?? ctx.cell ?? ctx.where,
       when: kind === "footnote" ? "start" : "typed",
       images,
       footnotes,
@@ -1001,19 +1127,33 @@ function originOf(blocks: EditorNode[], tags: Tags): { origin: number[]; spans: 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
 const DEFAULT_TITLE = /^(tab \d+|untitled tab)$/i;
-const titleKey = (title: string) => title.trim().toLowerCase();
+/** A tab's title as people read it: case, spacing, emoji and punctuation aside ("📌 Sources" is "sources") */
+const titleKey = (title: string) => normalize(title).replace(/[^\p{L}\p{N}\p{M}]+/gu, " ").trim();
 /** Docs nests tabs three levels deep at most, and a document has at most 100 */
 const MAX_LEVEL = 2;
 const MAX_TABS = 100;
 
-const tabWords = (tab: CompareTab): Map<string, number> => {
+/**
+ * A tab's text as runs of three words in a row (a shorter paragraph whole), counted: two tabs on the
+ * same subject share most of their words, but only a copy shares its runs of words
+ */
+function tabRuns(tab: CompareTab): Map<string, number> {
   const counts = new Map<string, number>();
-  const words = wordsOf(tab.doc.nodes.map(plainText).join(" "));
-  for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
+  const add = (k: string) => counts.set(k, (counts.get(k) ?? 0) + 1);
+  const visit = (nodes: EditorNode[]) => {
+    for (const n of nodes) {
+      if (n.type === "paragraph") {
+        const words = wordsOf(plainText(n));
+        if (words.length < 3) { if (words.length) add(words.join(" ")); }
+        else for (let k = 0; k + 2 < words.length; k++) add(`${words[k]} ${words[k + 1]} ${words[k + 2]}`);
+      } else visit(n.content ?? []);
+    }
+  };
+  visit(tab.doc.nodes);
   return counts;
-};
+}
 
-/** How much of LEFT's tab the reference's tab has: the share of LEFT's words found in it */
+/** How much of LEFT's tab the reference's tab has: the share of LEFT's runs of words found in it */
 function containment(l: Map<string, number>, r: Map<string, number>): number {
   let total = 0;
   let found = 0;
@@ -1023,10 +1163,11 @@ function containment(l: Map<string, number>, r: Map<string, number>): number {
 
 /**
  * Where each reference tab's content goes. `given` (the user's choices) wins where it names a LEFT
- * tab not already taken, a new tab or none; the rest go, in order: into the LEFT tab of the same title;
- * into the LEFT tab whose words the reference tab has at least half of; into a blank LEFT tab with
- * Docs' default name ("Tab 1"), which takes the reference tab's name; or into a new tab, nested under
- * where its parent's content goes. With one tab on each side, those two go together.
+ * tab not already taken, a new tab or none; the rest go, in order: into the LEFT tab of the same title
+ * (where several share a title, the ones with the most text in common together); into the LEFT tab
+ * whose text the reference tab has at least half of (the best such pairs first); into a blank LEFT tab
+ * with Docs' default name ("Tab 1"), which takes the reference tab's name; or into a new tab, nested
+ * under where its parent's content goes. With one tab on each side, those two go together.
  */
 export function matchTabs(left: CompareSide, right: CompareSide, given: TabMap = {}): TabMap {
   const map: TabMap = {};
@@ -1050,24 +1191,46 @@ export function matchTabs(left: CompareSide, right: CompareSide, given: TabMap =
   }
   const free = () => rights.filter((r) => !map[r.id] && !pending.has(r.id));
   if (rights.length === 1 && lefts.length === 1 && free().length === 1 && !taken.size) into(rights[0], lefts[0]);
-  for (const r of free()) {
-    const l = lefts.find((t) => !taken.has(t.id) && titleKey(t.title) === titleKey(r.title));
-    if (l) into(r, l);
+  const runs = new Map<string, Map<string, number>>();
+  const runsOf = (t: CompareTab, side: "l" | "r") => {
+    const key = `${side}|${t.id}`;
+    let v = runs.get(key);
+    if (!v) runs.set(key, (v = tabRuns(t)));
+    return v;
+  };
+  const share = (l: CompareTab, r: CompareTab) => containment(runsOf(l, "l"), runsOf(r, "r"));
+  /** The best pairs first (the reference's order, then LEFT's, on a tie), each tab in one pair at most */
+  const assign = (pairs: { r: CompareTab; l: CompareTab; s: number }[]) => {
+    pairs.sort((x, y) => y.s - x.s || x.r.index - y.r.index || x.l.index - y.l.index);
+    for (const p of pairs) if (!map[p.r.id] && !taken.has(p.l.id)) into(p.r, p.l);
+  };
+  // 1. The same title
+  const titled = new Map<string, { r: CompareTab[]; l: CompareTab[] }>();
+  const group = (title: string) => {
+    const k = titleKey(title);
+    if (!k) return null;
+    let g = titled.get(k);
+    if (!g) titled.set(k, (g = { r: [], l: [] }));
+    return g;
+  };
+  for (const r of free()) group(r.title)?.r.push(r);
+  for (const l of lefts) if (!taken.has(l.id)) group(l.title)?.l.push(l);
+  for (const g of titled.values()) {
+    if (!g.r.length || !g.l.length) continue;
+    if (g.r.length === 1 && g.l.length === 1) into(g.r[0], g.l[0]);
+    else assign(g.r.flatMap((r) => g.l.map((l) => ({ r, l, s: share(l, r) }))));
   }
+  // 2. The text: at least half of LEFT's tab is in the reference's
   if (free().length) {
-    const words = new Map(lefts.map((t) => [t.id, tabWords(t)]));
-    for (const r of free()) {
-      const theirs = tabWords(r);
-      let best: CompareTab | null = null;
-      let bestShare = 0.5;
-      for (const l of lefts) {
-        if (taken.has(l.id) || l.doc.empty) continue;
-        const share = containment(words.get(l.id)!, theirs);
-        if (share >= bestShare && (!best || share > bestShare)) { best = l; bestShare = share; }
-      }
-      if (best) into(r, best);
+    const pairs: { r: CompareTab; l: CompareTab; s: number }[] = [];
+    for (const r of free()) for (const l of lefts) {
+      if (taken.has(l.id) || l.doc.empty) continue;
+      const s = share(l, r);
+      if (s >= 0.5) pairs.push({ r, l, s });
     }
+    assign(pairs);
   }
+  // 3. A blank tab with Docs' default name
   for (const l of lefts) {
     if (taken.has(l.id) || !l.doc.empty || !DEFAULT_TITLE.test(l.title.trim())) continue;
     const r = free()[0];
