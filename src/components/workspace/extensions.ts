@@ -9,6 +9,7 @@ import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import { Pagination } from "./pagination";
 import { DocSync, SyncAdd } from "./doc-sync";
+import { BreakMarks, SyncBreak } from "./break-marks";
 import { DocsLineBreaks } from "./line-breaks";
 import { LinkLook } from "./link-look";
 import { Find } from "./find";
@@ -1526,6 +1527,8 @@ export const editorExtensions = [
   DocFormat,
   Pagination,
   SyncAdd,
+  SyncBreak,
+  BreakMarks,
   DocSync,
   ClipboardHTML,
   Find,

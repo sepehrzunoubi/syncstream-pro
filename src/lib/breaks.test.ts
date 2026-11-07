@@ -136,3 +136,14 @@ test("the break the sync is on can be ended now or given another length", () => 
     assert.ok(!res.ok && /isn't on a break/.test(res.error));
   }
 });
+
+test("break lengths read the way people type them", async () => {
+  const { parseBreakLength, formatBreak, describeBreak } = await import("./breaks");
+  const cases: [string, number | null][] = [
+    ["33m", 33], ["33", 33], [" 33 min ", 33], ["1h", 60], ["1h 5m", 65], ["1h5m", 65], ["1:05", 65], ["1.5h", 90], ["90 minutes", 90],
+    ["2 hours", 120], ["24h", 1440], ["25h", null], ["0", null], ["0m", null], ["abc", null], ["5x", null], ["", null], ["1h banana", null],
+  ];
+  for (const [input, want] of cases) assert.equal(parseBreakLength(input), want, input);
+  assert.deepEqual([formatBreak(33), formatBreak(60), formatBreak(65)], ["33m", "1h", "1h 5m"]);
+  assert.deepEqual([describeBreak(1), describeBreak(65), describeBreak(120)], ["1 minute", "1 hour 5 minutes", "2 hours"]);
+});

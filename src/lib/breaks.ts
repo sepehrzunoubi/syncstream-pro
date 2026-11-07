@@ -245,3 +245,46 @@ export function withAnchors(plan: DripPlan, anchors: BreakAnchor[]): DripPlan {
   const totalMs = actions.reduce((s, a) => s + a.delayMs + (a.holdMs ?? 0), 0);
   return { ...plan, actions, breaks, totalMs, targetMs: undefined, fitsTarget: true, totalMinutes: Math.max(1, Math.ceil(totalMs / 60_000)) };
 }
+
+/**
+ * A break length as people type it: "33m", "33", "1h", "1h 5m", "1:05", "1.5h", "90 min",
+ * "2 hours". Whole minutes, from 1 minute to 24 hours; null when it can't be read.
+ */
+export function parseBreakLength(input: string): number | null {
+  const s = input.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!s) return null;
+  let minutes: number | null = null;
+  const clock = /^(\d{1,2}):([0-5]\d)$/.exec(s);
+  if (clock) minutes = Number(clock[1]) * 60 + Number(clock[2]);
+  else if (/^\d+(\.\d+)?$/.test(s)) minutes = Number(s);
+  else {
+    const re = /(\d+(?:\.\d+)?) ?(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)(?=\d|\s|$)/g;
+    let total = 0;
+    let used = "";
+    for (let m = re.exec(s); m; m = re.exec(s)) {
+      total += Number(m[1]) * (m[2].startsWith("h") ? 60 : 1);
+      used += m[0];
+    }
+    if (used && used.replace(/ /g, "") === s.replace(/ /g, "")) minutes = total;
+  }
+  if (minutes == null || !Number.isFinite(minutes)) return null;
+  const whole = Math.round(minutes);
+  return whole >= 1 && whole <= MAX_ANCHORED_MINUTES ? whole : null;
+}
+
+/** A break length as the page shows it: "33m", "1h", "1h 5m" */
+export function formatBreak(minutes: number): string {
+  const m = Math.round(minutes);
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return h ? (r ? `${h}h ${r}m` : `${h}h`) : `${r}m`;
+}
+
+/** The same, in words: "33 minutes", "1 hour 5 minutes" */
+export function describeBreak(minutes: number): string {
+  const m = Math.round(minutes);
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  const part = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  return [h ? part(h, "hour") : "", r ? part(r, "minute") : ""].filter(Boolean).join(" ");
+}

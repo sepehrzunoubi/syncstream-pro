@@ -10,7 +10,9 @@ import type { Editor, JSONContent } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { isInsertableImageSrc, richFromEditorJSON, richToEditorJSON } from "@/lib/rich-text";
-import { additions, PENDING_MARK, rebase, segmentCharTokens } from "@/lib/doc-model";
+import { additions, BREAK_MARK, breakAnchors, PENDING_MARK, rebase, segmentCharTokens } from "@/lib/doc-model";
+import { withAnchors, type BreakAnchor } from "@/lib/breaks";
+import { sourceAnchors } from "./break-marks";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { formatClock } from "@/lib/format";
@@ -19,7 +21,7 @@ import { progressKey } from "./pagination";
 import { isActive } from "./job-status";
 import type { BreaksMode } from "./sync-panel";
 import { postJson } from "./api";
-import { markAllAdded } from "./doc-json";
+import { markAllAdded, withoutMark } from "./doc-json";
 import { writeAdditions } from "./storage";
 import { shownTab, type Doc, type DocContent, type DocRefs, type Setter, type Source } from "./doc-state";
 import { isUploadingImage } from "./pasted-images";
@@ -38,7 +40,8 @@ function useNow(active: boolean, intervalMs = 1000): number {
 export interface SyncSettings {
   durationMinutes: number | null;
   breaksMode: BreaksMode;
-  customBreaks: number[];
+  /** Manual: the length in the Break length field (the breaks themselves are marks on the page) */
+  breakLength?: string;
   typoFrequency: number;
   startInMinutes: number;
   setStartInMinutes: Setter<number>;
@@ -73,7 +76,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
   setScopeError: Setter<boolean>;
 }) {
   const { baseRef, revisionRef, legacyTextRef, contentStale } = refs;
-  const { durationMinutes, breaksMode, customBreaks, typoFrequency, startInMinutes, setStartInMinutes, seed, setSeed } = settings;
+  const { durationMinutes, breaksMode, typoFrequency, startInMinutes, setStartInMinutes, seed, setSeed } = settings;
   const [sources, setSources] = useState<Record<string, Source>>({});
   const [busy, setBusy] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -129,25 +132,31 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     return () => clearTimeout(id);
   }, [docJSON]);
   // What a sync would type: the additions to the document, or everything when there is no document
+  // and where its Manual breaks start in it
   const toType = useMemo(() => {
-    if (!deferredJSON) return { text: "", boundaries: [] as number[] };
+    if (!deferredJSON) return { text: "", boundaries: [] as number[], anchors: [] as BreakAnchor[] };
     if (docContent?.status === "ready" && baseRef.current) {
       const a = additions(baseRef.current, deferredJSON as EditorNode);
-      return { text: a.text, boundaries: a.boundaries };
+      return { text: a.text, boundaries: a.boundaries, anchors: breakAnchors(deferredJSON as EditorNode, a.segments) };
     }
-    return { text: richFromEditorJSON(deferredJSON as EditorNode).text, boundaries: [] as number[] };
-  }, [deferredJSON, docContent, baseRef]);
+    let anchors: BreakAnchor[] = [];
+    try { if (editor) anchors = sourceAnchors(editor.schema.nodeFromJSON(deferredJSON)); } catch { /* a page the schema can't read has no breaks */ }
+    return { text: richFromEditorJSON(deferredJSON as EditorNode).text, boundaries: [] as number[], anchors };
+  }, [deferredJSON, docContent, baseRef, editor]);
   const hasText = toType.text.trim().length > 0;
   const preview = useMemo(() => {
     if (!hasText) return null;
-    return buildDripPlan(toType.text, {
-      targetMinutes: durationMinutes,
-      breaks: breaksMode === "auto" ? "auto" : breaksMode === "none" ? [] : customBreaks,
+    // Manual: the natural pace, and the breaks placed on the page (no Total time to fit)
+    const manual = breaksMode === "manual";
+    const plan = buildDripPlan(toType.text, {
+      targetMinutes: manual ? null : durationMinutes,
+      breaks: breaksMode === "auto" ? "auto" : [],
       typoFrequency,
       seed,
       ...(toType.boundaries.length ? { boundaries: toType.boundaries } : {}),
     });
-  }, [toType, hasText, durationMinutes, breaksMode, customBreaks, typoFrequency, seed]);
+    return manual ? withAnchors(plan, toType.anchors) : plan;
+  }, [toType, hasText, durationMinutes, breaksMode, typoFrequency, seed]);
 
   const upsertJob = (job: PublicJob) => setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j)));
 
@@ -177,6 +186,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       };
       let payload: Record<string, unknown>;
       let source: Source;
+      let manualAnchors: BreakAnchor[] = [];
       const inDoc = docContent?.docId === selectedDocId && docContent.status === "ready" && !!baseRef.current;
       const startedOn = inDoc ? { docId: docContent!.docId, tabId: docContent!.tabId ?? null } : null;
       if (inDoc) {
@@ -185,6 +195,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
         const target = editor.getJSON() as EditorNode;
         const { segments, text } = additions(baseRef.current!, target);
         if (!segments.length) throw new Error("Type the text you want to add first. New text glows until a sync types it in.");
+        manualAnchors = breakAnchors(target, segments);
         const ctx = { doc: target, ranges: segments.map((x) => x.tokens) };
         const context = JSON.stringify(ctx).length <= 350_000 ? ctx : null;
         payload = { segments: segments.map(({ at, mode, text: t, format }) => ({ at, mode, text: t, format })), revisionId: revisionRef.current, context };
@@ -193,6 +204,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
         checkImages();
         const current = richFromEditorJSON(editor.getJSON());
         if (!current.text.trim()) return;
+        manualAnchors = sourceAnchors(editor.state.doc);
         payload = { text: current.text, format: current.format };
         source = { text: current.text, format: current.format };
       }
@@ -204,8 +216,8 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
         documentId: selectedDocId,
         documentName: doc?.name,
         tabId,
-        targetMinutes: durationMinutes,
-        breaks: breaksMode === "auto" ? "auto" : breaksMode === "none" ? [] : customBreaks,
+        targetMinutes: breaksMode === "manual" ? null : durationMinutes,
+        breaks: breaksMode === "auto" ? "auto" : breaksMode === "manual" ? manualAnchors : [],
         typoFrequency,
         seed,
         startInMinutes,
@@ -239,7 +251,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       editor.setEditable(!docBusy, false);
       setBusy(false);
     }
-  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, customBreaks, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, refs.tabRef, refs.docContentRef, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
+  }, [editor, busy, selectedDocId, docBusy, docs, durationMinutes, breaksMode, typoFrequency, seed, startInMinutes, docContent, loadDocContent, saveNow, baseRef, revisionRef, contentStale, refs.tabRef, refs.docContentRef, setJobs, setFocusedJobId, setComposing, setDocJSON, setStartInMinutes, setSeed, setSnack, setScopeError]);
 
   const jobAction = useCallback(async (path: "pause" | "resume" | "cancel", jobId: string) => {
     if (busy) return;
@@ -295,7 +307,8 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     if (!viewer || !focusedJob || !focusedSource) return;
     if (loadedRef.current !== focusedJob.id) {
       const ctx = focusedSource.context;
-      if (ctx?.doc && ctx.ranges) loadDocument(viewer, ctx.doc, true);
+      // (breaks placed before the start are shown from the job, which has them as they are now)
+      if (ctx?.doc && ctx.ranges) loadDocument(viewer, withoutMark(ctx.doc as EditorNode, BREAK_MARK), true);
       else loadDocument(viewer, richToEditorJSON(focusedSource.text, focusedSource.format), false);
       loadedRef.current = focusedJob.id;
     }

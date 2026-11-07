@@ -972,6 +972,49 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
   return { segments, text, boundaries };
 }
 
+/** The mark on a word a Manual break follows; its `minutes` attribute is the break's length */
+export const BREAK_MARK = "syncBreak";
+
+/** Source offset just past the word ending at character `k` of `text`: its spaces, then a line end */
+export function afterWord(text: string, k: number): number {
+  let at = k + 1;
+  while (at < text.length && /[ \t\u00a0]/.test(text[at])) at++;
+  if (text[at] === "\n") at++;
+  return at;
+}
+
+/**
+ * Where each Manual break starts, in the source a sync types (the segments' text back to back):
+ * right after its marked word and the space or line end after it. Breaks with nothing typed after
+ * them are left out, as is a second break at the same place.
+ */
+export function breakAnchors(targetDoc: EditorNode, segments: { tokens: [number, number]; text: string }[]): { at: number; minutes: number }[] {
+  const target = tokenize(targetDoc);
+  const minutesOf = (t: Tok | undefined) => {
+    if (!t || t.k !== "c") return null;
+    const m = t.marks.find((x) => x.type === BREAK_MARK);
+    const v = m?.attrs?.minutes;
+    return m ? (typeof v === "number" && v > 0 ? Math.round(v) : 5) : null;
+  };
+  const out = new Map<number, number>();
+  let base = 0;
+  let total = 0;
+  for (const s of segments) total += s.text.length;
+  for (const s of segments) {
+    const tok = segmentText(target, s.tokens[0], s.tokens[1]).tok;
+    for (let k = 0; k < tok.length; k++) {
+      const minutes = minutesOf(target[tok[k]]);
+      if (minutes == null) continue;
+      // The break follows the last marked character of its word
+      if (k + 1 < tok.length && minutesOf(target[tok[k + 1]]) != null) continue;
+      const at = base + afterWord(s.text, k);
+      if (at > 0 && at < total) out.set(at, minutes);
+    }
+    base += s.text.length;
+  }
+  return Array.from(out, ([at, minutes]) => ({ at, minutes })).sort((x, y) => x.at - y.at);
+}
+
 /**
  * For each range of target tokens (a segment's `tokens`), the token each character of its text came
  * from: character k of the segment is typed from token `result[r][k]`. Tokens with no character

@@ -7,6 +7,9 @@ import type { PublicJob } from "@/lib/sync-store";
 import { formatClock, formatSpan, formatWait } from "@/lib/format";
 import { isActive, isFinished, progressOf, statusTitle } from "./job-status";
 import { docsUrl } from "./header";
+import type { useLiveBreaks } from "./use-live-breaks";
+import { describeBreak, formatBreak } from "@/lib/breaks";
+import { X } from "lucide-react";
 
 interface JobPanelProps {
   job: PublicJob;
@@ -19,9 +22,11 @@ interface JobPanelProps {
   onCancel: () => void;
   onDismiss: () => void;
   onEditAsNew: () => void;
+  /** The breaks of a sync that can still change them */
+  live?: ReturnType<typeof useLiveBreaks>;
 }
 
-export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, onResume, onCancel, onDismiss, onEditAsNew }: JobPanelProps) {
+export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, onResume, onCancel, onDismiss, onEditAsNew, live }: JobPanelProps) {
   const pct = progressOf(job);
   const running = job.status === "running" || job.status === "pending";
   const typedWords = Math.max(0, (job.liveWordCount ?? job.baselineWordCount) - job.baselineWordCount);
@@ -69,7 +74,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
         ))}
       </dl>
 
-      {job.breaks.length > 0 && (
+      {live?.canEdit ? <LiveBreaks live={live} job={job} /> : job.breaks.length > 0 && (
         <div>
           <h3 className="mb-2 text-[14px] font-medium">Breaks</h3>
           <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
@@ -115,5 +120,59 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
         <p className="text-[12px] leading-4 text-[var(--ss-text-3)]">This sync runs on our server. You can close this tab or turn off your computer.</p>
       )}
     </div>
+  );
+}
+
+/** A running sync's breaks, changeable after what it is typing now */
+function LiveBreaks({ live, job }: { live: NonNullable<JobPanelProps["live"]>; job: PublicJob }) {
+  const typed = live.breakLength.trim().length > 0;
+  const ahead = live.rows.filter((r) => r.state === "ahead");
+  const current = live.rows.find((r) => r.state === "now");
+  return (
+    <section aria-label="Breaks">
+      <h3 className="mb-2 text-[14px] font-medium">Breaks</h3>
+      {current && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-[#fef7e0] px-3 py-2 text-[13px] text-[#5c4300]">
+          <span>On a {formatBreak(current.minutes)} break{job.status === "paused" ? " (paused)" : ""}</span>
+          <button type="button" className="ss-link-btn" disabled={live.sending} onClick={live.endNow}>End now</button>
+        </div>
+      )}
+      {live.rows.length > 0 && (
+        <ul className="ss-brk-list" aria-label="This sync's breaks">
+          {live.rows.map((r) => (
+            <li key={`${r.index}-${r.at}`} data-state={r.state}>
+              <span className="ss-brk-row cursor-default">
+                <span className="ss-brk-chip" data-state={r.state}>{r.state === "done" ? `✓ ${formatBreak(r.minutes)}` : formatBreak(r.minutes)}</span>
+                <span className="truncate text-[var(--ss-text-2)]">{r.state === "done" ? "Taken" : r.state === "now" ? "On it now" : r.state === "locked" ? "Being typed now" : r.word ? `after “${r.word}”` : `After ${r.at != null ? Math.round(((r.at) / Math.max(1, job.totalChars)) * 100) : 0}% of the text`}</span>
+              </span>
+              {r.state === "ahead" && r.at != null && (
+                <button type="button" className="ss-icon-btn ss-brk-remove" disabled={live.sending} onClick={() => live.remove(r.at!)} aria-label={`Remove the ${formatBreak(r.minutes)} break`} title="Remove">
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {ahead.length > 0 && (
+        <div className="mt-1 flex justify-end">
+          <button type="button" className="ss-link-btn text-[12px]" disabled={live.sending} onClick={live.clearFuture}>Clear breaks ahead</button>
+        </div>
+      )}
+      <label className="ss-field-label mt-3" htmlFor="ss-live-break-length">Add a break</label>
+      <input
+        id="ss-live-break-length"
+        className="ss-input"
+        placeholder="e.g. 33m"
+        autoComplete="off"
+        spellCheck={false}
+        value={live.breakLength}
+        aria-invalid={typed && live.minutes == null ? true : undefined}
+        onChange={(e) => live.setBreakLength(e.target.value)}
+      />
+      <p className="ss-field-help" data-error={typed && live.minutes == null ? "true" : undefined}>
+        {live.minutes != null ? `${describeBreak(live.minutes)}. Click a word not typed yet on the page.` : typed ? "Try 33m or 1h 5m." : "Type a length, then click a word the sync hasn't typed yet."}
+      </p>
+    </section>
   );
 }

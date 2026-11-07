@@ -3,15 +3,14 @@
 import React from "react";
 import { Shuffle, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { MAX_CUSTOM_BREAKS, type DripPlan } from "@/lib/drip-engine";
+import type { DripPlan } from "@/lib/drip-engine";
+import { describeBreak, formatBreak, parseBreakLength } from "@/lib/breaks";
 import { formatClock, formatSpan } from "@/lib/format";
-import { Menu, MenuItem } from "./menu";
 
-export type BreaksMode = "auto" | "none" | "custom";
+export type BreaksMode = "auto" | "none" | "manual";
 
 export const DURATION_OPTIONS: (number | null)[] = [null, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
 export const START_OPTIONS = [0, 5, 10, 15, 30, 60, 120, 180, 360, 720];
-export const BREAK_CATALOG = [5, 10, 15, 30, 45, 60, 90, 120, 180];
 export const TYPO_OPTIONS = [
   { label: "Rare", value: 0 },
   { label: "Low", value: 0.25 },
@@ -20,13 +19,28 @@ export const TYPO_OPTIONS = [
   { label: "Very high", value: 1 },
 ];
 
+/** A break placed on the page, as the Manual list shows it */
+export interface ManualBreakRow {
+  from: number;
+  to: number;
+  minutes: number;
+  /** The word it follows */
+  word: string;
+}
+
 interface SyncPanelProps {
   durationMinutes: number | null;
   onDurationChange: (v: number | null) => void;
   breaksMode: BreaksMode;
   onBreaksModeChange: (v: BreaksMode) => void;
-  customBreaks: number[];
-  onCustomBreaksChange: (v: number[]) => void;
+  /** Manual: the Break length field, and the breaks placed on the page in page order */
+  breakLength: string;
+  onBreakLengthChange: (v: string) => void;
+  manualBreaks: ManualBreakRow[];
+  onRemoveBreak: (row: ManualBreakRow) => void;
+  onClearBreaks: () => void;
+  onHoverBreak: (row: ManualBreakRow | null) => void;
+  onJumpToBreak: (row: ManualBreakRow) => void;
   typoFrequency: number;
   onTypoFrequencyChange: (v: number) => void;
   startInMinutes: number;
@@ -56,7 +70,7 @@ export function SyncPanel(p: SyncPanelProps) {
         </div>
       )}
 
-      <div>
+      {p.breaksMode !== "manual" && <div>
         <label className="ss-field-label" htmlFor="ss-duration">Total time</label>
         <select id="ss-duration" className="ss-select" disabled={p.disabled} value={p.durationMinutes ?? ""} onChange={(e) => p.onDurationChange(e.target.value === "" ? null : Number(e.target.value))}>
           {DURATION_OPTIONS.map((m) => (
@@ -70,49 +84,20 @@ export function SyncPanel(p: SyncPanelProps) {
               ? "Speed varies a little and breaks fill the rest."
               : "Typing speeds up or slows down to fit."}
         </p>
-      </div>
+      </div>}
 
       <div>
         <span className="ss-field-label" id="ss-breaks-label">Breaks</span>
         <div className="ss-segmented" role="group" aria-labelledby="ss-breaks-label">
-          {([["auto", "Automatic"], ["none", "None"], ["custom", "Choose"]] as const).map(([v, label]) => (
+          {([["auto", "Automatic"], ["none", "None"], ["manual", "Manual"]] as const).map(([v, label]) => (
             <button key={v} aria-pressed={p.breaksMode === v} disabled={p.disabled} onClick={() => p.onBreaksModeChange(v)}>
               {p.breaksMode === v && <motion.span layoutId="ss-breaks-pill" className="ss-seg-pill" transition={{ type: "spring", stiffness: 520, damping: 40 }} />}
               <span className="ss-seg-label">{label}</span>
             </button>
           ))}
         </div>
-        {p.breaksMode === "custom" ? (
-          <motion.div className="mt-2 flex flex-wrap gap-1.5" layout>
-            <AnimatePresence mode="popLayout" initial={false}>
-              {p.customBreaks.map((m, i) => (
-                <motion.button
-                  key={`${i}-${m}`}
-                  layout
-                  initial={{ opacity: 0, scale: 0.85 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.85 }}
-                  transition={{ type: "spring", stiffness: 520, damping: 34 }}
-                  className="ss-chip"
-                  data-selected="true"
-                  disabled={p.disabled}
-                  onClick={() => p.onCustomBreaksChange(p.customBreaks.filter((_, k) => k !== i))}
-                  aria-label={`Remove ${formatSpan(m)} break`}
-                >
-                  {formatSpan(m)}
-                  <X className="h-3.5 w-3.5" />
-                </motion.button>
-              ))}
-            </AnimatePresence>
-            {p.customBreaks.length < MAX_CUSTOM_BREAKS && (
-              <Menu label="Add a break" trigger={<button className="ss-chip" disabled={p.disabled}>Add a break</button>}>
-                {BREAK_CATALOG.map((m) => (
-                  <MenuItem key={m} onSelect={() => p.onCustomBreaksChange([...p.customBreaks, m])}>{formatSpan(m)}</MenuItem>
-                ))}
-              </Menu>
-            )}
-            <motion.p layout className="ss-field-help w-full">Breaks happen in this order, spread through the text.</motion.p>
-          </motion.div>
+        {p.breaksMode === "manual" ? (
+          <ManualBreaks {...p} />
         ) : (
           <p className="ss-field-help">
             {p.breaksMode === "auto" ? "A few longer pauses, based on how long the text is." : "Only short pauses between sentences."}
@@ -179,7 +164,7 @@ export function SyncPanel(p: SyncPanelProps) {
                 </div>
               ))}
             </dl>
-            {plan.breaks.length > 0 && p.breaksMode !== "custom" && (
+            {plan.breaks.length > 0 && p.breaksMode !== "manual" && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {plan.breaks.map((m, i) => (
                   <span key={i} className="rounded-md bg-white px-2 py-0.5 text-[12px] text-[var(--ss-text-2)]">{formatSpan(m)}</span>
@@ -210,6 +195,67 @@ export function SyncPanel(p: SyncPanelProps) {
         )}
       </motion.section>
       </div>
+    </div>
+  );
+}
+
+/** Manual: one length field (placing on the page starts as soon as it reads), and the breaks placed */
+function ManualBreaks(p: SyncPanelProps) {
+  const minutes = parseBreakLength(p.breakLength);
+  const typed = p.breakLength.trim().length > 0;
+  return (
+    <div className="mt-3">
+      <label className="ss-field-label" htmlFor="ss-break-length">Break length</label>
+      <input
+        id="ss-break-length"
+        className="ss-input"
+        inputMode="text"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="e.g. 33m"
+        value={p.breakLength}
+        disabled={p.disabled}
+        aria-invalid={typed && minutes == null ? true : undefined}
+        aria-describedby="ss-break-length-help"
+        onChange={(e) => p.onBreakLengthChange(e.target.value)}
+      />
+      <p id="ss-break-length-help" className="ss-field-help" data-error={typed && minutes == null ? "true" : undefined}>
+        {minutes != null
+          ? <><span className="text-[var(--ss-text)]">{describeBreak(minutes)}.</span> Click a word on the page: the break starts after it.</>
+          : typed ? "Try 33m or 1h 5m." : "Type a length, then click a word on the page."}
+      </p>
+      {p.manualBreaks.length > 0 && (
+        <>
+          <ul className="ss-brk-list" aria-label="Breaks on the page">
+            <AnimatePresence initial={false}>
+              {p.manualBreaks.map((b) => (
+                <motion.li
+                  key={`${b.from}-${b.to}`}
+                  layout="position"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                  onMouseEnter={() => p.onHoverBreak(b)}
+                  onMouseLeave={() => p.onHoverBreak(null)}
+                >
+                  <button type="button" className="ss-brk-row" onClick={() => p.onJumpToBreak(b)} title="Show it on the page">
+                    <span className="ss-brk-chip">{formatBreak(b.minutes)}</span>
+                    <span className="truncate">after &ldquo;{b.word}&rdquo;</span>
+                  </button>
+                  <button type="button" className="ss-icon-btn ss-brk-remove" disabled={p.disabled} onClick={() => p.onRemoveBreak(b)} aria-label={`Remove the ${formatBreak(b.minutes)} break after ${b.word}`} title="Remove">
+                    <X className="h-4 w-4" />
+                  </button>
+                </motion.li>
+              ))}
+            </AnimatePresence>
+          </ul>
+          <div className="mt-1 flex items-center justify-between text-[12px] text-[var(--ss-text-2)]">
+            <span>{p.manualBreaks.length === 1 ? "1 break" : `${p.manualBreaks.length} breaks`}</span>
+            <button type="button" className="ss-link-btn" disabled={p.disabled} onClick={p.onClearBreaks}>Clear all</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

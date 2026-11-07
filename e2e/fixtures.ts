@@ -40,10 +40,18 @@ export interface StartBody {
   text?: string;
   context?: { doc?: unknown; ranges?: [number, number][] } | null;
   targetMinutes?: number | null;
-  breaks?: "auto" | number[];
+  breaks?: "auto" | number[] | { at: number; minutes: number }[];
   typoFrequency?: number;
   seed?: number;
   startInMinutes?: number;
+}
+
+/** What `/api/sync/breaks` received */
+export interface BreaksBody {
+  jobId: string;
+  version?: number;
+  breaks: { at: number; minutes: number }[];
+  current?: { end: true } | { minutes: number };
 }
 
 interface Draft {
@@ -51,8 +59,9 @@ interface Draft {
   selectedDocId?: string | null;
   selectedTabId?: string;
   durationMinutes?: number | null;
-  breaksMode?: "auto" | "none" | "custom";
+  breaksMode?: "auto" | "none" | "custom" | "manual";
   customBreaks?: number[];
+  breakLength?: string;
   typoFrequency?: number;
   zoom?: number | "fit";
   pageless?: boolean;
@@ -94,6 +103,7 @@ export class FakeGoogle {
   edits: EditBody[] = [];
   renames: { documentId: string; name: string }[] = [];
   starts: StartBody[] = [];
+  breakEdits: BreaksBody[] = [];
   jobs: Record<string, unknown>[] = [];
   /** Images uploaded (their data URLs); with `imagesFail`, the upload route answers with an error */
   uploads: string[] = [];
@@ -236,6 +246,22 @@ export class FakeGoogle {
           const status = path.endsWith("pause") ? "paused" : path.endsWith("resume") ? "running" : "cancelled";
           this.jobs = this.jobs.map((j) => (j.id === id ? { ...j, status, lastUpdate: Date.now() } : j));
           return json(route, { job: this.jobs.find((j) => j.id === id) });
+        }
+        case "/api/sync/breaks": {
+          // Like the server: the breaks ahead are replaced, the ones before editableFrom kept
+          const b = body() as unknown as BreaksBody;
+          this.breakEdits.push(b);
+          const job = this.jobs.find((j) => j.id === b.jobId) as Record<string, unknown> | undefined;
+          if (!job) return json(route, { error: "Job not found" }, 404);
+          if ((b.version ?? 0) !== ((job.breaksVersion as number | undefined) ?? 0)) return json(route, { error: "The breaks were changed somewhere else. Check them and try again." }, 409);
+          const from = (job.editableFrom as number | undefined) ?? 0;
+          const at = (job.breakAt as number[] | undefined) ?? [];
+          const mins = (job.breaks as number[] | undefined) ?? [];
+          const kept = at.map((a, i) => ({ at: a, minutes: mins[i] })).filter((x) => x.at < from);
+          const all = [...kept, ...b.breaks].sort((x, y) => x.at - y.at);
+          const next = { ...job, breakAt: all.map((x) => x.at), breaks: all.map((x) => x.minutes), breaksVersion: ((job.breaksVersion as number | undefined) ?? 0) + 1 };
+          this.jobs = this.jobs.map((j) => (j.id === b.jobId ? next : j));
+          return json(route, { job: next, applied: true });
         }
         case "/api/sync/dismiss":
           this.jobs = this.jobs.filter((j) => j.id !== body().jobId);
