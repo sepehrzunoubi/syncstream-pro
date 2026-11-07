@@ -5,16 +5,17 @@
  * left out), what stays as it is, the sync settings and Start sync.
  */
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { FilePlus2, PanelBottom, PanelTop, PenLine, Rows3, Ruler, SeparatorHorizontal, Shuffle, Superscript, Table2, X } from "lucide-react";
-import type { Change, ChangeKind, CompareResult, Kept, Unsupported } from "@/lib/compare-types";
+import { FilePlus2, Heading, PanelBottom, PanelTop, PenLine, Rows3, Ruler, SeparatorHorizontal, Shuffle, Superscript, Table2, X } from "lucide-react";
+import type { Change, ChangeKind, CompareResult, CompareSide, Kept, Unsupported } from "@/lib/compare-types";
+import { tokenize } from "@/lib/doc-model";
 import type { DripPlan } from "@/lib/drip-engine";
 import { describeBreak, formatBreak, parseBreakLength } from "@/lib/breaks";
 import { formatClock, formatSpan } from "@/lib/format";
 import { DURATION_OPTIONS, START_OPTIONS, TYPO_OPTIONS, type ManualBreakRow } from "../workspace/sync-panel";
 import { Icon } from "../workspace/icon";
-import { CHANGE_LABEL, changeTitle, keptLine, plural, unsupportedLine } from "./compare-view";
+import { describeChange, docOf, keptLine, plural, unsupportedLine, type ChangeSource } from "./compare-view";
 import type { CompareSettings } from "./storage";
 
 const ease = [0.2, 0, 0, 1] as const;
@@ -61,6 +62,8 @@ interface ComparePanelProps {
   result: CompareResult;
   /** Every change, skipped ones included, for the list */
   full: CompareResult;
+  /** The reference as loaded: what the list quotes from */
+  reference: CompareSide;
   skip: ReadonlySet<string>;
   onToggleSkip: (id: string) => void;
   onSkipAll: (ids: string[], skip: boolean) => void;
@@ -140,6 +143,8 @@ function Summary({ result, nothing, skipped }: { result: CompareResult; nothing:
 
 function ChangeList(p: ComparePanelProps) {
   const [all, setAll] = useState<Record<string, boolean>>({});
+  // What each change adds, read from the reference tab it comes from
+  const sources = useMemo(() => new Map<string, ChangeSource>(p.reference.tabs.map((t) => [t.id, { tokens: tokenize(docOf(t.doc.nodes)), footnotes: t.doc.footnotes }])), [p.reference]);
   const tabs = p.full.tabs.filter((t) => t.changes.length > 0);
   const many = tabs.length > 1;
   const total = tabs.reduce((n, t) => n + t.changes.length, 0);
@@ -155,31 +160,12 @@ function ChangeList(p: ComparePanelProps) {
       <p className="ss-cmp-hint">In the order the sync types them. Click one to see it on both pages.</p>
       {tabs.map((tab) => {
         const shown = all[tab.rightTabId] ? tab.changes : tab.changes.slice(0, SHOWN);
+        const src = sources.get(tab.rightTabId) ?? null;
         return (
           <div key={tab.rightTabId} className="ss-cmp-group">
             {many && <h3 className="ss-cmp-h3">{tab.rightTitle}</h3>}
             <ul className="ss-cmp-changes">
-              {shown.map((c) => {
-                const off = p.skip.has(c.id);
-                const title = changeTitle(c);
-                return (
-                  <li key={c.id} className="ss-cmp-change" data-off={off ? "true" : undefined} data-active={p.activeChange === c.id ? "true" : undefined}>
-                    <button type="button" className="ss-cmp-change-main" onClick={() => p.onJump(c)} aria-label={`${CHANGE_LABEL[c.kind]}: ${title}. ${c.where}. Show it on the pages`}>
-                      <span className="ss-cmp-kind" aria-hidden="true">{KIND_ICON[c.kind]}</span>
-                      <span className="min-w-0 flex-1">
-                        <span className="ss-cmp-change-text">{c.kind === "text" || c.kind === "paragraph" || c.kind === "list" || c.kind === "cell" ? <>&ldquo;{title}&rdquo;</> : title}</span>
-                        <span className="ss-cmp-change-where">
-                          {CHANGE_LABEL[c.kind]} · {c.where}{c.words > 0 ? ` · ${plural(c.words, "word")}` : ""}{c.when === "start" ? " · set up first" : ""}
-                        </span>
-                      </span>
-                    </button>
-                    <label className="ss-cmp-toggle" title={off ? "Left out. Click to copy it" : "Copied. Click to leave it out"}>
-                      <input type="checkbox" checked={!off} onChange={() => p.onToggleSkip(c.id)} aria-label={`Copy ${title}`} />
-                      <span className="ss-cmp-toggle-track" aria-hidden="true"><span className="ss-cmp-toggle-thumb" /></span>
-                    </label>
-                  </li>
-                );
-              })}
+              {shown.map((c) => <ChangeRow key={c.id} c={c} src={src} off={p.skip.has(c.id)} active={p.activeChange === c.id} onJump={p.onJump} onToggle={p.onToggleSkip} />)}
             </ul>
             {tab.changes.length > SHOWN && (
               <button type="button" className="ss-side-more ml-0" onClick={() => setAll((a) => ({ ...a, [tab.rightTabId]: !a[tab.rightTabId] }))}>
@@ -190,6 +176,36 @@ function ChangeList(p: ComparePanelProps) {
         );
       })}
     </section>
+  );
+}
+
+function ChangeRow({ c, src, off, active, onJump, onToggle }: { c: Change; src: ChangeSource | null; off: boolean; active: boolean; onJump: (c: Change) => void; onToggle: (id: string) => void }) {
+  const v = useMemo(() => describeChange(c, src), [c, src]);
+  const meta = [v.label, c.words > 0 ? plural(c.words, "word") : "", v.where].filter(Boolean).join(" · ");
+  // One paragraph wraps to two lines; more show their first two, a line each
+  const single = v.lines.length === 1;
+  return (
+    <li className="ss-cmp-change" data-off={off ? "true" : undefined} data-active={active ? "true" : undefined}>
+      <button
+        type="button"
+        className="ss-cmp-change-main"
+        onClick={() => onJump(c)}
+        title={c.when === "start" ? "Made when the sync starts, before the typing" : undefined}
+        aria-label={`${v.label}: ${v.summary}.${v.where ? ` ${v.where.replace(/[.\s]+$/, "")}.` : ""} Show it on the pages`}
+      >
+        <span className="ss-cmp-kind" aria-hidden="true">{v.label === "Heading" || v.label === "Title" || v.label === "Subtitle" ? lucide(Heading) : v.label.startsWith("Image") ? KIND_ICON.image : KIND_ICON[c.kind]}</span>
+        <span className="min-w-0 flex-1">
+          <span className="ss-cmp-change-text" data-single={single ? "true" : undefined}>
+            {v.lines.map((l, i) => <span key={i} className="ss-cmp-line" data-kind={l.kind}>{l.text}</span>)}
+          </span>
+          <span className="ss-cmp-change-where">{meta}</span>
+        </span>
+      </button>
+      <label className="ss-cmp-toggle" title={off ? "Left out. Click to copy it" : "Copied. Click to leave it out"}>
+        <input type="checkbox" checked={!off} onChange={() => onToggle(c.id)} aria-label={`Copy into your document: ${v.summary}`} />
+        <span className="ss-cmp-toggle-track" aria-hidden="true"><span className="ss-cmp-toggle-thumb" /></span>
+      </label>
+    </li>
   );
 }
 

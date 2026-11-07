@@ -43,17 +43,19 @@ export function CompareSidebar(p: CompareSidebarProps) {
             const target = p.tabMap[rt.id] ?? tab?.target;
             const status = tab ? tabStatus(tab, p.skip) : { label: "Not copied", tone: "off" as const };
             const selected = rt.id === p.selected;
-            const where = target?.kind === "tab" ? p.left.tabs.find((t) => t.id === target.leftTabId)?.title : null;
+            // Where it goes, when that isn't a tab of the same name
+            const into = target?.kind === "tab" ? p.left.tabs.find((t) => t.id === target.leftTabId)?.title ?? null : null;
+            const where = into != null && into.trim().toLowerCase() !== rt.title.trim().toLowerCase() ? into : null;
             return (
               <li key={rt.id} style={{ paddingLeft: rt.level * 16 }}>
-                <button type="button" className="ss-cmp-tab" aria-current={selected ? "page" : undefined} onClick={() => p.onSelect(rt.id)} title={rt.title}>
+                <button type="button" className="ss-cmp-tab" aria-current={selected ? "page" : undefined} onClick={() => p.onSelect(rt.id)} title={where ? `${rt.title}, into “${where}”` : rt.title}>
                   <span className="ss-doc-tab-icon">{rt.emoji ? <span className="ss-doc-tab-emoji" aria-hidden>{rt.emoji}</span> : <Icon name="article" size={20} />}</span>
                   <span className="ss-cmp-tab-text">
                     <span className="ss-cmp-tab-title">{rt.title}</span>
                     <span className="ss-cmp-tab-status" data-tone={status.tone}>
                       <span className="ss-cmp-dot" aria-hidden="true" />
                       {status.label}
-                      {where && target?.kind === "tab" && <span className="ss-cmp-tab-into"> · into {target.rename ? `“${where}”, renamed` : `“${where}”`}</span>}
+                      {where && <span className="ss-cmp-tab-into">· into “{where}”</span>}
                     </span>
                   </span>
                 </button>

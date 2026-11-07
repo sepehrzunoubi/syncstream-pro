@@ -1,6 +1,6 @@
 import { expect, test, tabContent, type FakeGoogle } from "./fixtures";
 import type { Page, Route } from "@playwright/test";
-import type { CompareLoadResponse, CompareStartBody, CompareTab } from "../src/lib/compare-types";
+import type { CompareLoadResponse, CompareStartBody, CompareTab, TabMap } from "../src/lib/compare-types";
 
 // Compare & Sync: pick your document and a reference, see what the sync adds, leave parts out,
 // place breaks, start; the editor then shows the sync. Google is the fixtures' fake; the compare
@@ -13,14 +13,14 @@ const NEW_LINE = "Beta two is the part the reference added.";
 const tab = (id: string, title: string, texts: string[], index: number): CompareTab => ({ id, title, level: 0, parentId: null, index, doc: tabContent(texts) });
 
 /** Your document lacks a paragraph of the reference's first tab, and its whole second tab */
-function comparison(rev = 1): CompareLoadResponse {
+function comparison(rev = 1, given: TabMap = {}): CompareLoadResponse {
   return {
     left: { documentId: LEFT, name: "Team notes", revisionId: `left-${rev}`, tabs: [tab("t.left", "Overview", ["Alpha one stays as it is.", "Gamma three closes it."], 0)] },
     right: {
       documentId: RIGHT, name: "Team notes (final)", revisionId: `right-${rev}`,
       tabs: [tab("t.ref", "Overview", ["Alpha one stays as it is.", NEW_LINE, "Gamma three closes it."], 0), tab("t.app", "Appendix", ["Only the reference has this appendix."], 1)],
     },
-    tabMap: { "t.ref": { kind: "tab", leftTabId: "t.left" }, "t.app": { kind: "new", title: "Appendix", parentRightTabId: null } },
+    tabMap: { "t.ref": { kind: "tab", leftTabId: "t.left" }, "t.app": { kind: "new", title: "Appendix", parentRightTabId: null }, ...given },
     canEdit: true,
   };
 }
@@ -48,7 +48,9 @@ async function openCompare(page: Page, api: FakeGoogle, session?: Record<string,
     const url = new URL(route.request().url());
     if (url.pathname === "/api/compare/load") {
       fake.loads.push(url.searchParams);
-      return json(route, comparison(fake.loads.length));
+      // As the route does: the tab choices given win, the rest are matched automatically
+      const map = url.searchParams.get("map");
+      return json(route, comparison(fake.loads.length, map ? (JSON.parse(map) as TabMap) : {}));
     }
     if (url.pathname === "/api/compare/start") {
       const body = route.request().postDataJSON() as CompareStartBody;
@@ -80,6 +82,12 @@ const PICKED = { left: { id: LEFT, name: "Team notes" }, right: { id: RIGHT, nam
 const yours = (page: Page) => page.locator('.ss-cmp-pane[aria-label^="Your document"]');
 const reference = (page: Page) => page.locator('.ss-cmp-pane[aria-label="Reference"]');
 const changeRow = (page: Page, text: string) => page.locator(".ss-cmp-change", { hasText: text });
+
+/** A reference tab in the tabs panel, opened first (at this width the tabs don't show by themselves) */
+async function refTab(page: Page, title: string) {
+  if (!(await page.locator(".ss-cmp-tab").count())) await page.getByRole("button", { name: "Show tabs" }).click();
+  return page.locator(".ss-cmp-tab", { hasText: title });
+}
 
 /** The comparison is on both pages and in the panel */
 async function compared(page: Page) {
@@ -132,7 +140,7 @@ test.describe("Compare & Sync", () => {
     await expect(yours(page).locator(".ProseMirror")).toContainText("Alpha one stays as it is.");
     await expect(yours(page).locator(".ss-add", { hasText: "Alpha one" })).toHaveCount(0);
     // The new tab is listed with the reference's tabs
-    await expect(page.locator(".ss-cmp-tab", { hasText: "Appendix" })).toContainText("New tab");
+    await expect(await refTab(page, "Appendix")).toContainText("New tab");
     // The session is kept: a reload compares the same two documents again
     await page.reload();
     await compared(page);
@@ -174,9 +182,25 @@ test.describe("Compare & Sync", () => {
       leftId: LEFT, rightId: RIGHT, leftRevision: "left-1", rightRevision: "right-1",
       skip: [], breaksMode: "auto", breaks: [], targetMinutes: null, typoFrequency: 0.5, startInMinutes: 0, documentName: "Team notes",
     });
-    expect(body.tabMap["t.ref"]).toEqual({ kind: "tab", leftTabId: "t.left" });
-    expect(body.tabMap["t.app"]).toMatchObject({ kind: "new", title: "Appendix" });
+    // Only the tab choices made by hand (none here): the route matches the rest again, the same way
+    expect(body.tabMap).toEqual({});
     expect(Number.isInteger(body.seed)).toBe(true);
+  });
+
+  test("a tab's target is read again and sent as chosen, and only that choice", async ({ page, api, app }) => {
+    void app;
+    const fake = await openCompare(page, api, PICKED);
+    await compared(page);
+    await (await refTab(page, "Appendix")).click();
+    // The select under the tab (the last tab's folds away)
+    await page.locator("li", { has: page.locator(".ss-cmp-tab", { hasText: "Appendix" }) }).getByLabel("Copy into", { exact: true }).selectOption("skip");
+    await expect(await refTab(page, "Appendix")).toContainText("Not copied");
+    expect(fake.loads).toHaveLength(2);
+    expect(JSON.parse(fake.loads[1].get("map") ?? "{}")).toEqual({ "t.app": { kind: "skip" } });
+    await expect(changeRow(page, "Only the reference has")).toHaveCount(0);
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect.poll(() => fake.starts.length).toBe(1);
+    expect(fake.starts[0].tabMap).toEqual({ "t.app": { kind: "skip" } });
   });
 
   test("a Manual break is placed on a glowing word and sent by its place in the reference", async ({ page, api, app }) => {
@@ -203,7 +227,7 @@ test.describe("Compare & Sync", () => {
     void app;
     const fake = await openCompare(page, api, PICKED);
     await compared(page);
-    await page.locator(".ss-cmp-tab", { hasText: "Appendix" }).click();
+    await (await refTab(page, "Appendix")).click();
     await changeRow(page, "Only the reference has").locator(".ss-cmp-toggle").click();
     fake.startAnswer = "changed";
     await page.getByRole("button", { name: "Start sync" }).click();

@@ -184,8 +184,10 @@ function Picker(p: DocChipProps) {
             <span className="ss-cmp-picker-icon" aria-hidden="true">
               {r.kind === "new" ? <Icon name="note_add" size={20} /> : r.kind === "link" ? <Link2 className="h-[18px] w-[18px]" /> : <Icon name="description" size={20} />}
             </span>
-            <span className="ss-cmp-picker-name">
-              {r.kind === "new" ? "New blank document" : r.kind === "link" ? (r.doc?.name ? r.doc.name : "Open the document from this link") : r.doc?.name ? <Matched name={r.doc.name} q={q} /> : "Untitled document"}
+            <span className="ss-cmp-picker-name" title={r.kind === "doc" && r.doc?.name ? r.doc.name : undefined}>
+              <span className="ss-cmp-picker-title">
+                {r.kind === "new" ? "New blank document" : r.kind === "link" ? (r.doc?.name ? r.doc.name : "Open the document from this link") : r.doc?.name ? <Matched name={r.doc.name} q={q} /> : "Untitled document"}
+              </span>
               {r.kind === "new" && <span className="ss-cmp-picker-sub">Everything in the reference is typed into it</span>}
               {r.kind === "link" && !r.disabledWhy && <span className="ss-cmp-picker-sub">You need access to it in Google Drive</span>}
             </span>

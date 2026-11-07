@@ -151,10 +151,10 @@ export function ComparePane(p: ComparePaneProps) {
     <section className={`ss-cmp-pane ${p.className ?? ""}`} aria-label={p.title}>
       <div className="ss-cmp-pane-head">
         <span className="ss-cmp-pane-title">{p.title}</span>
-        {p.tabTitle && <span className="ss-cmp-pane-tab" title={`Tab: ${p.tabTitle}`}><span aria-hidden="true">·</span> {p.tabTitle}</span>}
+        {p.tabTitle && <span className="ss-cmp-pane-tab" title={`Tab: ${p.tabTitle}`}><span className="ss-cmp-pane-dot" aria-hidden="true">·</span>{p.tabTitle}</span>}
         {p.legend && <span className="ss-cmp-legend">{p.legend}</span>}
       </div>
-      <div ref={p.scrollerRef} className="ss-cmp-scroll ss-canvas" onScroll={p.onScroll} tabIndex={0}>
+      <div ref={p.scrollerRef} className="ss-cmp-scroll ss-canvas" onScroll={p.onScroll} tabIndex={0} role="region" aria-label={`${p.title}${p.tabTitle ? `, ${p.tabTitle}` : ""}, scroll with the arrow keys`} aria-busy={p.loading || undefined}>
         {p.overlay}
         {p.loading && <PageSkeleton scale={fit} w={narrow ? Math.max(0, width - 16) / fit : geometry.w} />}
         {!p.loading && p.placeholder}

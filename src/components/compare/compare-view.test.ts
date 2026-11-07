@@ -4,10 +4,11 @@ import { getSchema } from "@tiptap/core";
 import { Node as PMNode } from "@tiptap/pm/model";
 import type { CompareSide, CompareTab, TabCompare } from "@/lib/compare-types";
 import type { EditorNode } from "@/lib/rich-text";
-import { BREAK_MARK, PENDING_MARK } from "@/lib/doc-model";
+import { BREAK_MARK, PENDING_MARK, tokenize } from "@/lib/doc-model";
+import type { Change } from "@/lib/compare-types";
 import { editorExtensions } from "../workspace/extensions";
 import { tokenPositions } from "../workspace/pagination";
-import { anchorPairs, isDefaultTabTitle, keptLine, mapOffset, tabStatus, targetFor, targetValue, tokenRange, typedText, unsupportedLine } from "./compare-view";
+import { anchorPairs, describeChange, docOf, isDefaultTabTitle, keptLine, mapOffset, tabStatus, targetFor, targetValue, tokenRange, typedText, unsupportedLine } from "./compare-view";
 import { parseDocRef } from "./doc-link";
 import { FOCUS_MAX_AGE_MS, parseSession, readFocusHandoff } from "./storage";
 import { tabContent } from "../../../e2e/fixtures/google-doc";
@@ -50,10 +51,10 @@ test("a tab's status: additions, a new tab, up to date, not copied", () => {
   assert.deepEqual(tabStatus(compareTab({ changes: [change("r", "rename")] }), none), { label: "Small changes", tone: "add" });
 });
 
-test("a target select round-trips, and a blank default tab takes the reference tab's name", () => {
+test("a target select round-trips; a tab picked by hand keeps its name, as the routes keep it", () => {
   const ref = tab("R1", "Introduction", ["Hello"], { emoji: "📘" });
   const left = side([tab("L1", "Tab 1", []), tab("L2", "Notes", ["Mine"])]);
-  assert.deepEqual(targetFor("tab:L1", ref, left), { kind: "tab", leftTabId: "L1", rename: "Introduction" });
+  assert.deepEqual(targetFor("tab:L1", ref, left), { kind: "tab", leftTabId: "L1" });
   assert.deepEqual(targetFor("tab:L2", ref, left), { kind: "tab", leftTabId: "L2" });
   assert.deepEqual(targetFor("new", ref, left), { kind: "new", title: "Introduction", emoji: "📘", parentRightTabId: null });
   assert.deepEqual(targetFor("skip", ref, left), { kind: "skip" });
@@ -132,4 +133,50 @@ test("the editor takes a sync handoff only while it is fresh", () => {
   assert.equal(readFocusHandoff(raw(now + 60_000), now), null);
   assert.equal(readFocusHandoff("garbage", now), null);
   assert.equal(readFocusHandoff(null, now), null);
+});
+
+test("a change reads as what it adds: paragraphs a line each, a table by its shape, a footnote by its words", () => {
+  const h = (t: string): EditorNode => ({ type: "paragraph", attrs: { styleName: "h2" }, content: [text(t)] });
+  const item = (t: string): EditorNode => ({ type: "paragraph", attrs: { list: "kix.b", level: 0 }, content: [text(t)] });
+  const cell = (t: string): EditorNode => ({ type: "tableCell", content: [para(text(t))] });
+  const row = (...cells: string[]): EditorNode => ({ type: "tableRow", content: cells.map(cell) });
+  const nodes: EditorNode[] = [
+    h("Methods"), para(text("We tested twelve hours later.")), item("Sleep"), item("Wake"),
+    { type: "table", content: [row("Group", "N", ""), row("Sleep", "48", "22.4")] },
+    para(text("Recalled"), { type: "footnoteRef", attrs: { fid: "f1", n: "1" } }, text(", and it held a week later.")),
+  ];
+  const tokens = tokenize(docOf(nodes));
+  const at = (pred: (k: number) => boolean) => tokens.findIndex((_, k) => pred(k));
+  const tableAt = at((k) => tokens[k].k === "st" && (tokens[k] as { kind: string }).kind === "table");
+  const tableEnd = at((k) => tokens[k].k === "st" && (tokens[k] as { kind: string }).kind === "tableEnd") + 1;
+  const src = { tokens, footnotes: { f1: { nodes: [para(text("Jenkins (1924)."))] } } };
+  const c = (kind: Change["kind"], right: [number, number] | null, extra: Partial<Change> = {}): Change => ({ id: kind, kind, rightTabId: "R1", words: 3, preview: "", where: "after “Intro”", when: "typed", merged: null, right, ...extra });
+
+  const block = describeChange(c("paragraph", [0, tableAt]), src);
+  assert.deepEqual(block.lines, [{ text: "Methods", kind: "heading" }, { text: "We tested twelve hours later.", kind: "text" }]);
+  assert.equal(block.label, "4 paragraphs");
+  assert.equal(block.summary, "Methods; We tested twelve hours later");
+
+  const items = describeChange(c("list", [at((k) => tokens[k].k === "c" && (tokens[k] as { c: string }).c === "S"), tableAt]), src);
+  assert.equal(items.label, "2 list items");
+  assert.deepEqual(items.lines.map((l) => l.kind), ["item", "item"]);
+
+  const table = describeChange(c("table", [tableAt, tableEnd], { preview: "Group N Sleep 48 22.4" }), src);
+  assert.deepEqual(table.lines, [{ text: "A table, 2 rows by 3 columns", kind: "desc" }, { text: "Group · N", kind: "text" }]);
+  assert.equal(table.label, "Table");
+
+  const fn = at((k) => tokens[k].k === "fn");
+  assert.deepEqual(describeChange(c("footnote", [fn, fn + 1], { preview: "A footnote" }), src).lines, [{ text: "Jenkins (1924).", kind: "text" }]);
+
+  // Words put inside a sentence lose the punctuation they start with
+  const comma = fn + 1;
+  const words = describeChange(c("text", [comma, comma + ", and it held a week later.".length]), src);
+  assert.equal(words.lines[0].text, "…and it held a week later.");
+  assert.equal(words.label, "Words");
+
+  // Changes with no range say what they are
+  assert.deepEqual(describeChange(c("rename", null, { preview: "Results", where: "“Tab 5”" }), src).lines, [{ text: "“Tab 5” becomes “Results”", kind: "desc" }]);
+  const newTab = describeChange(c("tab", null, { preview: "Appendix", where: "as a new tab" }), src);
+  assert.equal(newTab.where, "");
+  assert.equal(newTab.label, "New tab");
 });

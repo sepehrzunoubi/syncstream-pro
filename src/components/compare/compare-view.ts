@@ -6,7 +6,7 @@
 
 import type { Change, ChangeKind, CompareSide, CompareTab, Kept, TabCompare, TabMap, TabTarget, Unsupported } from "@/lib/compare-types";
 import type { EditorNode } from "@/lib/rich-text";
-import { afterWord, BREAK_MARK, PENDING_MARK, tokenize } from "@/lib/doc-model";
+import { afterWord, BREAK_MARK, PENDING_MARK, tokenize, type Tok } from "@/lib/doc-model";
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
@@ -40,10 +40,8 @@ export function targetFor(value: string, rightTab: CompareTab, left: CompareSide
   if (value === "new") return { kind: "new", title: rightTab.title, ...(rightTab.emoji ? { emoji: rightTab.emoji } : {}), parentRightTabId: rightTab.parentId };
   if (!value.startsWith("tab:")) return null;
   const leftTab = left.tabs.find((t) => t.id === value.slice(4));
-  if (!leftTab) return null;
-  // A blank "Tab 1" takes the reference tab's name, as the automatic match does
-  const rename = leftTab.doc.empty && isDefaultTabTitle(leftTab.title) && leftTab.title.trim() !== rightTab.title.trim() ? rightTab.title : undefined;
-  return { kind: "tab", leftTabId: leftTab.id, ...(rename ? { rename } : {}) };
+  // A tab picked by hand keeps its name (only the automatic match renames a blank "Tab 1"), as the routes do
+  return leftTab ? { kind: "tab", leftTabId: leftTab.id } : null;
 }
 
 /** Which reference tab each of your tabs is taken by, so a select can say so */
@@ -117,6 +115,133 @@ export const CHANGE_LABEL: Record<ChangeKind, string> = {
   rename: "Tab name",
   pageSetup: "Page setup",
 };
+
+/** A line of a change in the list: a paragraph it adds, or what a structure is */
+export interface ChangeLine {
+  text: string;
+  /** text: words the sync types; heading or item: a heading or list item it types; desc: a description ("A table, …") */
+  kind: "text" | "heading" | "item" | "desc";
+}
+
+/** How a change reads in the list */
+export interface ChangeView {
+  /** What it adds: its first paragraphs, one per line, or what it is */
+  lines: ChangeLine[];
+  /** What kind of thing it is, counted: "Paragraph", "3 list items", "Table" */
+  label: string;
+  /** Where it goes, when that says something the label doesn't */
+  where: string;
+  /** All of it on one line, for screen readers */
+  summary: string;
+}
+
+/** The reference tab a change comes from, as the list reads it */
+export interface ChangeSource {
+  tokens: Tok[];
+  footnotes?: Record<string, { nodes: EditorNode[] }>;
+}
+
+const HEADING_STYLES = new Set(["title", "subtitle", "h1", "h2", "h3", "h4", "h5", "h6"]);
+const STYLE_LABEL: Record<string, string> = { title: "Title", subtitle: "Subtitle", h1: "Heading", h2: "Heading", h3: "Heading", h4: "Heading", h5: "Heading", h6: "Heading" };
+const clean = (s: string) => s.replace(/[\s ]+/g, " ").trim();
+/** Leading punctuation of words put inside a sentence goes ("…, and it held" reads as "…and it held") */
+const inSentence = (s: string) => {
+  const t = s.replace(/^[\s,.;:)\]}]+/, "");
+  return t && t !== s.trim() ? `…${t}` : t;
+};
+const textOf = (nodes: EditorNode[] | undefined): string => clean((nodes ?? []).map((n) => (n.text ?? "") + textOf(n.content) + (n.type === "paragraph" ? " " : "")).join(""));
+
+interface Read { paras: { text: string; style: string; item: boolean; images: number }[]; tables: string[][][]; fids: string[] }
+
+/** The paragraphs, tables and footnotes in tokens [a, b) */
+function readRange(tokens: Tok[], a: number, b: number): Read {
+  const out: Read = { paras: [], tables: [], fids: [] };
+  let text = "";
+  let images = 0;
+  let depth = 0;
+  // A range that starts inside a table (rows added to one) reads as a table of its own
+  let table: string[][] | null = null;
+  const row = () => table?.[table.length - 1];
+  for (let i = Math.max(0, a); i < Math.min(b, tokens.length); i++) {
+    const t = tokens[i];
+    if (t.k === "c") text += t.c;
+    else if (t.k === "br") text += " ";
+    else if (t.k === "img") images++;
+    else if (t.k === "fn") { if (t.fid) out.fids.push(t.fid); }
+    else if (t.k === "nl") {
+      const cell = row();
+      if (depth > 0 || (table && cell)) { if (cell?.length) cell[cell.length - 1] = clean(`${cell[cell.length - 1]} ${text}`); }
+      else out.paras.push({ text: clean(text), style: String(t.attrs.styleName ?? "normal"), item: !!t.attrs.list, images });
+      text = "";
+      images = 0;
+    } else if (t.k === "st") {
+      if (t.kind === "table") { depth++; if (depth === 1) { table = []; out.tables.push(table); } }
+      else if (t.kind === "tableEnd") { depth = Math.max(0, depth - 1); if (!depth) table = null; }
+      else if (depth <= 1 && t.kind === "row") { if (!table) { table = []; out.tables.push(table); } table.push([]); }
+      else if (depth <= 1 && t.kind === "cell") row()?.push("");
+    }
+  }
+  if (clean(text) || images) out.paras.push({ text: clean(text), style: "normal", item: false, images });
+  return out;
+}
+
+const tableShape = (rows: string[][]) => `${plural(rows.length, "row")} by ${plural(Math.max(0, ...rows.map((r) => r.length)), "column")}`;
+const rowLine = (r: string[]) => r.filter(Boolean).join(" · ");
+
+/**
+ * How a change reads in the list: the paragraphs it adds one per line (a table as its shape, an
+ * image as "An image"), what kind of thing it is, counted, and where it goes.
+ */
+export function describeChange(c: Change, src: ChangeSource | null): ChangeView {
+  const fallback = changeTitle(c);
+  const view = (lines: ChangeLine[], label: string, where = c.where): ChangeView => {
+    const shown = lines.length ? lines : [{ text: fallback, kind: "desc" as const }];
+    return { lines: shown, label, where, summary: shown.map((l) => l.text).join("; ").replace(/[\s.;:,]+$/, "") };
+  };
+  switch (c.kind) {
+    case "tab": return view([{ text: c.preview || "A new tab", kind: "text" }], "New tab", c.where === "as a new tab" ? "" : c.where);
+    case "rename": return view([{ text: `${c.where || "A blank tab"} becomes “${c.preview}”`, kind: "desc" }], "Tab name", "");
+    case "pageSetup": return view([{ text: c.preview || "Page size and margins", kind: "desc" }], "Page setup", "");
+    case "pageBreak": return view([{ text: "A page break", kind: "desc" }], "Page break");
+    case "header":
+    case "footer": return view([c.preview.trim() ? { text: clean(c.preview), kind: "text" } : { text: `An empty ${c.kind}`, kind: "desc" }], CHANGE_LABEL[c.kind], "");
+    default: break;
+  }
+  if (!src || !c.right) return view([{ text: c.kind === "text" ? inSentence(clean(c.preview)) : clean(c.preview), kind: c.preview.trim() ? "text" : "desc" }], CHANGE_LABEL[c.kind]);
+  const r = readRange(src.tokens, c.right[0], c.right[1]);
+  if (c.kind === "footnote") {
+    const words = r.fids.map((id) => textOf(src.footnotes?.[id]?.nodes)).find(Boolean);
+    return view([words ? { text: words, kind: "text" } : { text: "A footnote", kind: "desc" }], "Footnote");
+  }
+  if (c.kind === "table" && r.tables.length) {
+    const t = r.tables[0];
+    const lines: ChangeLine[] = [{ text: `A table, ${tableShape(t)}`, kind: "desc" }];
+    const head = t.length ? rowLine(t[0]) : "";
+    if (head) lines.push({ text: head, kind: "text" });
+    return view(lines, "Table");
+  }
+  if (c.kind === "row" && r.tables.length) {
+    const rows = r.tables.flat();
+    const lines = rows.map(rowLine).filter(Boolean).slice(0, 2).map((text) => ({ text, kind: "text" as const }));
+    return view(lines.length ? lines : [{ text: rows.length === 1 ? "An empty row" : `${rows.length} empty rows`, kind: "desc" }], rows.length === 1 ? "Table row" : plural(rows.length, "table row"));
+  }
+  const paras = r.paras.filter((p) => p.text || p.images);
+  const lines: ChangeLine[] = [];
+  for (const p of paras) {
+    if (lines.length === 2) break;
+    if (!p.text) { lines.push({ text: p.images > 1 ? `${p.images} images` : "An image", kind: "desc" }); continue; }
+    lines.push({ text: c.kind === "text" && !lines.length ? inSentence(p.text) : p.text, kind: HEADING_STYLES.has(p.style) ? "heading" : p.item ? "item" : "text" });
+  }
+  for (const t of r.tables) if (lines.length < 2) lines.push({ text: `A table, ${tableShape(t)}`, kind: "desc" });
+  const n = paras.length;
+  const label = c.kind === "text" ? "Words"
+    : c.kind === "cell" ? "Table cell"
+    : c.kind === "image" || (n === 1 && !paras[0].text) ? (r.paras.reduce((k, p) => k + p.images, 0) > 1 ? "Images" : "Image")
+    : n <= 1 ? (STYLE_LABEL[paras[0]?.style] ?? (paras[0]?.item || c.kind === "list" ? "List item" : "Paragraph"))
+    : paras.every((p) => p.item) ? plural(n, "list item")
+    : plural(n, "paragraph");
+  return view(lines, label);
+}
 
 /** One line for a change in the list: what it adds, where */
 export function changeTitle(c: Change): string {

@@ -1036,7 +1036,7 @@ tr.ss-page-gap { display: table-row; }
 /* ── The documents strip, where the editor's toolbar sits ── */
 .ss-cmp-strip { gap: 4px; padding: 0 6px; overflow: visible; }
 .ss-cmp-chip {
-  display: inline-flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; max-width: 340px; height: 32px;
+  display: inline-flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; max-width: 420px; height: 32px;
   padding: 0 2px 0 4px; border-radius: 16px; background: var(--ss-surface);
   box-shadow: 0 0 0 1px rgba(31, 31, 31, 0.08); transition: box-shadow 150ms, background-color 150ms;
 }
@@ -1083,10 +1083,11 @@ tr.ss-page-gap { display: table-row; }
 .ss-cmp-picker-row[aria-disabled="true"] { cursor: default; }
 .ss-cmp-picker-row[aria-disabled="true"] .ss-cmp-picker-name, .ss-cmp-picker-row[aria-disabled="true"] .ss-cmp-picker-icon { opacity: 0.45; }
 .ss-cmp-picker-row[data-kind="new"] { margin-top: 4px; border-top: 1px solid #e3e3e3; padding-top: 10px; }
-.ss-cmp-picker-row[data-kind="new"] .ss-cmp-picker-name { color: var(--ss-blue); font-weight: 500; }
+.ss-cmp-picker-row[data-kind="new"] .ss-cmp-picker-title { color: var(--ss-blue); font-weight: 500; }
 .ss-cmp-picker-icon { display: grid; flex: none; place-items: center; width: 24px; color: var(--ss-sync-bar); }
-.ss-cmp-picker-name { display: flex; flex: 1; min-width: 0; flex-direction: column; overflow: hidden; font-size: 14px; line-height: 20px; color: var(--ss-text); white-space: nowrap; text-overflow: ellipsis; }
-.ss-cmp-picker-sub { overflow: hidden; font-size: 12px; font-weight: 400; line-height: 16px; color: var(--ss-text-3); text-overflow: ellipsis; }
+.ss-cmp-picker-name { display: flex; flex: 1; min-width: 0; flex-direction: column; font-size: 14px; line-height: 20px; color: var(--ss-text); }
+.ss-cmp-picker-title, .ss-cmp-picker-sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ss-cmp-picker-sub { font-size: 12px; font-weight: 400; line-height: 16px; color: var(--ss-text-3); }
 .ss-cmp-picker-when { flex: none; font-size: 12px; color: var(--ss-text-3); }
 .ss-cmp-picker-tag { flex: none; padding: 0 8px; border-radius: 10px; background: var(--ss-soft); font-size: 11px; line-height: 20px; color: var(--ss-text-2); }
 .ss-cmp-picker-empty { padding: 20px 16px 24px; font-size: 13px; line-height: 18px; color: var(--ss-text-2); text-align: center; }
@@ -1097,12 +1098,13 @@ tr.ss-page-gap { display: table-row; }
 
 /* ── Layout: tabs | two pages | panel ── */
 .ss-cmp-body { display: flex; flex: 1; min-height: 0; }
-.ss-cmp-rail .ss-sidebar { width: 264px; }
+/* No ruler here, so none of the hairline the editor's docked tabs draw under it */
+.ss-cmp-rail .ss-sidebar { width: 264px; background-image: none; }
 .ss-cmp-canvas { position: relative; display: flex; flex: 1; min-width: 0; flex-direction: column; }
 .ss-cmp-aside { flex: none; width: 344px; margin: 0 8px 8px 0; overflow-x: hidden; overflow-y: auto; border-radius: 16px; background: var(--ss-surface); }
 .ss-cmp-panes { position: relative; display: flex; flex: 1; min-height: 0; }
 .ss-cmp-panes[data-wide] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.ss-cmp-pane { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
+.ss-cmp-pane { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; container-type: inline-size; }
 .ss-cmp-panes[data-wide] .ss-cmp-pane + .ss-cmp-pane { border-left: 1px solid #e3e3e3; }
 .ss-cmp-hidden { display: none; }
 .ss-cmp-pane-head {
@@ -1111,11 +1113,15 @@ tr.ss-page-gap { display: table-row; }
 }
 .ss-cmp-pane-title { flex: none; font-size: 14px; font-weight: 500; color: var(--ss-text); }
 .ss-cmp-pane-tab { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ss-text-3); }
+.ss-cmp-pane-dot { margin-right: 6px; }
 .ss-cmp-legend { display: inline-flex; flex: none; align-items: center; gap: 6px; margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--ss-text-3); }
+/* A narrow pane keeps its name and tab; the change list says what glows */
+@container (max-width: 440px) { .ss-cmp-pane-head:has(.ss-cmp-pane-tab) .ss-cmp-legend { display: none; } }
+@container (max-width: 380px) { .ss-cmp-legend { display: none; } }
 /* A sample of the highlight, as the page draws it */
 .ss-cmp-swatch { display: inline-block; padding: 0 3px; border-radius: 2px; background: rgba(26, 115, 232, 0.1); box-shadow: 0 0 0 1px rgba(26, 115, 232, 0.08), 0 0 8px rgba(26, 115, 232, 0.35); font: 500 11px/15px Arial, sans-serif; color: var(--ss-text); }
 .ss-cmp-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; outline: none; }
-.ss-cmp-scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--ss-blue); }
+.ss-cmp-scroll:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ss-blue); }
 .ss-cmp-scroll .ss-pages { margin: 20px auto 48px; }
 .ss-cmp-scroll .ss-placing-bar { top: 12px; margin: 10px auto -46px; }
 /* A comparison read again: a thin bar over the pages */
@@ -1131,12 +1137,14 @@ tr.ss-page-gap { display: table-row; }
   .ss-cmp-body { flex-direction: column; overflow-y: auto; padding-bottom: 72px; }
   /* The switch above says which page this is */
   .ss-cmp-pane-title { display: none; }
-  .ss-cmp-pane-tab > span { display: none; }
+  .ss-cmp-pane-dot { display: none; }
   .ss-cmp-legend { margin-left: auto; }
   .ss-cmp-pane-head:not(:has(.ss-cmp-legend, .ss-cmp-pane-tab)) { display: none; }
-  /* The bar at the bottom has Start; the card keeps the time it takes */
-  .ss-cmp-start { position: static; }
+  /* The bar at the bottom has Start; the card keeps the time it takes, in the flow */
+  .ss-cmp-aside .ss-cmp-start { position: static; background: none; }
   .ss-cmp-start .ss-btn-filled { display: none; }
+  /* Full width, the panel's lines and fields would stretch too far to read */
+  .ss-cmp-panel { max-width: 720px; margin: 0 auto; }
   .ss-cmp-canvas { flex: none; }
   .ss-cmp-panes { height: min(72vh, 820px); flex: none; margin: 0 8px; overflow: hidden; border-radius: 16px; background: var(--ss-canvas); box-shadow: 0 0 0 1px #e3e3e3; }
   .ss-cmp-aside { width: auto; margin: 8px; overflow: visible; }
@@ -1180,7 +1188,7 @@ tr.ss-page-gap { display: table-row; }
   box-decoration-break: clone;
 }
 /* Images are pointed out through their paragraph (a decoration on the image itself would redraw it without its size) */
-.ss-doc .ss-cmp-copy-img img { outline: 2px solid rgba(26, 115, 232, 0.4); outline-offset: 2px; box-shadow: 0 0 12px rgba(26, 115, 232, 0.35); }
+.ss-doc .ss-cmp-copy-img img, .ss-cmp .ss-doc.ss-glow .ss-add img { outline: 2px solid rgba(26, 115, 232, 0.4); outline-offset: 2px; box-shadow: 0 0 12px rgba(26, 115, 232, 0.35); }
 .ss-doc .ss-cmp-skip-img img { opacity: 0.55; outline: 1px dashed #80868b; outline-offset: 2px; }
 .ss-doc .ss-cmp-flash-img img { animation: ss-cmp-flash-img 1.6s cubic-bezier(0.2, 0, 0, 1); }
 @keyframes ss-cmp-flash-img { 0%, 30% { outline: 3px solid rgba(251, 188, 4, 0.9); outline-offset: 2px; } 100% { outline: 3px solid rgba(251, 188, 4, 0); outline-offset: 2px; } }
@@ -1190,6 +1198,9 @@ tr.ss-page-gap { display: table-row; }
   -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
 .ss-doc .ss-cmp-block { border-radius: 2px; box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.28), 0 0 14px rgba(26, 115, 232, 0.25); }
+/* A table's wrapper spans the page: the outline goes round the table itself */
+.ss-doc .tableWrapper.ss-cmp-block { border-radius: 0; box-shadow: none; }
+.ss-doc .tableWrapper.ss-cmp-block > table { box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.28), 0 0 14px rgba(26, 115, 232, 0.25); }
 .ss-doc .ss-cmp-flash { border-radius: 2px; animation: ss-cmp-flash 1.6s cubic-bezier(0.2, 0, 0, 1); -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 @keyframes ss-cmp-flash {
   0%, 30% { background-color: rgba(251, 188, 4, 0.55); box-shadow: 0 0 0 3px rgba(251, 188, 4, 0.3); }
@@ -1259,9 +1270,16 @@ button.ss-cmp-tab:hover:not([aria-current="page"]) { background: var(--ss-hover)
 .ss-cmp-change-main { display: flex; flex: 1; min-width: 0; align-items: flex-start; gap: 12px; padding: 8px 4px 8px 8px; border-radius: 12px; text-align: left; }
 .ss-cmp-kind { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--ss-soft); color: var(--ss-text-2); }
 .ss-cmp-change[data-active="true"] .ss-cmp-kind { background: var(--ss-surface); color: var(--ss-sync-bar); }
-.ss-cmp-change-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 13px; line-height: 18px; color: var(--ss-text); word-break: break-word; }
+.ss-cmp-change-text { display: flex; min-width: 0; flex-direction: column; font-size: 13px; line-height: 18px; color: var(--ss-text); }
+/* A line per paragraph; one paragraph alone may take two */
+.ss-cmp-line { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ss-cmp-change-text[data-single] .ss-cmp-line { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; word-break: break-word; }
+.ss-cmp-line[data-kind="heading"] { font-weight: 500; }
+.ss-cmp-line[data-kind="item"]::before { content: "•"; margin-right: 6px; color: var(--ss-text-3); }
+/* What a table starts with, under its shape */
+.ss-cmp-line[data-kind="desc"] + .ss-cmp-line { color: var(--ss-text-2); }
 .ss-cmp-change-where { display: block; margin-top: 2px; overflow: hidden; font-size: 12px; line-height: 16px; color: var(--ss-text-3); white-space: nowrap; text-overflow: ellipsis; }
-.ss-cmp-change[data-off] .ss-cmp-change-text { color: var(--ss-text-3); text-decoration: line-through; text-decoration-color: rgba(68, 71, 70, 0.4); }
+.ss-cmp-change[data-off] .ss-cmp-line { color: var(--ss-text-3); text-decoration: line-through; text-decoration-color: rgba(68, 71, 70, 0.4); }
 .ss-cmp-change[data-off] .ss-cmp-kind { opacity: 0.55; }
 /* A small Material switch: on copies the change */
 .ss-cmp-toggle { position: relative; display: inline-flex; flex: none; align-items: center; padding: 8px 8px 8px 4px; cursor: pointer; }

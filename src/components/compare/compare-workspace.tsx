@@ -9,8 +9,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
-import { ArrowLeftRight, ArrowUpDown } from "lucide-react";
-import type { Change, CompareBreak, CompareLoadResponse, CompareStartBody, TabMap, TabTarget } from "@/lib/compare-types";
+import { ArrowLeftRight, ArrowUpDown, FileX2, Files, KeyRound, TriangleAlert } from "lucide-react";
+import type { Change, CompareBreak, CompareLoadResponse, CompareSide, CompareStartBody, TabMap, TabTarget } from "@/lib/compare-types";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { buildDripPlan } from "@/lib/drip-engine";
@@ -48,6 +48,11 @@ const pairOf = (s: CompareSession) => (s.left && s.right ? `${s.left.id}|${s.rig
 /** Another pair of documents starts afresh: tab choices, left-out changes and breaks belong to the last pair */
 const resetFor = (s: CompareSession, next: Partial<CompareSession>): CompareSession => ({ ...s, ...next, tabMap: {}, skip: [], breaks: [], tab: null });
 const CHANGED = "One of the documents changed. Here's the new comparison.";
+/**
+ * The tab choices the user made, for these documents. Only those are sent: the routes match the
+ * rest again the same way (same revisions, same answer), automatic renames of blank tabs included.
+ */
+const choicesFor = (map: TabMap, right: CompareSide): TabMap => Object.fromEntries(Object.entries(map).filter(([id]) => right.tabs.some((t) => t.id === id)));
 
 /** What a failed load says, in plain words */
 function loadError(status: number, error?: string): string {
@@ -86,17 +91,17 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
   }, []);
 
   // Layout: both pages side by side from 1100px, one at a time below; the tabs dock from 1360px
-  // (narrower, they open over the pages: the pages need the room)
+  // (narrower, they open over the pages: the pages need the room), and show by themselves from
+  // 1600px (below, two pages beside the tabs and the panel would be too small to read)
   const [wide, setWide] = useState(true);
   const [railWide, setRailWide] = useState(true);
+  const [railAuto, setRailAuto] = useState(true);
   useEffect(() => {
-    const a = window.matchMedia("(min-width: 1100px)");
-    const b = window.matchMedia("(min-width: 1360px)");
-    const apply = () => { setWide(a.matches); setRailWide(b.matches); };
+    const queries = [1100, 1360, 1600].map((w) => window.matchMedia(`(min-width: ${w}px)`));
+    const apply = () => { setWide(queries[0].matches); setRailWide(queries[1].matches); setRailAuto(queries[2].matches); };
     apply();
-    a.addEventListener("change", apply);
-    b.addEventListener("change", apply);
-    return () => { a.removeEventListener("change", apply); b.removeEventListener("change", apply); };
+    for (const q of queries) q.addEventListener("change", apply);
+    return () => { for (const q of queries) q.removeEventListener("change", apply); };
   }, []);
   const [railOpen, setRailOpen] = useState<boolean | null>(null);
   const [shown, setShown] = useState<"left" | "right">("left");
@@ -179,7 +184,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
   const fullTab = full?.tabs.find((t) => t.rightTabId === tabId) ?? null;
   const rightTab = data?.right.tabs.find((t) => t.id === tabId) ?? null;
   const multiTab = !!data && (data.left.tabs.length > 1 || data.right.tabs.length > 1);
-  useEffect(() => { if (data && railOpen == null) setRailOpen(railWide && multiTab); }, [data, railOpen, railWide, multiTab]);
+  useEffect(() => { if (data && railOpen == null) setRailOpen(railAuto && multiTab); }, [data, railOpen, railAuto, multiTab]);
   const showRail = !!data && !!applied && !!railOpen;
 
   // ── The two pages ──
@@ -358,10 +363,10 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
   // ── Tab choices, skipped changes, settings ──
   const setTarget = useCallback((rightTabId: string, target: TabTarget) => {
     if (!data) return;
-    const tabMap = { ...sessionRef.current.tabMap, [rightTabId]: target };
+    const tabMap = { ...choicesFor(sessionRef.current.tabMap, data.right), [rightTabId]: target };
     patch({ tabMap });
     // The reference is read again against the styles of the tab it now goes into
-    void fetchCompare({ map: { ...data.tabMap, ...tabMap }, keep: true });
+    void fetchCompare({ map: tabMap, keep: true });
   }, [data, patch, fetchCompare]);
   const toggleSkip = useCallback((id: string) => setSession((s) => ({ ...s, skip: s.skip.includes(id) ? s.skip.filter((x) => x !== id) : [...s.skip, id] })), []);
   const skipAll = useCallback((ids: string[], on: boolean) => setSession((s) => ({ ...s, skip: on ? Array.from(new Set([...s.skip, ...ids])) : s.skip.filter((x) => !ids.includes(x)) })), []);
@@ -398,7 +403,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
         rightId: data.right.documentId,
         leftRevision: data.left.revisionId,
         rightRevision: data.right.revisionId,
-        tabMap: data.tabMap,
+        tabMap: choicesFor(sessionRef.current.tabMap, data.right),
         skip,
         breaksMode: settings.breaksMode,
         documentName: data.left.name,
@@ -414,7 +419,8 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
         // Read both again; the tab choices, left-out changes and breaks carry over (they go by the reference)
         await fetchCompare({ keep: true });
         setNotice(CHANGED);
-        setSnack(CHANGED);
+        // The notice is in the panel; one page at a time, the panel may be out of view
+        if (!wide) setSnack(CHANGED);
         return;
       }
       if (!ok || !res.job) throw new Error(res.error || `Couldn't start the sync (HTTP ${status})`);
@@ -427,12 +433,14 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
     } finally {
       setStarting(false);
     }
-  }, [data, applied, starting, blocked, settings, skip, seed, fetchCompare, router, setSnack]);
+  }, [data, applied, starting, blocked, settings, skip, seed, fetchCompare, router, setSnack, wide]);
   // Starting ends placing breaks; so does a new comparison
   useEffect(() => { if (leftEditor && !leftEditor.isDestroyed) setBreakUi(leftEditor.view, { hover: null }); }, [leftEditor, leftKey]);
 
   // ── What the page says ──
-  const status = !left || !right ? "Pick your document and the reference"
+  const status = !left && !right ? "Pick your document and the reference"
+    : !right ? "Now pick the reference"
+    : !left ? "Now pick your document"
     : left.id === right.id ? "Pick two different documents"
     : load.status === "loading" ? "Reading both documents"
     : load.status === "error" || compareError ? "Couldn't compare"
@@ -443,8 +451,9 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
     <div className="ss-noprint ss-toolbar-wrap">
       <div className="ss-toolbar ss-cmp-strip" role="toolbar" aria-label="Documents">
         {data && !showRail && (
-          <button type="button" className="ss-icon-btn ss-cmp-tabs-btn" onClick={() => setRailOpen(true)} title="Show tabs" aria-label="Show tabs">
+          <button type="button" className={`ss-icon-btn ss-cmp-tabs-btn ${multiTab ? "ss-cmp-tool" : ""}`} onClick={() => setRailOpen(true)} title="Show the reference's tabs" aria-label="Show tabs">
             <Icon name="notes" />
+            {multiTab && <span className="ss-cmp-tool-label">{plural(data.right.tabs.length, "tab")}</span>}
           </button>
         )}
         <DocChip side="left" doc={left} other={right} recent={recent} recentState={recentState} onPick={(d) => pick("left", d)} onCreate={() => { void createBlank(); }} creating={creating} open={picker === "left"} onOpenChange={(o) => setPicker(o ? "left" : null)} />
@@ -455,7 +464,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
         </button>
         <span className="ss-cmp-strip-gap" />
         {wide && applied && (
-          <button type="button" className="ss-icon-btn ss-cmp-tool" data-on={session.scrollSync ? "true" : undefined} aria-pressed={session.scrollSync} onClick={() => patch({ scrollSync: !session.scrollSync })} title={session.scrollSync ? "Scrolling both pages together. Click to scroll each on its own" : "Scroll both pages together"}>
+          <button type="button" className="ss-icon-btn ss-cmp-tool" data-on={session.scrollSync ? "true" : undefined} aria-pressed={session.scrollSync} aria-label="Scroll together" onClick={() => patch({ scrollSync: !session.scrollSync })} title={session.scrollSync ? "Scrolling both pages together. Click to scroll each on its own" : "Scroll both pages together"}>
             <ArrowUpDown className="h-[18px] w-[18px]" strokeWidth={1.75} />
             <span className="ss-cmp-tool-label">Scroll together</span>
           </button>
@@ -485,22 +494,34 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
       <button type="button" className="ss-btn ss-btn-outlined mt-4" onClick={() => setTarget(tab.rightTabId, { kind: "new", title: tab.rightTitle, ...(rightTab?.emoji ? { emoji: rightTab.emoji } : {}), parentRightTabId: rightTab?.parentId ?? null })}>Copy it as a new tab</button>
     </div>
   ) : null;
-  const leftTitleTab = multiTab && tab ? (tab.target.kind === "tab" ? data!.left.tabs.find((t) => t.id === (tab.target as { leftTabId: string }).leftTabId)?.title ?? null : tab.target.kind === "new" ? `${tab.rightTitle} (new tab)` : null) : null;
+  // The tab as it will be after the sync: a blank "Tab 1" already under the name it takes
+  const leftTitleTab = !multiTab || !tab ? null
+    : tab.target.kind === "tab" ? tab.target.rename ?? data!.left.tabs.find((t) => t.id === (tab.target as { leftTabId: string }).leftTabId)?.title ?? null
+    : tab.target.kind === "new" ? `${tab.rightTitle} (new tab)` : null;
 
   const canvas = (() => {
     if (!left || !right) return <EmptyState left={left} right={right} onPick={setPicker} />;
-    if (left.id === right.id) return <Problem title="Pick two different documents" body="Your document and the reference are the same document. Choose another one for either side." actions={<button type="button" className="ss-btn ss-btn-outlined" onClick={() => setPicker("right")}>Choose the reference</button>} />;
+    if (left.id === right.id) return <Problem icon={lucideBig(Files)} title="Pick two different documents" body="Your document and the reference are the same document. Choose another one for either side." actions={<button type="button" className="ss-btn ss-btn-outlined" onClick={() => setPicker("right")}>Choose the reference</button>} />;
     if (load.status === "error") {
-      return (
-        <Problem title="Couldn't compare these documents" body={load.message} actions={
-          <>
-            <button type="button" className="ss-btn ss-btn-tonal" onClick={() => { void fetchCompare(); }}><Icon name="refresh" />Try again</button>
-            {(load.code === 403 || load.code === 404) && <button type="button" className="ss-btn ss-btn-text" onClick={() => setPicker("right")}>Choose another reference</button>}
-          </>
-        } />
-      );
+      const again = <button type="button" className="ss-btn ss-btn-tonal" onClick={() => { void fetchCompare(); }}><Icon name="refresh" />Try again</button>;
+      if (load.code === 401) {
+        return <Problem icon={lucideBig(KeyRound)} title="Reconnect your Google account" body="Your Google sign-in expired, so SyncStream can't read your documents. Sign in again and the comparison carries on." actions={<button type="button" className="ss-btn ss-btn-filled" onClick={onReauth}>Reconnect Google account</button>} />;
+      }
+      if (load.code === 403 || load.code === 404) {
+        // The route names the document it couldn't open
+        const side: Side = /your document/i.test(load.message) ? "left" : "right";
+        return (
+          <Problem icon={load.code === 403 ? <Icon name="lock" size={28} /> : lucideBig(FileX2)} title={`${load.code === 403 ? "No access to" : "Can't find"} ${side === "left" ? "your document" : "the reference"}`} body={load.message} actions={
+            <>
+              <button type="button" className="ss-btn ss-btn-tonal" onClick={() => setPicker(side)}>{side === "left" ? "Choose another document" : "Choose another reference"}</button>
+              <button type="button" className="ss-btn ss-btn-text" onClick={() => { void fetchCompare(); }}>Try again</button>
+            </>
+          } />
+        );
+      }
+      return <Problem icon={<Icon name="cloud_off" size={28} />} title="Couldn't read the documents" body={load.message} actions={again} />;
     }
-    if (compareError) return <Problem title="Couldn't compare these documents" body={compareError} actions={<button type="button" className="ss-btn ss-btn-tonal" onClick={() => { void fetchCompare(); }}><Icon name="refresh" />Try again</button>} />;
+    if (compareError) return <Problem icon={lucideBig(TriangleAlert)} title="Couldn't compare these documents" body={compareError} actions={<button type="button" className="ss-btn ss-btn-tonal" onClick={() => { void fetchCompare(); }}><Icon name="refresh" />Try again</button>} />;
     const loading = load.status === "loading" || !ready;
     return (
       <>
@@ -563,7 +584,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
 
   const panelNotice = (
     <>
-      {scopeError && (
+      {scopeError && !(load.status === "error" && load.code === 401) && (
         <div className="ss-cmp-banner" data-tone="error">
           Google didn&apos;t give SyncStream access to your documents.
           <a href="/api/auth/login" className="mt-1 block font-medium underline">Reconnect Google account</a>
@@ -589,6 +610,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
     <ComparePanel
       result={applied!}
       full={full!}
+      reference={data!.right}
       skip={skipSet}
       onToggleSkip={toggleSkip}
       onSkipAll={skipAll}
@@ -716,10 +738,12 @@ function EmptyState({ left, right, onPick }: { left: PickedDoc | null; right: Pi
   );
 }
 
-function Problem({ title, body, actions }: { title: string; body: string; actions?: React.ReactNode }) {
+const lucideBig = (C: typeof Files) => <C className="h-7 w-7" strokeWidth={1.5} aria-hidden="true" />;
+
+function Problem({ icon, title, body, actions }: { icon: React.ReactNode; title: string; body: string; actions?: React.ReactNode }) {
   return (
     <motion.div className="ss-cmp-empty" role="alert" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, ease }}>
-      <span className="ss-cmp-problem-icon" aria-hidden="true"><Icon name="cloud_off" size={28} /></span>
+      <span className="ss-cmp-problem-icon" aria-hidden="true">{icon}</span>
       <h2 className="ss-cmp-empty-title">{title}</h2>
       <p className="ss-cmp-empty-body">{body}</p>
       {actions && <div className="mt-6 flex flex-wrap justify-center gap-2">{actions}</div>}
@@ -729,6 +753,14 @@ function Problem({ title, body, actions }: { title: string; body: string; action
 
 /** The panel before a comparison: how it works, or a quiet skeleton while the documents are read */
 function PanelIdle({ loading, notice }: { loading: boolean; notice: React.ReactNode }) {
+  // A long read says it's still going
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (!loading) return;
+    const id = setTimeout(() => setSlow(true), 6000);
+    return () => clearTimeout(id);
+  }, [loading]);
   return (
     <div className="ss-cmp-panel">
       {notice}
@@ -737,7 +769,7 @@ function PanelIdle({ loading, notice }: { loading: boolean; notice: React.ReactN
           <div className="ss-cmp-skel-line" style={{ width: "60%", height: 22 }} />
           <div className="ss-cmp-skel-line mt-3" style={{ width: "80%" }} />
           <div className="ss-cmp-skel-line mt-6" style={{ width: "100%", height: 6 }} />
-          <p className="ss-cmp-meter-label">Reading both documents and finding what&apos;s missing</p>
+          <p className="ss-cmp-meter-label" role="status">{slow ? "Still reading. Long documents with many tabs take a little longer." : "Reading both documents and finding what's missing"}</p>
         </div>
       ) : (
         <section className="ss-cmp-section">
