@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { batchUpdateWithReplies, createTab, getRawDocument, renameTab, snapshotOf } from "@/lib/google";
-import { openTab } from "@/lib/doc-tabs";
+import { batchUpdateWithReplies, createTab, getRawDocument, renameTab } from "@/lib/google";
 import { importImageFromUrl } from "@/lib/image-store";
-import { CompareChangedError, prepareCompare, type CompareGoogle } from "@/lib/compare-server";
+import { buildCompareJob, COMPARE_CHANGED, CompareChangedError, prepareCompare, type CompareGoogle } from "@/lib/compare-server";
 import type { CompareBreak, CompareStartBody } from "@/lib/compare-types";
-import { createJobId, getStore, hasRedis, isTerminal, toPublicJob, type SyncContext } from "@/lib/sync-store";
+import { createJobId, getStore, hasRedis, isTerminal, toPublicJob } from "@/lib/sync-store";
 import { enqueueProcess } from "@/lib/qstash";
-import { buildSyncRecords, parseSegments, segmentBoundaries, spotsForTabs, type SegmentInput } from "@/lib/sync-plan";
-import { buildDripPlan, MAX_TARGET_MINUTES, MIN_TARGET_MINUTES } from "@/lib/drip-engine";
-import { parseAnchors, withAnchors } from "@/lib/breaks";
+import { getBaseUrl } from "@/lib/base-url";
+import { MAX_TARGET_MINUTES, MIN_TARGET_MINUTES } from "@/lib/drip-engine";
 import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
@@ -18,12 +16,8 @@ import { reportError } from "@/lib/monitor";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** A compare sync may type into many places in many tabs */
-const MAX_COMPARE_SEGMENTS = 2000;
-const MAX_CONTEXT_JSON = 900_000;
-const MAX_TEXT_CHARS = 1_000_000;
 const MAX_SCHEDULE_MINUTES = 7 * 24 * 60;
-const CHANGED = "One of the documents changed since you compared them. Here's the comparison again.";
+const CHANGED = COMPARE_CHANGED;
 
 const isDocId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{10,200}$/.test(v);
 
@@ -87,78 +81,28 @@ export const POST = withRoute(async (req: NextRequest) => {
         batch: async (id, requests, tabId) => (await batchUpdateWithReplies(token, id, requests, { tabId })) ?? [],
         createTab: (id, props) => createTab(token, id, props),
         renameTab: (id, tabId, title) => renameTab(token, id, tabId, title),
-        rehost: async (url) => (await importImageFromUrl(url))?.url ?? null,
+        rehost: async (url) => (await importImageFromUrl(url, { baseUrl: getBaseUrl(req), accessToken: token }))?.url ?? null,
       };
       return prepareCompare(g, { leftId, rightId, leftRevision: body.leftRevision!, rightRevision: body.rightRevision!, tabMap: body.tabMap, skip, breaks: manualBreaks });
     });
-    if (!prepared.tabs.length) return NextResponse.json({ error: "Your document already has everything in the reference.", code: "nothing" }, { status: 400 });
-
-    // The additions, tab by tab, as one source; manual breaks moved to their place in it
-    const raw: SegmentInput[] = [];
-    const anchors: { at: number; minutes: number }[] = [];
-    let offset = 0;
-    for (const t of prepared.tabs) {
-      for (const a of t.anchors) anchors.push({ at: a.at + offset, minutes: a.minutes });
-      for (const s of t.segments) {
-        raw.push({ at: s.at, mode: s.mode, text: s.text, format: s.format, tabId: t.tabId });
-        offset += s.text.length;
-      }
-    }
-    const parsed = parseSegments(raw, { maxSegments: MAX_COMPARE_SEGMENTS });
-    if (!parsed.ok) return NextResponse.json({ error: `This comparison can't be typed: ${parsed.error}` }, { status: 400 });
-    const segments = parsed.segments;
-    const text = segments.map((s) => s.text).join("");
-    if (!text.trim()) return NextResponse.json({ error: "Your document already has everything in the reference.", code: "nothing" }, { status: 400 });
-    if (text.length > MAX_TEXT_CHARS) return NextResponse.json({ error: `That's more than ${MAX_TEXT_CHARS.toLocaleString()} characters to copy in one sync.` }, { status: 400 });
-    const boundaries = segmentBoundaries(segments);
-    let anchorList = null;
-    if (breaksMode === "manual" && anchors.length) {
-      const a = parseAnchors(anchors, text, { ends: boundaries });
-      if (!a.ok) return NextResponse.json({ error: a.error }, { status: 400 });
-      anchorList = a.anchors;
-    }
-    const drip = buildDripPlan(text, { targetMinutes: breaksMode === "manual" ? null : targetMinutes, breaks: breaksMode === "auto" ? "auto" : [], typoFrequency, seed, ...(boundaries.length ? { boundaries } : {}) });
-    const plan = anchorList ? withAnchors(drip, anchorList) : drip;
-    if (!plan.actions.length) return NextResponse.json({ error: "Nothing to type" }, { status: 400 });
-
-    const spots = spotsForTabs(prepared.leftDoc, segments);
-    if (!spots) return NextResponse.json({ error: CHANGED, code: "changed" }, { status: 409 });
-    let baselineWordCount = 0;
-    for (const t of prepared.tabs) {
-      const open = openTab(prepared.leftDoc, t.tabId);
-      if (open) baselineWordCount += snapshotOf(open.doc).wordCount;
-    }
-
-    // What the running view shows: each tab as it will be, with where each segment's text came from
-    let first = 0;
-    const tabs = prepared.tabs.map((t) => {
-      const entry = { tabId: t.tabId, title: t.title, first, doc: t.target, ranges: t.segments.map((s) => s.tokens) };
-      first += t.segments.length;
-      return entry;
-    });
-    const lead = tabs[0];
-    let context: SyncContext | null = { doc: lead.doc, ranges: lead.ranges, tabs };
-    if (JSON.stringify(context).length > MAX_CONTEXT_JSON) context = null;
-
     const now = Date.now();
     const id = createJobId();
-    const { plan: syncPlan, job } = buildSyncRecords({
+    const built = buildCompareJob(prepared, {
       id,
       userId: user.userId,
       documentId: leftId,
-      documentName: (prepared.leftDoc.title || (typeof body.documentName === "string" ? body.documentName : "") || "Untitled document").trim().slice(0, 200),
-      tab: { id: lead.tabId, title: prepared.tabs.length > 1 || (prepared.leftDoc.tabs?.length ?? 0) > 1 ? lead.title : "" },
-      tabs: prepared.tabs.map((t) => ({ id: t.tabId, title: t.title })),
-      plan,
-      format: { v: 1, paragraphs: [{}], runs: [] },
-      segments,
-      spots,
+      documentName: typeof body.documentName === "string" ? body.documentName : "",
+      breaksMode,
+      targetMinutes,
+      typoFrequency,
+      seed,
       startInMinutes,
       now,
       accessToken: user.accessToken,
       refreshToken: user.refreshToken,
-      baselineWordCount,
     });
+    if (!built.ok) return NextResponse.json({ error: built.error, ...(built.code ? { code: built.code } : {}) }, { status: built.status });
+    const { plan: syncPlan, job, context } = built;
     try {
       await store.setPlan(syncPlan);
       if (context) await store.setContext(id, context);
@@ -173,8 +117,8 @@ export const POST = withRoute(async (req: NextRequest) => {
       await store.removeActiveJob(id).catch(() => {});
       return NextResponse.json({ error: "Couldn't start the sync. Try again." }, { status: 500 });
     }
-    log.info("compare.start", { job: id, uid: uidTag(user.userId), tabs: prepared.tabs.length, segments: segments.length, chars: plan.totalChars, droppedImages: prepared.droppedImages, ms: done() });
-    return applyAuthCookies(NextResponse.json({ job: toPublicJob(job), totalMs: plan.totalMs, droppedImages: prepared.droppedImages }), user);
+    log.info("compare.start", { job: id, uid: uidTag(user.userId), tabs: prepared.tabs.length, segments: syncPlan.segments?.length ?? 0, chars: syncPlan.totalChars, droppedImages: prepared.droppedImages, ms: done() });
+    return applyAuthCookies(NextResponse.json({ job: toPublicJob(job), totalMs: syncPlan.totalMs, droppedImages: prepared.droppedImages }), user);
   } catch (error) {
     if (error instanceof CompareChangedError) return NextResponse.json({ error: CHANGED, code: "changed" }, { status: 409 });
     const status = googleStatus(error);

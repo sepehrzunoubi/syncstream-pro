@@ -10,8 +10,14 @@ import { importDoc, type DocDefaults, type ImportedDoc } from "./doc-import";
 import { openTab } from "./doc-tabs";
 import { compareDocs, matchTabs, applyBreaks } from "./compare";
 import type { CompareBreak, CompareResult, CompareSide, CompareTab, TabCompare, TabMap, TabTarget } from "./compare-types";
-import { additions, adoptStructure, breakAnchors, directEdits, segmentEdits, tokenize, type Segment } from "./doc-model";
+import { additions, adoptStructure, breakAnchors, directEdits, segmentEdits, tokenize, untokenize, type Segment } from "./doc-model";
 import { documentStyleRequest } from "./page-setup";
+import { buildDripPlan } from "./drip-engine";
+import { parseAnchors, withAnchors } from "./breaks";
+import { plainFormat } from "./rich-text";
+import { buildSyncRecords, MAX_COMPARE_SEGMENTS, parseSegments, segmentBoundaries, spotsForTabs, type SegmentInput } from "./sync-plan";
+import type { SyncContext, SyncJob, SyncPlan } from "./sync-store";
+import { wordsInTabs } from "./google";
 import type { EditorNode } from "./rich-text";
 
 type Doc = docs_v1.Schema$Document;
@@ -77,7 +83,7 @@ export function buildSides(leftDoc: Doc, leftId: string, rightDoc: Doc, rightId:
   const leftTabs: CompareTab[] = lt.map((t) => ({ ...t, doc: importTab(leftDoc, t.id) }));
   const left = side(leftDoc, leftId, leftTabs);
   const ownRight = side(rightDoc, rightId, rt.map((t) => ({ ...t, doc: importTab(rightDoc, t.id) })));
-  const tabMap: TabMap = { ...matchTabs(left, ownRight), ...cleanTabMap(given, lt, rt) };
+  const tabMap: TabMap = matchTabs(left, ownRight, cleanTabMap(given, lt, rt));
   // A blank default tab renamed is only for the automatic match; a tab picked by hand keeps its name
   const byId = new Map(leftTabs.map((t) => [t.id, t]));
   const rightTabs: CompareTab[] = rt.map((t) => {
@@ -137,7 +143,8 @@ export async function prepareCompare(g: CompareGoogle, input: {
   skip: string[];
   breaks: CompareBreak[];
 }): Promise<PreparedCompare> {
-  let [leftDoc, rightDoc] = await Promise.all([g.read(input.leftId), g.read(input.rightId)]);
+  const [firstLeft, rightDoc] = await Promise.all([g.read(input.leftId), g.read(input.rightId)]);
+  let leftDoc = firstLeft;
   if ((leftDoc.revisionId ?? "") !== input.leftRevision || (rightDoc.revisionId ?? "") !== input.rightRevision) throw new CompareChangedError();
   let sides = buildSides(leftDoc, input.leftId, rightDoc, input.rightId, input.tabMap);
   let result = compareDocs(sides.left, sides.right, { tabMap: sides.tabMap, skip: input.skip });
@@ -206,20 +213,43 @@ export async function prepareCompare(g: CompareGoogle, input: {
       const edits = segmentEdits(empty, { type: "doc", content: seg.nodes }, segId);
       if (edits.requests.length) await g.batch(input.leftId, edits.requests as Record<string, unknown>[], tabId);
     }
-    // What the sync can't type, written now: table structure, footnotes. A table's structure is
-    // read back (Google gives its cells their indices) before anything else is written, as autosave does
+    // What the sync can't type, written now: table structure and footnotes, without the text the sync
+    // types around them. A table's structure is read back (Google gives its cells their indices)
+    // before anything else is written, as autosave does
     let base = tab.base;
+    let structure = structureOnly(tab.merged, tab.origin);
+    const notes = footnoteSources(tab, sides.right);
+    const made: string[] = [];
     for (let round = 0; round < MAX_STRUCTURAL_ROUNDS; round++) {
-      const edits = directEdits(base, target);
+      const edits = directEdits(base, structure);
       if (!edits.requests.length) break;
-      const replies = await g.batch(input.leftId, edits.requests as Record<string, unknown>[], tabId);
-      const footnotes = await fillFootnotes(g, input.leftId, tabId, tab, target, replies, sides.right);
+      const replies = await g.batch(input.leftId, onlyAdding(edits.requests as Record<string, unknown>[]), tabId);
+      const ids = replies.map((r) => (r as { createFootnote?: { footnoteId?: string } }).createFootnote?.footnoteId).filter((x): x is string => !!x);
+      for (const id of ids) {
+        const nodes = notes[made.length];
+        made.push(id);
+        if (!nodes?.length) continue;
+        // A footnote Docs creates holds a space and its newline: diffed from that, it ends up exactly as the reference's
+        const fresh: EditorNode = { type: "doc", content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text: " " }] }] };
+        const fill = segmentEdits(fresh, { type: "doc", content: nodes }, id);
+        if (fill.requests.length) await g.batch(input.leftId, fill.requests as Record<string, unknown>[], tabId);
+      }
       // The new references are those footnotes now: they must not be made again
-      if (footnotes.length) target = withFootnoteIds(target, footnotes);
+      if (ids.length) structure = withFootnoteIds(structure, made);
       if (!edits.structural) break;
       leftDoc = await g.read(input.leftId);
       base = { type: "doc", content: importTab(leftDoc, tabId).nodes };
-      target = adoptStructure(base, target);
+      structure = adoptStructure(base, structure);
+    }
+    if (made.length) target = withFootnoteIds(target, made);
+    // Anything else the sync can't type (an empty line on its own beside a new table, say), now
+    // that the structure is in and no longer part of the difference
+    for (let round = 0; round < 2; round++) {
+      leftDoc = await g.read(input.leftId);
+      base = { type: "doc", content: importTab(leftDoc, tabId).nodes };
+      const rest = directEdits(base, adoptStructure(base, target));
+      if (!rest.requests.length) break;
+      await g.batch(input.leftId, onlyAdding(rest.requests as Record<string, unknown>[]), tabId);
     }
     ready.push({ tab, tabId, target });
   }
@@ -257,31 +287,70 @@ async function mapImages(doc: EditorNode, to: (src: string) => Promise<string | 
   return (await walk(doc)) ?? doc;
 }
 
-/** The ids of footnotes a batch created, in order, each given the reference footnote's text */
-async function fillFootnotes(g: CompareGoogle, documentId: string, tabId: string, tab: TabCompare, target: EditorNode, replies: Record<string, unknown>[], right: CompareSide): Promise<string[]> {
-  const ids = replies.map((r) => (r as { createFootnote?: { footnoteId?: string } }).createFootnote?.footnoteId).filter((x): x is string => !!x);
-  if (!ids.length) return ids;
+/** Requests that would take anything away from LEFT: never sent by a comparison */
+const REMOVING = new Set(["deleteContentRange", "deleteTableRow", "deleteTableColumn", "deleteHeader", "deleteFooter", "deletePositionedObject", "deleteNamedRange", "deleteTab"]);
+
+/** The requests, refused whole if any would remove something of LEFT's (a bug, never the user's content lost) */
+function onlyAdding(requests: Record<string, unknown>[]): Record<string, unknown>[] {
+  const bad = requests.find((r) => Object.keys(r).some((k) => REMOVING.has(k)));
+  if (bad) throw new Error(`A comparison must never remove anything from your document (${Object.keys(bad)[0]})`);
+  return requests;
+}
+
+/** The reference footnote's content for each footnote reference the tab adds, in order */
+function footnoteSources(tab: TabCompare, right: CompareSide): (EditorNode[] | null)[] {
   const rightTab = right.tabs.find((t) => t.id === tab.rightTabId);
-  if (!rightTab) return ids;
+  if (!rightTab) return [];
   const rightToks = tokenize({ type: "doc", content: rightTab.doc.nodes });
-  const toks = tokenize(target);
-  // The new references, in document order, and the reference footnote each copies
-  const sources: (string | null)[] = [];
-  toks.forEach((t, i) => {
+  const out: (EditorNode[] | null)[] = [];
+  tokenize(tab.merged).forEach((t, i) => {
     if (t.k !== "fn" || t.fid) return;
     const o = tab.origin[i];
     const src = o != null && o >= 0 ? rightToks[o] : undefined;
-    sources.push(src && src.k === "fn" ? src.fid : null);
+    const fid = src && src.k === "fn" ? src.fid : null;
+    out.push(fid ? rightTab.doc.footnotes[fid]?.nodes ?? null : null);
   });
-  const empty: EditorNode = { type: "doc", content: [{ type: "paragraph", attrs: {}, content: [] }] };
-  for (let i = 0; i < ids.length; i++) {
-    const fid = sources[i];
-    const nodes = fid ? rightTab.doc.footnotes[fid]?.nodes : undefined;
-    if (!nodes?.length) continue;
-    const edits = segmentEdits(empty, { type: "doc", content: nodes }, ids[i]);
-    if (edits.requests.length) await g.batch(documentId, edits.requests as Record<string, unknown>[], tabId);
-  }
-  return ids;
+  return out;
+}
+
+/**
+ * The structure a tab's additions need, without anything the sync types: LEFT as it is, plus the
+ * reference's tables, rows and cells (empty), its footnote references, and the paragraphs that hold
+ * a new footnote reference (only the reference in them). The sync then types the text around them.
+ */
+export function structureOnly(merged: EditorNode, origin: number[]): EditorNode {
+  const toks = tokenize(merged);
+  const keep = toks.map(() => false);
+  /** Whether each open cell is one the reference adds */
+  const cells: boolean[] = [];
+  let paragraphStart = 0;
+  toks.forEach((t, i) => {
+    const own = !(origin[i] >= 0);
+    if (t.k === "st") {
+      keep[i] = true;
+      if (t.kind === "cell") cells.push(!own);
+      else if (t.kind === "cellEnd") cells.pop();
+      paragraphStart = i + 1;
+      return;
+    }
+    if (own) {
+      keep[i] = true;
+      if (t.k === "nl") paragraphStart = i + 1;
+      return;
+    }
+    if (t.k === "fn") { keep[i] = true; return; }
+    if (t.k === "nl") {
+      let note = false;
+      for (let j = paragraphStart; j < i && !note; j++) note = toks[j].k === "fn" && origin[j] >= 0;
+      // An empty line right before a new table is the one Docs makes with it (a table always
+      // follows a paragraph): it goes in with the table
+      const beforeTable = paragraphStart === i && toks[i + 1]?.k === "st" && (toks[i + 1] as { kind: string }).kind === "table" && origin[i + 1] >= 0;
+      keep[i] = note || beforeTable || (cells.length > 0 && cells[cells.length - 1]);
+      paragraphStart = i + 1;
+    }
+    // Copied text, images, page breaks and line breaks: typed by the sync
+  });
+  return untokenize(toks.filter((_, i) => keep[i]));
 }
 
 /** The document with its new footnote references (no id yet) given these ids, in order */
@@ -292,4 +361,98 @@ function withFootnoteIds(doc: EditorNode, ids: string[]): EditorNode {
     return n.content ? { ...n, content: n.content.map(walk) } : n;
   };
   return walk(doc);
+}
+
+export const COMPARE_CHANGED = "One of the documents changed since you compared them. Here's the comparison again.";
+const MAX_CONTEXT_JSON = 900_000;
+const MAX_TEXT_CHARS = 1_000_000;
+
+export interface CompareJobInput {
+  id: string;
+  userId: string;
+  documentId: string;
+  documentName: string;
+  breaksMode: "auto" | "none" | "manual";
+  targetMinutes: number | null;
+  typoFrequency: number;
+  seed?: number;
+  startInMinutes: number;
+  now: number;
+  accessToken: string;
+  refreshToken: string;
+}
+
+export type CompareJob =
+  | { ok: true; plan: SyncPlan; job: SyncJob; context: SyncContext | null }
+  | { ok: false; status: number; error: string; code?: string };
+
+/** One sync typing the prepared additions, tab by tab, top to bottom, with the manual breaks placed */
+export function buildCompareJob(prepared: PreparedCompare, o: CompareJobInput): CompareJob {
+  const nothing = { ok: false as const, status: 400, error: "Your document already has everything in the reference.", code: "nothing" };
+  if (!prepared.tabs.length) return nothing;
+  // The additions, tab by tab, as one source; manual breaks moved to their place in it
+  const raw: SegmentInput[] = [];
+  const anchors: { at: number; minutes: number }[] = [];
+  let offset = 0;
+  for (const t of prepared.tabs) {
+    for (const a of t.anchors) anchors.push({ at: a.at + offset, minutes: a.minutes });
+    for (const s of t.segments) {
+      raw.push({ at: s.at, mode: s.mode, text: s.text, format: s.format, tabId: t.tabId });
+      offset += s.text.length;
+    }
+  }
+  const parsed = parseSegments(raw, { maxSegments: MAX_COMPARE_SEGMENTS });
+  if (!parsed.ok) return { ok: false, status: 400, error: parsed.error === "Invalid additions" && raw.length > MAX_COMPARE_SEGMENTS ? `That's more than ${MAX_COMPARE_SEGMENTS.toLocaleString()} separate places to type into in one sync. Skip some changes, or copy one tab at a time.` : `This comparison can't be typed: ${parsed.error}` };
+  const segments = parsed.segments;
+  const text = segments.map((s) => s.text).join("");
+  if (!text.trim()) return nothing;
+  if (text.length > MAX_TEXT_CHARS) return { ok: false, status: 400, error: `That's more than ${MAX_TEXT_CHARS.toLocaleString()} characters to copy in one sync.` };
+  const boundaries = segmentBoundaries(segments);
+  let placed = null;
+  if (o.breaksMode === "manual" && anchors.length) {
+    const a = parseAnchors(anchors, text, { ends: boundaries });
+    if (!a.ok) return { ok: false, status: 400, error: a.error };
+    placed = a.anchors;
+  }
+  const drip = buildDripPlan(text, {
+    targetMinutes: o.breaksMode === "manual" ? null : o.targetMinutes,
+    breaks: o.breaksMode === "auto" ? "auto" : [],
+    typoFrequency: o.typoFrequency,
+    ...(o.seed != null ? { seed: o.seed } : {}),
+    ...(boundaries.length ? { boundaries } : {}),
+  });
+  const plan = placed ? withAnchors(drip, placed) : drip;
+  if (!plan.actions.length) return { ok: false, status: 400, error: "Nothing to type" };
+  const spots = spotsForTabs(prepared.leftDoc, segments);
+  if (!spots) return { ok: false, status: 409, error: COMPARE_CHANGED, code: "changed" };
+
+  // What the running view shows: each tab as it will be, with where each segment's text came from
+  let first = 0;
+  const tabs = prepared.tabs.map((t) => {
+    const entry = { tabId: t.tabId, title: t.title, first, doc: t.target, ranges: t.segments.map((s) => s.tokens) };
+    first += t.segments.length;
+    return entry;
+  });
+  const lead = tabs[0];
+  let context: SyncContext | null = { doc: lead.doc, ranges: lead.ranges, tabs };
+  if (JSON.stringify(context).length > MAX_CONTEXT_JSON) context = null;
+  const many = prepared.tabs.length > 1 || (prepared.leftDoc.tabs?.length ?? 0) > 1;
+  const { plan: syncPlan, job } = buildSyncRecords({
+    id: o.id,
+    userId: o.userId,
+    documentId: o.documentId,
+    documentName: (prepared.leftDoc.title || o.documentName || "Untitled document").trim().slice(0, 200),
+    tab: { id: lead.tabId, title: many ? lead.title : "" },
+    tabs: prepared.tabs.map((t) => ({ id: t.tabId, title: t.title })),
+    plan,
+    format: plainFormat(text),
+    segments,
+    spots,
+    startInMinutes: o.startInMinutes,
+    now: o.now,
+    accessToken: o.accessToken,
+    refreshToken: o.refreshToken,
+    baselineWordCount: wordsInTabs(prepared.leftDoc, prepared.tabs.map((t) => t.tabId)),
+  });
+  return { ok: true, plan: syncPlan, job, context };
 }
