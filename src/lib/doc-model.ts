@@ -228,12 +228,12 @@ export function sectionStyleRequest(attrs: Record<string, unknown>, startIndex: 
 
 const columnKey = (attrs: Record<string, unknown> | undefined) => JSON.stringify([attrs?.columns ?? 1, attrs?.spacing ?? 36, attrs?.line === true]);
 
+/** What a token reads as, ignoring formatting */
+const readsAs = (t: Tok) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "fn" ? "\u0001" : t.k === "nl" ? "\n" : t.k === "st" ? `\u0000${t.kind[0]}${t.span}\u0000` : `\u0000${sizeOf(t)}\u0000`);
+
 /** The document's characters and structure, ignoring formatting: equal when two copies read the same */
 export function signature(doc: EditorNode | null | undefined): string {
-  return tokenize(doc)
-    .filter((t) => !isPending(t))
-    .map((t) => (t.k === "c" ? t.c : t.k === "img" ? OBJ : t.k === "br" ? "\u000b" : t.k === "pb" ? PAGE_BREAK : t.k === "fn" ? "\u0001" : t.k === "nl" ? "\n" : t.k === "st" ? `\u0000${t.kind[0]}${t.span}\u0000` : `\u0000${sizeOf(t)}\u0000`))
-    .join("");
+  return tokenize(doc).filter((t) => !isPending(t)).map(readsAs).join("");
 }
 
 /** True when the editor holds any addition */
@@ -1388,11 +1388,12 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
 
 /**
  * The document as Google has it now, with the editor's additions put back
- * where they were. The Google Doc wins everywhere else.
+ * where they were. The Google Doc wins everywhere else. An addition in a
+ * table goes to its cell wherever that cell is now (see followTables).
  */
 export function rebase(newBase: EditorNode, oldTarget: EditorNode): EditorNode {
   const base = tokenize(newBase);
-  const target = adoptTables(base, tokenize(oldTarget));
+  const target = followTables(base, adoptTables(base, tokenize(oldTarget)));
   const { regions } = diff(base, target, false);
   const regionAt = new Map<number, Region>();
   for (const r of regions) regionAt.set(r.bs, r);
@@ -1410,6 +1411,255 @@ export function rebase(newBase: EditorNode, oldTarget: EditorNode): EditorNode {
     i++;
   }
   return untokenize(out);
+}
+
+/**
+ * The editor's tables laid out as the document has them now, for a reload. The document's rows and
+ * cells have ids by position, so after a collaborator adds, removes or moves a row or column, the ids
+ * no longer say which cell is which: the editor's text would line up with a new, empty row or column.
+ * Each of the document's cells takes the content of the editor's cell it is (see cellPairs), and the
+ * diff then lines them up by the document's own ids. A cell the document doesn't have any more goes,
+ * as its row or column did; one the editor doesn't have keeps the document's content.
+ */
+function followTables(base: Tok[], target: Tok[]): Tok[] {
+  const baseTables = new Map(tableCells(base).map((b) => [(base[b.at] as Extract<Tok, { k: "st" }>).id, b]));
+  const out: Tok[] = [];
+  let from = 0;
+  for (const t of tableCells(target)) {
+    const b = baseTables.get((target[t.at] as Extract<Tok, { k: "st" }>).id);
+    const pairs = b && cellPairs(base, b, target, t);
+    if (!b || !pairs) continue;
+    out.push(...target.slice(from, t.at));
+    for (let q = b.at; q <= b.end; q++) {
+      out.push(base[q]);
+      const pair = pairs.get(q);
+      if (!pair) continue;
+      out.push(...target.slice(pair.cell.at + 1, pair.cell.end));
+      q = pair.end - 1;
+    }
+    from = t.end + 1;
+  }
+  return from ? [...out, ...target.slice(from)] : target;
+}
+
+/**
+ * Which of the editor's cells each of the document's cells is, for a table both have (by the index of
+ * the document's cell start), or null when the table reads the same in both, or is too big to tell.
+ *
+ * Rows pair in order, by the cells they have in common; columns then pair by how many of the paired
+ * rows' cells read the same in them (see pairColumns); then rows again, by the cells that read the same
+ * in the paired columns, and columns again for those rows. A longer text counts for more than a shorter
+ * one, and an empty cell least. Of pairings that count the same: the one that keeps the editor's
+ * additions (of two rows that read the same, one of them gone, the addition stays with the one that's
+ * left), then the one with the most rows and columns at their own place, as matching by id has them:
+ * nothing tells a new, empty row from an empty row the editor has.
+ */
+function cellPairs(base: Tok[], b: TableCells, target: Tok[], t: TableCells): Map<number, { cell: TableCell; end: number }> | null {
+  type Read = TableCell & { column: number; text: string; added: boolean };
+  const read = (tokens: Tok[], table: TableCells): Read[][] => {
+    const grid = cellGrid(table.rows);
+    return table.rows.map((cells, r) => cells.map((c, k) => {
+      const content = tokens.slice(c.at + 1, c.end);
+      return { ...c, column: grid.columns[r][k], text: content.filter((x) => !isPending(x)).map(readsAs).join(""), added: content.some(isPending) };
+    }));
+  };
+  const tr = read(target, t);
+  const br = read(base, b);
+  const sameShape = tr.length === br.length && tr.every((cells, r) => cells.length === br[r].length && cells.every((c, k) => c.column === br[r][k].column));
+  if (sameShape && tr.every((cells, r) => cells.every((c, k) => c.text === br[r][k].text))) return null;
+  const weight = (text: string) => 1 + Math.min(text.length, 100);
+  const added = (i: number) => tr[i].some((c) => c.added);
+  // A row seldom moves far: only rows as far apart as the tables' lengths differ, and a little more
+  const band = Math.abs(tr.length - br.length) + 16;
+  if (tr.length * (2 * band + 1) > 4_000_000) return null;
+  const rowPairs = (sim: (i: number, j: number) => number) => pairInOrder(tr.length, br.length, pairWeight(tr.length, br.length, sim, added), band);
+  // First by the cells two rows have in common wherever they are in the row (its columns may have
+  // moved), then by those in the same order
+  const most = 1 + Math.max(0, ...tr.map((cells) => cells.reduce((n, c) => n + weight(c.text), 0)));
+  const firstRows = rowPairs((i, j) => {
+    const x = tr[i];
+    const y = br[j];
+    const left = new Map<string, number>();
+    for (const c of y) left.set(c.text, (left.get(c.text) ?? 0) + 1);
+    let common = 0;
+    for (const c of x) {
+      const k = left.get(c.text) ?? 0;
+      if (k) { left.set(c.text, k - 1); common += weight(c.text); }
+    }
+    let prev = new Array<number>(y.length + 1).fill(0);
+    for (const c of x) {
+      const next = [0];
+      for (let j = 1; j <= y.length; j++) next.push(Math.max(prev[j], next[j - 1], c.text === y[j - 1].text ? prev[j - 1] + weight(c.text) : 0));
+      prev = next;
+    }
+    return common * most + prev[y.length];
+  });
+  const tw = cellGrid(tr).width;
+  const bw = cellGrid(br).width;
+  const columnsOf = (rows: [number, number][]) => {
+    const sim = Array.from({ length: tw }, () => new Array<number>(bw).fill(0));
+    const own = new Array<number>(tw).fill(0);
+    const addedTo = new Array<boolean>(tw).fill(false);
+    for (const [i, j] of rows) for (const x of tr[i]) {
+      own[x.column] += weight(x.text);
+      if (x.added) addedTo[x.column] = true;
+      for (const y of br[j]) if (x.text === y.text) sim[x.column][y.column] += weight(x.text);
+    }
+    return pairColumns(sim, own, addedTo);
+  };
+  const firstColumns = columnsOf(firstRows);
+  const cellAt = (cells: Read[][]) => cells.map((row) => new Map(row.map((c) => [c.column, c])));
+  const tAt = cellAt(tr);
+  const bAt = cellAt(br);
+  const rows = rowPairs((i, j) => {
+    let s = 0;
+    for (const [tc, bc] of firstColumns) {
+      const x = tAt[i].get(tc);
+      if (x && x.text === bAt[j].get(bc)?.text) s += weight(x.text);
+    }
+    return s;
+  });
+  const pairs = new Map<number, { cell: TableCell; end: number }>();
+  const columns = columnsOf(rows);
+  for (const [i, j] of rows) for (const [tc, bc] of columns) {
+    const x = tAt[i].get(tc);
+    const y = bAt[j].get(bc);
+    if (x && y) pairs.set(y.at, { cell: x, end: y.end });
+  }
+  return pairs;
+}
+
+/**
+ * Columns of the editor's table paired with the document's, from how much of each column reads the same
+ * as each of the document's (`sim`), how much text it has itself (`own`), and whether it holds an
+ * addition (`added`). In order, then the columns that leaves where most of their text went (one moved);
+ * or in any order (two swapped), pairing a column with one at another place only where most of its text
+ * reads the same there. Whichever reads the same most, keeps the additions, moves the fewest columns,
+ * then leaves the most at their own place.
+ */
+function pairColumns(sim: number[][], own: number[], added: boolean[]): [number, number][] {
+  const tw = sim.length;
+  const bw = sim[0]?.length ?? 0;
+  const weight = pairWeight(tw, bw, (i, j) => sim[i][j], (i) => added[i]);
+  const w = sim.map((row, i) => row.map((_x, j) => weight(i, j)));
+  const near = (i: number, j: number) => i === j || sim[i][j] * 2 > own[i];
+  const inOrder = pairInOrder(tw, bw, weight);
+  const restT = Array.from({ length: tw }, (_, i) => i).filter((i) => !inOrder.some(([x]) => x === i));
+  const restB = Array.from({ length: bw }, (_, j) => j).filter((j) => !inOrder.some(([, y]) => y === j));
+  const moved = pairAnyOrder(restT.map((i) => restB.map((j) => (near(i, j) ? w[i][j] : 0)))).map(([x, y]): [number, number] => [restT[x], restB[y]]);
+  const withMoved = [...inOrder, ...moved];
+  const anyOrder = pairAnyOrder(w.map((row, i) => row.map((x, j) => (near(i, j) ? x : 0))));
+  const rank = (pairs: [number, number][]) => {
+    // The most of them in order: the rest moved
+    const sorted = [...pairs].sort((p, q) => p[0] - q[0]);
+    const chain = sorted.map(() => 1);
+    sorted.forEach(([, y], k) => { for (let q = 0; q < k; q++) if (sorted[q][1] < y) chain[k] = Math.max(chain[k], chain[q] + 1); });
+    return [pairs.reduce((n, [i, j]) => n + sim[i][j], 0), pairs.filter(([i]) => added[i]).length, Math.max(0, ...chain) - pairs.length, pairs.filter(([i, j]) => i === j).length];
+  };
+  const better = (p: number[], q: number[]) => { const k = p.findIndex((x, n) => x !== q[n]); return k >= 0 && p[k] > q[k]; };
+  let best = better(rank(anyOrder), rank(withMoved)) ? anyOrder : withMoved;
+  // Then two columns trade the places they pair with while that ranks better (of columns that read
+  // the same, the pairing in any order may have moved two where one moved)
+  for (let traded = true; traded;) {
+    traded = false;
+    for (let p = 0; p < best.length; p++) for (let q = p + 1; q < best.length; q++) {
+      const [[i, x], [j, y]] = [best[p], best[q]];
+      if (!near(i, y) || !near(j, x) || !w[i][y] || !w[j][x]) continue;
+      const trial = best.map((pair, n): [number, number] => (n === p ? [i, y] : n === q ? [j, x] : pair));
+      if (better(rank(trial), rank(best))) { best = trial; traded = true; }
+    }
+  }
+  return best;
+}
+
+/**
+ * What pairing thing i of n with thing j of m counts for: `sim` of the two, then one more when i holds
+ * an addition, then one more when they're at the same place, each never outweighing the one before.
+ * 0: they don't pair (no sim, and not at the same place).
+ */
+function pairWeight(n: number, m: number, sim: (i: number, j: number) => number, added: (i: number) => boolean): (i: number, j: number) => number {
+  const scale = Math.min(n, m) + 1;
+  return (i, j) => {
+    const s = sim(i, j);
+    return s > 0 || i === j ? (s * scale + (added(i) ? 1 : 0)) * scale + (i === j ? 1 : 0) : 0;
+  };
+}
+
+/**
+ * The pairs of n things with m things, both in order, that count for the most (`weight`, see
+ * pairWeight), pairing only things at most `band` places apart. Kept to that band: the best of the
+ * first i with the first j, past it, is the best at its edge.
+ */
+function pairInOrder(n: number, m: number, weight: (i: number, j: number) => number, band = Math.max(n, m)): [number, number][] {
+  const lo = (i: number) => Math.min(m, Math.max(0, i - band));
+  const hi = (i: number) => Math.min(m, i + band);
+  const best: Float64Array[] = [];
+  const weights: Float64Array[] = [];
+  const get = (i: number, j: number): number => (j > hi(i) ? get(i, hi(i)) : j < lo(i) ? get(j + band, j) : best[i][j - lo(i)]);
+  const w = (i: number, j: number) => weights[i][j - lo(i)];
+  for (let i = 0; i <= n; i++) {
+    best.push(new Float64Array(hi(i) - lo(i) + 1));
+    weights.push(new Float64Array(hi(i) - lo(i) + 1));
+    if (i === 0) continue;
+    for (let j = Math.max(1, lo(i)); j <= hi(i); j++) {
+      // Thing i - 1 with thing j - 1: as far apart as i and j
+      const x = Math.abs(i - j) <= band ? weight(i - 1, j - 1) : 0;
+      weights[i][j - lo(i)] = x;
+      best[i][j - lo(i)] = Math.max(get(i - 1, j), get(i, j - 1), x > 0 ? get(i - 1, j - 1) + x : 0);
+    }
+  }
+  const out: [number, number][] = [];
+  for (let i = n, j = m; i > 0 && j > 0;) {
+    if (j > hi(i)) { j = hi(i); continue; }
+    if (j < lo(i)) { i = j + band; continue; }
+    const x = w(i, j);
+    if (x > 0 && get(i, j) === get(i - 1, j - 1) + x) { out.push([--i, --j]); continue; }
+    if (get(i, j) === get(i - 1, j)) i--;
+    else j--;
+  }
+  return out.reverse();
+}
+
+/** The pairs, in any order, that count for the most (`w[i][j]`, see pairWeight): the Hungarian method, on a square of both */
+function pairAnyOrder(w: number[][]): [number, number][] {
+  const n = w.length;
+  const m = w[0]?.length ?? 0;
+  const k = Math.max(n, m);
+  const cost = (i: number, j: number) => -(i < n && j < m ? w[i][j] : 0);
+  // Potentials of rows and columns, the row each column is given (1-based, 0 for none), and the path to it
+  const u = new Array<number>(k + 1).fill(0);
+  const v = new Array<number>(k + 1).fill(0);
+  const given = new Array<number>(k + 1).fill(0);
+  const way = new Array<number>(k + 1).fill(0);
+  for (let i = 1; i <= k; i++) {
+    given[0] = i;
+    let j0 = 0;
+    const least = new Array<number>(k + 1).fill(Infinity);
+    const used = new Array<boolean>(k + 1).fill(false);
+    do {
+      used[j0] = true;
+      const i0 = given[j0];
+      let delta = Infinity;
+      let j1 = 0;
+      for (let j = 1; j <= k; j++) {
+        if (used[j]) continue;
+        const reduced = cost(i0 - 1, j - 1) - u[i0] - v[j];
+        if (reduced < least[j]) { least[j] = reduced; way[j] = j0; }
+        if (least[j] < delta) { delta = least[j]; j1 = j; }
+      }
+      for (let j = 0; j <= k; j++) {
+        if (used[j]) { u[given[j]] += delta; v[j] -= delta; } else least[j] -= delta;
+      }
+      j0 = j1;
+    } while (given[j0] !== 0);
+    do { const j1 = way[j0]; given[j0] = given[j1]; j0 = j1; } while (j0);
+  }
+  const out: [number, number][] = [];
+  for (let j = 1; j <= k; j++) {
+    const i = given[j] - 1;
+    if (i >= 0 && i < n && j - 1 < m && w[i][j - 1] > 0) out.push([i, j - 1]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
 }
 
 /**
@@ -1493,18 +1743,24 @@ function columnWidths(rows: { colspan: number; rowspan: number; colwidth: unknow
   return out;
 }
 
-/** Each table of a token list: its start token, and its rows of cells */
-function tableCells(tokens: Tok[]): { at: number; rows: { at: number; colspan: number; rowspan: number; colwidth: unknown }[][] }[] {
-  const out: { at: number; rows: { at: number; colspan: number; rowspan: number; colwidth: unknown }[][] }[] = [];
+/** A table cell of a token list: its start and end tokens, and its spans and width */
+interface TableCell { at: number; end: number; colspan: number; rowspan: number; colwidth: unknown }
+interface TableCells { at: number; end: number; rows: TableCell[][] }
+
+/** Each table of a token list: its start and end tokens, and its rows of cells */
+function tableCells(tokens: Tok[]): TableCells[] {
+  const out: TableCells[] = [];
   let depth = 0;
   tokens.forEach((t, i) => {
     if (t.k !== "st") return;
-    if (t.kind === "table") { if (depth++ === 0) out.push({ at: i, rows: [] }); return; }
-    if (t.kind === "tableEnd") { depth--; return; }
+    if (t.kind === "table") { if (depth++ === 0) out.push({ at: i, end: tokens.length - 1, rows: [] }); return; }
+    if (t.kind === "tableEnd") { if (--depth === 0) out[out.length - 1].end = i; return; }
     if (depth !== 1) return;
     const table = out[out.length - 1];
+    const row = table.rows[table.rows.length - 1];
     if (t.kind === "row") table.rows.push([]);
-    else if (t.kind === "cell") table.rows[table.rows.length - 1]?.push({ at: i, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan), colwidth: t.attrs.colwidth });
+    else if (t.kind === "cell") row?.push({ at: i, end: tokens.length - 1, colspan: spanCount(t.attrs.colspan), rowspan: spanCount(t.attrs.rowspan), colwidth: t.attrs.colwidth });
+    else if (t.kind === "cellEnd" && row?.length) row[row.length - 1].end = i;
   });
   return out;
 }

@@ -463,3 +463,107 @@ test("text typed into a paragraph the document has never restyles it", async () 
     assert.ok(restyled.every((at) => at > s.at), `nothing restyles the paragraph at ${s.at}: ${JSON.stringify(requests)}`);
   }
 });
+
+// ── Reloading a table a collaborator reshaped ──────────────────────────────
+
+/**
+ * A document with a table, ids as Docs reads them: by place (the table t1, its rows t1r0…, its columns
+ * t1c0…), so a row or column added before another gives that one another id
+ */
+const withTable = (rows: (Piece[] | string)[][], cell: (r: number, c: number) => Record<string, unknown> = () => ({})): EditorNode => doc(
+  p("Intro"),
+  {
+    type: "table",
+    attrs: { tid: "t1", span: 1 },
+    content: rows.map((cells, r) => ({
+      type: "tableRow",
+      attrs: { rid: `t1r${r}`, span: 1 },
+      content: cells.map((text, c) => ({ type: "tableCell", attrs: { cid: `t1c${c}`, span: 1, ...cell(r, c) }, content: [p(text)] })),
+    })),
+  },
+  p("After"),
+);
+
+/** Each cell's text, an addition in brackets */
+const cellTexts = (d: EditorNode): string[][] => {
+  const rows: string[][] = [];
+  let inCell = false;
+  for (const t of tokenize(d)) {
+    if (t.k === "st") inCell = t.kind === "cell";
+    if (t.k === "st" && t.kind === "row") rows.push([]);
+    else if (t.k === "st" && t.kind === "cell") rows[rows.length - 1].push("");
+    else if (t.k === "c" && inCell) {
+      const row = rows[rows.length - 1];
+      row[row.length - 1] += t.pending ? `[${t.c}]` : t.c;
+    }
+  }
+  return rows;
+};
+
+const PAGE = withTable([["A", ["B", add("!")]], ["C", "D"]]);
+
+test("reload, a row added above: the addition stays in its cell, not copied into the new empty row", () => {
+  const google = withTable([["", ""], ["A", "B"], ["C", "D"]]);
+  assert.deepEqual(cellTexts(rebase(google, PAGE)), [["", ""], ["A", "B[!]"], ["C", "D"]]);
+  assert.deepEqual(rebase(google, PAGE), withTable([["", ""], ["A", ["B", add("!")]], ["C", "D"]]));
+});
+
+test("reload, a column added before: the addition stays in its cell, not copied into the new empty column", () => {
+  const google = withTable([["", "A", "B"], ["", "C", "D"]]);
+  assert.deepEqual(cellTexts(rebase(google, PAGE)), [["", "A", "B[!]"], ["", "C", "D"]]);
+  assert.deepEqual(cellTexts(rebase(google, withTable([[["A", add("!")], "B"], ["C", "D"]]))), [["", "A[!]", "B"], ["", "C", "D"]]);
+  const wide = withTable([["A", ["B", add("!")], "C"], ["D", "E", "F"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["", "A", "B", "C"], ["", "D", "E", "F"]]), wide)), [["", "A", "B[!]", "C"], ["", "D", "E", "F"]]);
+});
+
+test("reload, a row added below or between, or a column added after: the addition stays where it was", () => {
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B"], ["C", "D"], ["", ""]]), PAGE)), [["A", "B[!]"], ["C", "D"], ["", ""]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B"], ["", ""], ["C", "D"]]), PAGE)), [["A", "B[!]"], ["", ""], ["C", "D"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B", ""], ["C", "D", ""]]), PAGE)), [["A", "B[!]", ""], ["C", "D", ""]]);
+  // In the row below the new one
+  const lower = withTable([["A", "B"], ["C", ["D", add("!")]]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B"], ["", ""], ["C", "D"]]), lower)), [["A", "B"], ["", ""], ["C", "D[!]"]]);
+});
+
+test("reload, a row deleted below or above: the addition stays in its cell", () => {
+  const three = withTable([["A", ["B", add("!")]], ["C", "D"], ["E", "F"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B"], ["E", "F"]]), three)), [["A", "B[!]"], ["E", "F"]]);
+  const middle = withTable([["A", "B"], ["C", ["D", add("!")]], ["E", "F"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["C", "D"], ["E", "F"]]), middle)), [["C", "D[!]"], ["E", "F"]]);
+  // A column deleted before it
+  assert.deepEqual(cellTexts(rebase(withTable([["B"], ["D"]]), PAGE)), [["B[!]"], ["D"]]);
+});
+
+test("reload, columns swapped or moved: the addition goes with its column", () => {
+  assert.deepEqual(cellTexts(rebase(withTable([["B", "A"], ["D", "C"]]), PAGE)), [["B[!]", "A"], ["D", "C"]]);
+  const wide = withTable([["A", "B", ["C", add("!")]], ["D", "E", "F"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["C", "A", "B"], ["F", "D", "E"]]), wide)), [["C[!]", "A", "B"], ["F", "D", "E"]]);
+  // Other columns moving past it leave it alone
+  const first = withTable([[["A", add("!")], "B", "C"], ["D", "E", "F"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "C", "B"], ["D", "F", "E"]]), first)), [["A[!]", "C", "B"], ["D", "F", "E"]]);
+});
+
+test("reload, the table's shape unchanged: another cell's edit and the document's text win, the addition stays", () => {
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B"], ["C", "X"]]), PAGE)), [["A", "B[!]"], ["C", "X"]]);
+  // Its own cell's text changed: Google's text, and the addition after the text it changed
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "Bee"], ["C", "D"]]), PAGE)), [["A", "Bee[!]"], ["C", "D"]]);
+});
+
+test("reload, rows or columns that read the same: the addition is kept, and where nothing tells, it stays at its place", () => {
+  // Of two rows that read the same one is gone: the addition stays, with the one left
+  const twice = withTable([["A", "B"], ["A", ["B", add("!")]]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["A", "B"]]), twice)), [["A", "B[!]"]]);
+  // A new empty row next to an empty row: nothing tells which is new, so it stays at its place (as by id)
+  const empty = withTable([["", ["", add("!")]], ["A", "B"]]);
+  assert.deepEqual(cellTexts(rebase(withTable([["", ""], ["", ""], ["A", "B"]]), empty)), [["", "[!]"], ["", ""], ["A", "B"]]);
+});
+
+test("reload, a table with a merged cell: rows and columns are found by their place in its grid", () => {
+  const head = (row: number, column: number, colspan: number) => (r: number, c: number) => (r === row && c === column ? { colspan } : {});
+  // A column added before, under a heading across the table
+  const page = withTable([["Head"], [["A", add("!")], "B"]], head(0, 0, 2));
+  assert.deepEqual(cellTexts(rebase(withTable([["", "Head"], ["", "A", "B"]], head(0, 1, 2)), page)), [["", "Head"], ["", "A[!]", "B"]]);
+  // A row added above the heading
+  const lower = withTable([["Head"], ["C", ["D", add("!")]]], head(0, 0, 2));
+  assert.deepEqual(cellTexts(rebase(withTable([["", ""], ["Head"], ["C", "D"]], head(1, 0, 2)), lower)), [["", ""], ["Head"], ["C", "D[!]"]]);
+});
