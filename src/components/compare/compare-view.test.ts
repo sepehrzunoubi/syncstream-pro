@@ -25,7 +25,7 @@ const compareTab = (over: Partial<TabCompare>): TabCompare => ({
   changes: [], kept: [], unsupported: [], rightCopied: [],
   stats: { words: 0, images: 0, tables: 0, footnotes: 0, changes: 0, skipped: 0, presentPct: 100 }, ...over,
 });
-const change = (id: string, kind: "text" | "rename" = "text") => ({ id, kind, rightTabId: "R1", words: 3, preview: "three new words", where: "after “Intro”", when: "typed" as const, merged: null, right: null });
+const change = (id: string, kind: "text" | "rename" | "format" = "text") => ({ id, kind, rightTabId: "R1", words: 3, preview: "three new words", where: "after “Intro”", when: "typed" as const, merged: null, right: null });
 
 test("a Docs link, a Drive link or a bare id gives the document id; anything else gives none", () => {
   const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd";
@@ -44,6 +44,8 @@ test("a tab's status: additions, a new tab, up to date, not copied", () => {
   const none = new Set<string>();
   assert.deepEqual(tabStatus(compareTab({ changes: [change("a"), change("b")] }), none), { label: "2 additions", tone: "add" });
   assert.deepEqual(tabStatus(compareTab({ changes: [change("a")] }), none), { label: "1 addition", tone: "add" });
+  assert.deepEqual(tabStatus(compareTab({ changes: [change("a", "format"), change("b", "format")] }), none), { label: "Formatting", tone: "add" });
+  assert.deepEqual(tabStatus(compareTab({ changes: [change("a"), change("b", "format")] }), none), { label: "1 addition", tone: "add" });
   assert.deepEqual(tabStatus(compareTab({ changes: [change("a"), change("b")] }), new Set(["a", "b"])), { label: "Nothing to copy", tone: "done" });
   assert.deepEqual(tabStatus(compareTab({}), none), { label: "Up to date", tone: "done" });
   assert.deepEqual(tabStatus(compareTab({ target: { kind: "new", title: "Intro", parentRightTabId: null }, changes: [change("a")] }), none), { label: "New tab", tone: "new" });
@@ -65,7 +67,7 @@ test("a target select round-trips; a tab picked by hand keeps its name, as the r
 });
 
 test("what is left alone and what can't be copied read as plain sentences", () => {
-  assert.equal(keptLine({ kind: "formatting", rightTabId: "R1", leftTabId: "L1", count: 2 }), "2 parts with the same words but a different look keep your look");
+  assert.equal(keptLine({ kind: "formatting", rightTabId: "R1", leftTabId: "L1", count: 2 }), "2 smart chips styled differently keep your look");
   assert.equal(keptLine({ kind: "spelling", rightTabId: "R1", leftTabId: "L1", count: 1 }), "1 word spelled a little differently isn't typed again");
   assert.equal(keptLine({ kind: "header", rightTabId: "R1", leftTabId: "L1", count: 1 }), "Your header stays as it is");
   assert.equal(unsupportedLine({ kind: "chip", rightTabId: "R1", count: 3, asText: true }), "3 smart chips: copied as their text");
@@ -183,4 +185,13 @@ test("a change reads as what it adds: paragraphs a line each, a table by its sha
   const newTab = describeChange(c("tab", null, { preview: "Appendix", where: "as a new tab" }), src);
   assert.equal(newTab.where, "");
   assert.equal(newTab.label, "New tab");
+});
+
+test("a Formatting change reads as the lines it restyles", () => {
+  const src = { tokens: tokenize(docOf(tabContent(["Intro", "Regulatory environment", "Market overview"]).nodes)) };
+  const c = { id: "f", kind: "format" as const, rightTabId: "R1", words: 0, preview: "Regulatory environment Market overview", where: "", when: "start" as const, merged: null, right: [6, 45] as [number, number] };
+  const v = describeChange(c, src);
+  assert.deepEqual(v.lines.map((l) => l.text), ["Regulatory environment", "Market overview"]);
+  assert.equal(v.label, "Formatting, 2 lines");
+  assert.equal(v.where, "");
 });

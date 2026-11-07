@@ -1197,6 +1197,12 @@ tr.ss-page-gap { display: table-row; }
   background-size: 4px 1px; background-position: 0 calc(100% - 1px); background-repeat: repeat-x;
   -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
+/* Your text that takes the reference's look: a dotted line under it, the glow's blue, and nothing over the look itself */
+.ss-doc .ss-cmp-restyle {
+  background-image: linear-gradient(90deg, rgba(26, 115, 232, 0.75) 50%, transparent 50%);
+  background-size: 4px 2px; background-position: 0 100%; background-repeat: repeat-x;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
 .ss-doc .ss-cmp-block { border-radius: 2px; box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.28), 0 0 14px rgba(26, 115, 232, 0.25); }
 /* A table's wrapper spans the page: the outline goes round the table itself */
 .ss-doc .tableWrapper.ss-cmp-block { border-radius: 0; box-shadow: none; }

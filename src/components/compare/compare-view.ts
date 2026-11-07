@@ -24,8 +24,9 @@ export function tabStatus(tab: TabCompare, skip: ReadonlySet<string>): { label: 
   const open = tab.changes.filter((c) => !skip.has(c.id));
   if (tab.target.kind === "new") return { label: open.length ? "New tab" : "New tab · empty", tone: "new" };
   if (!open.length) return { label: tab.changes.length ? "Nothing to copy" : "Up to date", tone: "done" };
-  const typed = open.filter((c) => c.kind !== "rename" && c.kind !== "pageSetup").length;
-  return { label: typed ? plural(typed, "addition") : "Small changes", tone: "add" };
+  const typed = open.filter((c) => c.kind !== "rename" && c.kind !== "pageSetup" && c.kind !== "format").length;
+  const restyles = open.filter((c) => c.kind === "format").length;
+  return { label: typed ? plural(typed, "addition") : restyles ? "Formatting" : "Small changes", tone: "add" };
 }
 
 /** A target as the select's value */
@@ -56,8 +57,8 @@ export function takenBy(map: TabMap, right: CompareSide): Map<string, string> {
 
 const COUNTED: Partial<Record<Kept["kind"], (n: number) => string>> = {
   onlyLeft: (n) => `${plural(n, "part")} only your document has stay${n === 1 ? "s" : ""} as ${n === 1 ? "it is" : "they are"}`,
-  formatting: (n) => `${plural(n, "part")} with the same words but a different look keep${n === 1 ? "s" : ""} your look`,
-  paragraphStyle: (n) => `${plural(n, "paragraph")} styled differently (heading, alignment or spacing) keep${n === 1 ? "s" : ""} your style`,
+  formatting: (n) => `${plural(n, "smart chip")} styled differently keep${n === 1 ? "s" : ""} your look`,
+  paragraphStyle: (n) => `${plural(n, "smart chip paragraph")} styled differently keep${n === 1 ? "s" : ""} your style`,
   spelling: (n) => `${plural(n, "word")} spelled a little differently ${n === 1 ? "isn't" : "aren't"} typed again`,
   moved: (n) => `${plural(n, "part")} your document has in another place ${n === 1 ? "isn't" : "aren't"} copied twice`,
   spacing: (n) => `${plural(n, "difference")} in blank lines or spaces ${n === 1 ? "is" : "are"} left alone`,
@@ -114,6 +115,7 @@ export const CHANGE_LABEL: Record<ChangeKind, string> = {
   tab: "New tab",
   rename: "Tab name",
   pageSetup: "Page setup",
+  format: "Formatting",
 };
 
 /** A line of a change in the list: a paragraph it adds, or what a structure is */
@@ -226,6 +228,10 @@ export function describeChange(c: Change, src: ChangeSource | null): ChangeView 
     return view(lines.length ? lines : [{ text: rows.length === 1 ? "An empty row" : `${rows.length} empty rows`, kind: "desc" }], rows.length === 1 ? "Table row" : plural(rows.length, "table row"));
   }
   const paras = r.paras.filter((p) => p.text || p.images);
+  if (c.kind === "format") {
+    const shown = paras.slice(0, 2).map((p) => ({ text: p.text || (p.images > 1 ? `${p.images} images` : "An image"), kind: (HEADING_STYLES.has(p.style) ? "heading" : p.item ? "item" : "text") as ChangeLine["kind"] }));
+    return view(shown, paras.length > 1 ? `Formatting, ${plural(paras.length, "line")}` : "Formatting");
+  }
   const lines: ChangeLine[] = [];
   for (const p of paras) {
     if (lines.length === 2) break;

@@ -35,6 +35,7 @@ const KIND_ICON: Record<ChangeKind, React.ReactNode> = {
   tab: lucide(FilePlus2),
   rename: lucide(PenLine),
   pageSetup: lucide(Ruler),
+  format: <Icon name="format_paint" size={18} />,
 };
 
 /** How many changes of a tab show before "Show all" */
@@ -107,6 +108,8 @@ function Summary({ result, nothing, skipped }: { result: CompareResult; nothing:
   if (t.tables) chips.push([<Table2 key="t" className="h-4 w-4" strokeWidth={1.75} />, plural(t.tables, "table")]);
   if (t.footnotes) chips.push([<Superscript key="f" className="h-4 w-4" strokeWidth={1.75} />, plural(t.footnotes, "footnote")]);
   if (t.newTabs) chips.push([<FilePlus2 key="n" className="h-4 w-4" strokeWidth={1.75} />, plural(t.newTabs, "new tab")]);
+  const restyled = result.tabs.reduce((n, tab) => n + (tab.restyled?.length ?? 0), 0);
+  if (restyled) chips.push([<Icon key="r" name="format_paint" size={16} />, `${plural(restyled, "line")} restyled`]);
   const pct = Math.max(0, Math.min(100, Math.round(t.presentPct)));
   return (
     <section className="ss-cmp-summary" aria-label="Summary">
@@ -183,7 +186,7 @@ function ChangeList(p: ComparePanelProps) {
 
 function ChangeRow({ c, src, off, active, onJump, onToggle }: { c: Change; src: ChangeSource | null; off: boolean; active: boolean; onJump: (c: Change) => void; onToggle: (id: string) => void }) {
   const v = useMemo(() => describeChange(c, src), [c, src]);
-  const meta = [v.label, c.words > 0 ? plural(c.words, "word") : "", v.where].filter(Boolean).join(" · ");
+  const meta = [v.label, c.words > 0 ? plural(c.words, "word") : "", c.restyle?.length ? `restyles ${plural(c.restyle.length, "line")}` : "", v.where].filter(Boolean).join(" · ");
   // One paragraph wraps to two lines; more show their first two, a line each
   const single = v.lines.length === 1;
   return (
@@ -192,7 +195,7 @@ function ChangeRow({ c, src, off, active, onJump, onToggle }: { c: Change; src: 
         type="button"
         className="ss-cmp-change-main"
         onClick={() => onJump(c)}
-        title={c.when === "start" ? "Made when the sync starts, before the typing" : undefined}
+        title={c.kind === "format" ? "Your text takes the reference's look when the sync starts, before the typing" : c.when === "start" ? "Made when the sync starts, before the typing" : c.restyle?.length ? "The lines next to it take the reference's look when the sync starts" : undefined}
         aria-label={`${v.label}: ${v.summary}.${v.where ? ` ${v.where.replace(/[.\s]+$/, "")}.` : ""} Show it on the pages`}
       >
         <span className="ss-cmp-kind" aria-hidden="true">{v.label === "Heading" || v.label === "Title" || v.label === "Subtitle" ? lucide(Heading) : v.label.startsWith("Image") ? KIND_ICON.image : KIND_ICON[c.kind]}</span>
@@ -237,7 +240,7 @@ function LeftAlone({ result }: { result: CompareResult }) {
       <AnimatePresence initial={false}>
         {open && (
           <motion.div id="ss-cmp-alone" key="alone" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease }}>
-            <p className="ss-cmp-hint">Nothing in your document is deleted, moved or restyled.</p>
+            <p className="ss-cmp-hint">Nothing in your document is deleted or moved.</p>
             {kept.length > 0 && (
               <ul className="ss-cmp-alone">
                 {kept.map((k) => <li key={k.kind}><Icon name="check" size={16} className="ss-cmp-alone-icon" /><span>{keptLine(k)}{k.sample ? <span className="ss-cmp-sample">For example &ldquo;{k.sample}&rdquo;</span> : null}</span></li>)}

@@ -1,6 +1,7 @@
 /**
  * The compare panes' highlights: on the reference, the parts the sync will copy (in the glow new
- * text has) and the parts left out; on both, a change pointed out from the list flashes. Drawn as
+ * text has) and the parts left out; on your document, the text that takes the reference's look; on
+ * both, a change pointed out from the list flashes. Drawn as
  * decorations, so the documents themselves never change.
  */
 
@@ -13,6 +14,8 @@ export type Range = { from: number; to: number };
 interface CompareMarksState {
   copied: Range[];
   skipped: Range[];
+  /** Text that takes the reference's look */
+  restyled: Range[];
   /** Whole blocks (tables) that are new, outlined as one */
   blocks: number[];
   flash: (Range & { n: number }) | null;
@@ -20,7 +23,7 @@ interface CompareMarksState {
 }
 
 export const compareMarksKey = new PluginKey<CompareMarksState>("ssCompareMarks");
-type Patch = Partial<Pick<CompareMarksState, "copied" | "skipped" | "blocks" | "flash">>;
+type Patch = Partial<Pick<CompareMarksState, "copied" | "skipped" | "restyled" | "blocks" | "flash">>;
 
 /**
  * Inline decorations only on text: one over an image (or another node drawn by a node view) makes
@@ -52,6 +55,7 @@ function build(doc: Parameters<typeof DecorationSet.create>[0], s: Omit<CompareM
   const clip = (r: Range) => ({ from: Math.max(0, Math.min(r.from, size)), to: Math.max(0, Math.min(r.to, size)) });
   for (const r of s.copied) { const c = clip(r); if (c.to > c.from) decorate(doc, c, "ss-cmp-copy", {}, decos); }
   for (const r of s.skipped) { const c = clip(r); if (c.to > c.from) decorate(doc, c, "ss-cmp-skip", {}, decos); }
+  for (const r of s.restyled) { const c = clip(r); if (c.to > c.from) decorate(doc, c, "ss-cmp-restyle", {}, decos); }
   for (const pos of s.blocks) {
     const node = pos >= 0 && pos < size ? doc.nodeAt(pos) : null;
     if (node && node.isBlock) decos.push(Decoration.node(pos, pos + node.nodeSize, { class: "ss-cmp-block" }));
@@ -71,13 +75,13 @@ export const CompareMarks = Extension.create({
       new Plugin<CompareMarksState>({
         key: compareMarksKey,
         state: {
-          init: () => ({ copied: [], skipped: [], blocks: [], flash: null, decos: DecorationSet.empty }),
+          init: () => ({ copied: [], skipped: [], restyled: [], blocks: [], flash: null, decos: DecorationSet.empty }),
           apply: (tr, value, _old, state) => {
             const patch = tr.getMeta(compareMarksKey) as Patch | undefined;
             // A new document clears what was drawn on the last one
             if (tr.docChanged && !patch) {
               const loaded = tr.steps.some((s) => (s as unknown as { slice?: { size: number } }).slice?.size);
-              if (loaded) return { copied: [], skipped: [], blocks: [], flash: null, decos: DecorationSet.empty };
+              if (loaded) return { copied: [], skipped: [], restyled: [], blocks: [], flash: null, decos: DecorationSet.empty };
               return { ...value, decos: value.decos.map(tr.mapping, tr.doc) };
             }
             if (!patch) return value;

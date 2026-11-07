@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { ArrowLeftRight, ArrowUpDown, FileX2, Files, KeyRound, TriangleAlert } from "lucide-react";
-import type { Change, CompareBreak, CompareLoadResponse, CompareSide, CompareStartBody, TabMap, TabTarget } from "@/lib/compare-types";
+import type { Change, CompareBreak, CompareLoadResponse, CompareSide, CompareStartBody, TabCompare, TabMap, TabTarget } from "@/lib/compare-types";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { buildDripPlan } from "@/lib/drip-engine";
@@ -210,10 +210,10 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
     return { pageSetup: into.doc.pageSetup, pageless, defaults: into.doc.defaults };
   }, [data, tab, rightTab]);
   const rightSetup = useMemo<PaneSetup | null>(() => (rightTab ? { pageSetup: rightTab.doc.pageSetup, pageless: rightTab.doc.pageless, defaults: rightTab.doc.defaults } : null), [rightTab]);
-  const leftMarks = useMemo<PaneMarks>(() => ({ blocks: (tab?.changes ?? []).filter((c) => c.kind === "table" && c.merged).map((c) => c.merged![0]) }), [tab]);
+  const leftMarks = useMemo<PaneMarks>(() => ({ restyled: tab?.restyled ?? [], blocks: (tab?.changes ?? []).filter((c) => c.kind === "table" && c.merged).map((c) => c.merged![0]) }), [tab]);
   const rightMarks = useMemo<PaneMarks>(() => ({
     copied: tab?.rightCopied ?? [],
-    skipped: (fullTab?.changes ?? []).filter((c) => skipSet.has(c.id) && c.right).map((c) => c.right!),
+    skipped: (fullTab?.changes ?? []).filter((c) => skipSet.has(c.id)).flatMap((c) => [...(c.right ? [c.right] : []), ...(c.restyle ?? [])]),
     blocks: (tab?.changes ?? []).filter((c) => c.kind === "table" && c.right).map((c) => c.right![0]),
   }), [tab, fullTab, skipSet]);
 
@@ -426,6 +426,13 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
         if (!wide) setSnack(CHANGED);
         return;
       }
+      if (status === 400 && res.code === "nothing") {
+        // Only what isn't typed was left (a look to copy, a new tab): it's in now, so compare again
+        await fetchCompare({ keep: true });
+        setNotice(res.error || "Your document now has everything in the reference.");
+        if (!wide) setSnack(res.error || "Your document now has everything in the reference.");
+        return;
+      }
       if (status === 409 && res.code === "busy" && typeof res.jobId === "string") setBusyJob(res.jobId);
       if (!ok || !res.job) throw new Error(res.error || `Couldn't start the sync (HTTP ${status})`);
       const dropped = typeof res.droppedImages === "number" && res.droppedImages > 0 ? res.droppedImages : 0;
@@ -553,7 +560,7 @@ export function CompareWorkspace({ user, onSignOut, onReauth }: { user: HeaderUs
             editor={leftEditor}
             title="Your document · after the sync"
             tabTitle={showRail && railWide ? null : leftTitleTab}
-            legend={ready && tab && tab.target.kind !== "skip" ? <><span className="ss-cmp-swatch" aria-hidden="true">Aa</span>{tab.stats.words ? `${plural(tab.stats.words, "word")} to add` : tab.changes.length ? "New parts glow" : "Nothing to add here"}</> : null}
+            legend={ready && tab && tab.target.kind !== "skip" ? <><span className="ss-cmp-swatch" aria-hidden="true">Aa</span>{legendOf(tab)}</> : null}
             doc={leftDoc}
             docKey={leftKey}
             glow
@@ -791,4 +798,12 @@ function PanelIdle({ loading, notice }: { loading: boolean; notice: React.ReactN
       )}
     </div>
   );
+}
+
+/** What your document's pane shows, in a few words */
+function legendOf(tab: TabCompare): string {
+  const restyled = !!tab.restyled?.length;
+  if (tab.stats.words) return `${plural(tab.stats.words, "word")} to add${restyled ? " · restyled text underlined" : ""}`;
+  if (restyled) return "Restyled text is underlined";
+  return tab.changes.length ? "New parts glow" : "Nothing to add here";
 }

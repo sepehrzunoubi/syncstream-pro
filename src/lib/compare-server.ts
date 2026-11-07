@@ -531,8 +531,9 @@ export function docsTables(tab: TabCompare): TabCompare {
  * The structure a tab's additions need, without anything the sync types: LEFT as it is, plus the
  * reference's tables, rows and cells (empty), its footnote references, the paragraphs that hold a
  * new footnote reference (only the reference in them), and empty lines with nothing typed beside
- * them. The sync then types the text around them. Nothing else is written before it types: a
- * paragraph of LEFT's is never restyled to make room.
+ * them, and the reference's look on LEFT's text that takes it. The sync then types the text around
+ * them. Nothing else is written before it types: a paragraph of LEFT's is never restyled to make
+ * room for what's typed into it.
  */
 export function structureOnly(merged: EditorNode, origin: number[]): EditorNode {
   const toks = tokenize(merged);
