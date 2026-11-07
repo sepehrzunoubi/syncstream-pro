@@ -44,7 +44,7 @@ const layout = (page: Page) => page.evaluate(() => {
   const out: number[] = [];
   v.state.doc.descendants((n, pos) => {
     if (!n.isTextblock || !n.textContent.startsWith("Closing thoughts")) return true;
-    for (let i = 1; i <= n.content.size; i += 3) { const c = v.coordsAtPos(pos + i); out.push(Math.round(c.left * 10), Math.round(c.top * 10)); }
+    for (let i = 1; i <= n.content.size; i += 3) { const c = v.coordsAtPos(pos + i); out.push(c.left, c.top); }
     return false;
   });
   return out;
@@ -70,7 +70,10 @@ test.describe("Manual breaks", () => {
     await expect(pill).toHaveCount(1);
     await expect(pill).toHaveText("5m");
     expect(await page.evaluate(() => window.ssEditor!.state.selection.from)).toBe(caret);
-    expect(await layout(page)).toEqual(before);
+    // Nothing moves: within half a pixel (the mark's own span can shift glyphs by a fraction of one)
+    const after = await layout(page);
+    expect(after.length).toBe(before.length);
+    expect(Math.max(...after.map((x, i) => Math.abs(x - before[i])))).toBeLessThan(0.5);
     // The list names it
     await expect(page.getByRole("list", { name: "Breaks on the page" })).toContainText("after “later,”");
     // Text that is already in the document can't take one
