@@ -216,6 +216,37 @@ test.describe("New Google Doc", () => {
     await expect.poll(() => page.evaluate(() => window.ssEditor!.getJSON().content?.[0]?.type)).toBe("paragraph");
   });
 
+  test("Edit > Delete from a table cell to the text after the table deletes around the table, as the Delete key does: nothing joins into the cell", async ({ app, page, api }) => {
+    await app.open();
+    await page.getByRole("navigation", { name: "Syncs" }).getByRole("button", { name: "New Google Doc" }).click();
+    await expect.poll(() => api.creates.length).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isFocused && window.ssEditor!.isEditable)).toBe(true);
+    await page.evaluate(() => window.ssEditor!.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run());
+    await expect.poll(() => page.evaluate(() => (window.ssEditor!.getJSON().content ?? []).map((n) => n.type))).toEqual(["paragraph", "table", "paragraph"]);
+    // Text in the last cell, and on the line after the table
+    await page.evaluate(() => {
+      const ed = window.ssEditor!;
+      let cell = 0;
+      ed.state.doc.descendants((n, pos) => { if (n.type.name === "tableCell") cell = pos; });
+      ed.chain().insertContentAt(cell + 2, "Last cell").run();
+      ed.chain().insertContentAt(ed.state.doc.content.size - 1, "Beta tail").run();
+      let a = 0;
+      ed.state.doc.descendants((n, pos) => { if (n.isText && n.text === "Last cell") a = pos; });
+      const b = ed.state.doc.content.size - 1 - "ta tail".length;
+      ed.chain().focus().setTextSelection({ from: a + "Last".length, to: b }).run();
+    });
+    await app.menu("Edit", "Delete");
+    const after = () => page.evaluate(() => {
+      const doc = window.ssEditor!.state.doc;
+      const cells: string[] = [];
+      doc.descendants((n) => { if (n.type.name === "tableCell") cells.push(n.textContent); });
+      return { types: (window.ssEditor!.getJSON().content ?? []).map((n) => n.type), cells, last: doc.lastChild!.textContent };
+    });
+    // The table and its cells stay as they were; the text after it loses what was selected
+    await expect.poll(async () => (await after()).last).toBe("ta tail");
+    expect(await after()).toEqual({ types: ["paragraph", "table", "paragraph"], cells: ["", "", "", "Last cell"], last: "ta tail" });
+  });
+
   test("a second click while Google makes the document makes only one; Refresh list right after keeps it open", async ({ app, page, api }) => {
     api.createDelay = 800;
     api.listLag = 2;

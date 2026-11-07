@@ -199,7 +199,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item disabled={off} shortcut={`${mod}C`} onSelect={() => { p.editor?.commands.focus(); document.execCommand("copy"); }}>Copy</Item>
         <Item disabled={off} shortcut={`${mod}V`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-paste-hint"))}>Paste</Item>
         <Item disabled={off} shortcut={`${mod}Shift+V`} onSelect={() => window.dispatchEvent(new CustomEvent("ss-paste-hint"))}>Paste without formatting</Item>
-        <Item disabled={off} onSelect={() => run((c) => c.deleteSelection())}>Delete</Item>
+        <Item disabled={off} onSelect={() => run((c) => c.deleteKeepingLocked())}>Delete</Item>
         <Sep />
         <Item disabled={off} shortcut={`${mod}A`} onSelect={() => run((c) => c.selectAll())}>Select all</Item>
         <Sep />

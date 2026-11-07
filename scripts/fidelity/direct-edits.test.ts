@@ -6,13 +6,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { getSchema } from "@tiptap/core";
-import { EditorState, TextSelection, type Command } from "@tiptap/pm/state";
-import { addColumnAfter, addRowAfter, deleteColumn, deleteRow } from "@tiptap/pm/tables";
+import { createTable } from "@tiptap/extension-table";
+import { EditorState, Plugin, TextSelection, type Command } from "@tiptap/pm/state";
+import { closeHistory, history, undo } from "@tiptap/pm/history";
+import { addColumnAfter, addRowAfter, deleteColumn, deleteRow, tableEditing } from "@tiptap/pm/tables";
+import { DocSync } from "../../src/components/workspace/doc-sync";
 import { editorExtensions } from "../../src/components/workspace/extensions";
 import { blankWithPdf, replaceWithPdf } from "../../src/components/workspace/use-pdf-import";
 import { tableLinesPlugin } from "../../src/components/workspace/table-lines";
 import { importDoc } from "../../src/lib/doc-import";
-import { additions, adoptStructure, directEdits } from "../../src/lib/doc-model";
+import { additions, adoptStructure, directEdits, signature } from "../../src/lib/doc-model";
 import { EDIT_REQUESTS } from "../../src/lib/docs-requests";
 import type { EditorNode } from "../../src/lib/rich-text";
 import { labelsOf, STRICT } from "./fidelity";
@@ -366,4 +369,278 @@ test("the page keeps Docs' paragraph before a table: at the start, after another
   assert.deepEqual(shape(asEditorHasIt([para("a"), para("", { locked: true, kind: "section", sectionType: "NEXT_PAGE" }), table])), ["p:a", "locked", "p:", "table", "p:"], "after a section break");
   const once = asEditorHasIt([table]);
   assert.deepEqual(shape(asEditorHasIt(once.content ?? [])), ["p:", "table", "p:"], "and the fix is made once");
+});
+
+/** The page after Enter at the end of the paragraph that says `text`, a heading: the new line is Normal text, as the editor's Enter makes it */
+function enterAtEndOfHeading(doc: EditorNode, text: string): EditorNode {
+  const node = schema.nodeFromJSON(doc);
+  let pos = -1;
+  node.descendants((n, p) => { if (pos < 0 && n.type.name === "paragraph" && n.textContent === text) pos = p + n.nodeSize - 1; });
+  const state = EditorState.create({ schema, doc: node });
+  const attrs = state.doc.resolve(pos).parent.attrs;
+  return state.apply(state.tr.split(pos, 1, [{ type: schema.nodes.paragraph, attrs: { ...attrs, styleName: "normal" } }])).doc.toJSON() as EditorNode;
+}
+
+test("Enter at the end of a heading right before a table, or at the end of a table cell, is saved (Docs takes a new line only inside a paragraph)", async () => {
+  for (const [name, setup, heading] of [
+    // Docs' paragraph before a table, a heading
+    ["before a table", [
+      { insertTable: { rows: 1, columns: 1, location: { index: 1 } } },
+      { insertText: { location: { index: 1 }, text: "Title" } },
+      { updateParagraphStyle: { range: { startIndex: 1, endIndex: 6 }, paragraphStyle: { namedStyleType: "HEADING_1" }, fields: "namedStyleType" } },
+    ], "Title"],
+    // A cell that holds a heading
+    ["in a cell", [
+      { insertTable: { rows: 1, columns: 2, location: { index: 1 } } },
+      { insertText: { location: { index: 5 }, text: "Head" } },
+      { updateParagraphStyle: { range: { startIndex: 5, endIndex: 9 }, paragraphStyle: { namedStyleType: "HEADING_2" }, fields: "namedStyleType" } },
+    ], "Head"],
+  ] as const) {
+    const docs = createStrictStubDocs({ ...STRICT });
+    const id = await docs.create(name);
+    await docs.batchUpdate(id, setup as never);
+    const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+    // (each round is applied as the stub applies it: one Docs refuses throws here)
+    const { base, editor } = await autosave(docs, id, start, enterAtEndOfHeading(start, heading));
+    assert.equal(directEdits(base, editor).requests.length, 0, `${name}: nothing left to save`);
+    const lines = (nodes: EditorNode[]): string[] => nodes.flatMap((n) => (n.type === "table" ? (n.content ?? []).flatMap((r) => (r.content ?? []).flatMap((c) => lines(c.content ?? []).map((l) => `cell ${l}`))) : [`${text([n])[0]}:${n.attrs?.styleName ?? "normal"}`]));
+    assert.deepEqual(lines(importDoc(await docs.get(id)).nodes), lines(editor.content ?? []), name);
+  }
+});
+
+test("a table inserted on the line before another table (the first line, or between two tables) is made where it is on the page", async () => {
+  for (const [name, setup, line] of [
+    ["the first line", [{ insertTable: { rows: 1, columns: 1, location: { index: 1 } } }], 0],
+    ["between two tables", [{ insertTable: { rows: 1, columns: 1, location: { index: 1 } } }, { insertTable: { rows: 1, columns: 2, location: { index: 7 } } }], 2],
+  ] as const) {
+    const docs = createStrictStubDocs({ ...STRICT });
+    const id = await docs.create(name);
+    await docs.batchUpdate(id, setup as never);
+    const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+    // Insert > Table with the caret on that empty line: the table takes its place, and the page keeps Docs' line before each table
+    let state = EditorState.create({ schema, doc: schema.nodeFromJSON(start), plugins: [tableLinesPlugin()] });
+    let pos = 0;
+    state.doc.forEach((_n, p, i) => { if (i === line) pos = p + 1; });
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, pos)));
+    state = state.applyTransaction(state.tr.replaceSelectionWith(createTable(schema, 2, 2, false))).state;
+    const editorDoc = state.doc.toJSON() as EditorNode;
+    // (each round is applied as the stub applies it: one Docs refuses throws here)
+    const { base, editor } = await autosave(docs, id, start, editorDoc);
+    assert.equal(directEdits(base, editor).requests.length, 0, `${name}: nothing left to save`);
+    const shape = (nodes: EditorNode[]) => nodes.map((n) => (n.type === "table" ? `table ${n.content!.length}x${n.content![0].content!.length}` : `p:${text([n])[0]}`));
+    assert.deepEqual(shape(importDoc(await docs.get(id)).nodes), shape(editor.content ?? []), name);
+  }
+});
+
+test("a selection from inside a table cell to past the table, deleted with the editor's plain delete (Edit > Delete keeps the table now), is saved: the text after it that the editor joins into the cell is moved there", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("across");
+  await docs.batchUpdate(id, [{ insertTable: { rows: 1, columns: 2, location: { index: 1 } } }] as never);
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 9 }, text: "After the table\nEnd" } }, { insertText: { location: { index: 7 }, text: "Score" } }, { insertText: { location: { index: 5 }, text: "Name" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  // Shift+click past the table with the caret in its last cell (the table plugin leaves that a text selection), then
+  // Edit > Delete: ProseMirror's own deletion (Backspace keeps the table and deletes only the text around it)
+  const doc = schema.nodeFromJSON(start);
+  const at = (s: string, k: number) => { let pos = -1; doc.descendants((n, p) => { if (pos < 0 && n.isText && n.text!.includes(s)) pos = p + n.text!.indexOf(s) + k; }); return pos; };
+  const state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, at("Score", 2), at("After", 5)) });
+  const editorDoc = state.apply(state.tr.deleteSelection()).doc.toJSON() as EditorNode;
+  assert.deepEqual(tableOf(editorDoc), [["Name", "Sc the table"]], "the page");
+  // (each round is applied as the stub applies it: one Docs refuses throws here)
+  const { base, editor } = await autosave(docs, id, start, editorDoc);
+  assert.equal(directEdits(base, editor).requests.length, 0, "nothing left to save");
+  const read: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  assert.deepEqual(tableOf(read), [["Name", "Sc the table"]], "the document");
+  assert.deepEqual(text((read.content ?? []).filter((n) => n.type === "paragraph")), text((editor.content ?? []).filter((n) => n.type === "paragraph")));
+});
+
+test("paragraphs made list items, one starting with a tab, keep the tab as text and their level (Docs reads leading tabs as nesting and removes them)", async () => {
+  const { target, after } = await save([
+    { insertText: { location: { index: 1 }, text: "\tIndented first line\nSecond\nEnd" } },
+  ], (base) => {
+    // Bulleted list over the first two, as toggleList sets it
+    const item = (n: EditorNode): EditorNode => ({ ...n, attrs: { ...n.attrs, list: "bullet", listId: null, level: 0, glyph: null, preset: null, box: null, listCont: null, softBreak: null, indent: 0, firstLine: false } });
+    return [item(base[0]), item(base[1]), base[2]];
+  });
+  assert.deepEqual(labelsOf(target), ["●", "●"], "the editor");
+  assert.deepEqual(text(after), ["\tIndented first line", "Second", "End"]);
+  assert.deepEqual(after.map((p) => [p.attrs?.list ?? null, p.attrs?.level ?? 0]), [["bullet", 0], ["bullet", 0], [null, 0]]);
+  assert.deepEqual(labelsOf(after), ["●", "●"], "the document");
+});
+
+test("a selection from a paragraph into a table's middle cell, deleted with the editor's plain delete, is saved: the table keeps its columns, and its cells the text the page shows", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("into");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "Intro text\n" } }, { insertTable: { rows: 2, columns: 3, location: { index: 12 } } }] as never);
+  const cells = (await docs.get(id)).body!.content!.find((e) => e.table)!.table!.tableRows!.flatMap((r) => r.tableCells!.map((c) => c.content![0].startIndex!));
+  await docs.batchUpdate(id, cells.map((at, k) => ({ insertText: { location: { index: at }, text: ["Alpha", "Beta", "Gamma", "D", "E", "F"][k] } })).reverse() as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  // Shift+click into "Beta" with the caret in "Intro", then Edit > Delete: ProseMirror's own deletion takes
+  // the row's first two cells (the rest of "Beta" joins "Int"), and the table plugin makes them again, empty
+  const doc = schema.nodeFromJSON(start);
+  const at = (s: string, k: number) => { let pos = -1; doc.descendants((n, p) => { if (pos < 0 && n.isText && n.text!.includes(s)) pos = p + n.text!.indexOf(s) + k; }); return pos; };
+  const state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, at("Intro", 3), at("Beta", 2)), plugins: [tableEditing(), tableLinesPlugin()] });
+  const editorDoc = state.applyTransaction(state.tr.deleteSelection()).state.doc.toJSON() as EditorNode;
+  assert.deepEqual(tableOf(editorDoc), [["", "", "Gamma"], ["D", "E", "F"]], "the page");
+  // (each round is applied as the stub applies it: one Docs refuses throws here)
+  const { base, editor, structural } = await autosave(docs, id, start, editorDoc);
+  assert.equal(directEdits(base, editor).requests.length, 0, "nothing left to save");
+  assert.deepEqual(structural.filter(Boolean), [], "the table's shape is as it was");
+  const read: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  assert.deepEqual(tableOf(read), [["", "", "Gamma"], ["D", "E", "F"]], "the document");
+  assert.deepEqual(text((read.content ?? []).filter((n) => n.type === "paragraph")), ["Intta", ""]);
+  // The cells the plugin made again have none of the document's indices: the save goes by the document's
+  assert.equal(signature(base), signature(read), "what the autosave saved is what the document has");
+});
+
+/**
+ * The additions typed in as the sync runner types them (contentRequests, openAt): a segment typed
+ * before a paragraph opens it with a newline first, then its text goes in before that newline; a page
+ * break is insertPageBreak, which brings its own newline (the source's after it is skipped)
+ */
+async function typeAsTheSync(docs: ReturnType<typeof createStrictStubDocs>, id: string, base: EditorNode, editor: EditorNode) {
+  for (const s of additions(base, editor).segments.slice().sort((a, b) => b.at - a.at)) {
+    const requests: object[] = s.mode === "before" ? [{ insertText: { location: { index: s.at }, text: "\n" } }] : [];
+    let pos = s.at;
+    let buf = "";
+    const flush = () => { if (buf) requests.push({ insertText: { location: { index: pos }, text: buf } }); pos += buf.length; buf = ""; };
+    for (let k = 0; k < s.text.length; k++) {
+      if (s.text[k] !== "\u000C") { buf += s.text[k]; continue; }
+      flush();
+      requests.push({ insertPageBreak: { location: { index: pos } } });
+      pos += 2;
+      if (s.text[k + 1] === "\n") k++;
+    }
+    flush();
+    await docs.batchUpdate(id, requests as never);
+  }
+}
+
+test("a page break put on an empty line (Ctrl+Enter there) is typed by the sync with the line it ends: no empty line comes with it", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("break");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "One\n\nTwo" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  // Ctrl+Enter on the empty line: the break, glowing (an addition), and the line splits after it
+  const doc = schema.nodeFromJSON(start);
+  let state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, 6) });
+  const tr = state.tr.replaceSelectionWith(schema.nodes.pageBreak.create(null, null, [schema.marks.syncAdd.create()]), false);
+  state = state.apply(tr.split(7));
+  const editor = state.doc.toJSON() as EditorNode;
+  const lines = (nodes: EditorNode[]) => nodes.map((n) => (n.content ?? []).map((c) => (c.type === "pageBreak" ? "[pb]" : c.text ?? "")).join(""));
+  assert.deepEqual(lines(editor.content ?? []), ["One", "[pb]", "", "Two"], "the page");
+  assert.equal(directEdits(start, editor).requests.length, 0, "the break is the sync's to type");
+  await typeAsTheSync(docs, id, start, editor);
+  assert.deepEqual(lines(importDoc(await docs.get(id)).nodes), ["One", "[pb]", "", "Two"], "the document");
+});
+
+test("a page break typed mid-line, saved with a deleted empty line next to it, is typed by the sync with the line it ends: no empty line comes with it", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("break");
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 1 }, text: "echo\n\nAfter" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  // Ctrl+Enter after "ech" (the break glows, an addition), then Delete at the end of "o" takes out the empty line
+  const doc = schema.nodeFromJSON(start);
+  let state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, 4) });
+  state = state.apply(state.tr.replaceSelectionWith(schema.nodes.pageBreak.create(null, null, [schema.marks.syncAdd.create()]), false).split(5));
+  state = state.apply(state.tr.delete(8, 10));
+  const editorDoc = state.doc.toJSON() as EditorNode;
+  const lines = (nodes: EditorNode[]) => nodes.map((n) => (n.content ?? []).map((c) => (c.type === "pageBreak" ? "[pb]" : c.text ?? "")).join(""));
+  assert.deepEqual(lines(editorDoc.content ?? []), ["ech[pb]", "o", "After"], "the page");
+  // (each round is applied as the stub applies it: one Docs refuses throws here)
+  const { base, editor } = await autosave(docs, id, start, editorDoc);
+  assert.equal(directEdits(base, editor).requests.length, 0, "nothing left to save");
+  await typeAsTheSync(docs, id, base, editor);
+  assert.deepEqual(lines(importDoc(await docs.get(id)).nodes), ["ech[pb]", "o", "After"], "the document");
+});
+
+test("a paragraph made a heading takes the heading's look in the document, also where its text has Normal text's size, font and colour of its own (a document converted from Word)", async () => {
+  const { target, after } = await save([
+    { insertText: { location: { index: 1 }, text: "Title\nBody text" } },
+    // Every run carries the size, font and colour its style already gives, as a converted document's do
+    { updateTextStyle: { range: { startIndex: 1, endIndex: 16 }, textStyle: { fontSize: { magnitude: 11, unit: "PT" }, weightedFontFamily: { fontFamily: "Arial", weight: 400 }, foregroundColor: { color: { rgbColor: { red: 0, green: 0, blue: 0 } } } }, fields: "fontSize,weightedFontFamily,foregroundColor" } },
+  ], (base) => [{ ...base[0], attrs: { ...base[0].attrs, styleName: "h3" } }, base[1]]);
+  // The page shows the heading's own size and colour: the text has none of its own
+  assert.deepEqual(target[0].content?.map((c) => c.marks ?? []), [[]]);
+  assert.equal(after[0].attrs?.styleName, "h3");
+  assert.deepEqual(after[0].content?.map((c) => c.marks ?? []), [[]], "the heading's text shows the heading's look in the document too");
+  assert.deepEqual(after[1].content?.map((c) => c.marks ?? []), [[]], "Body text is as it was");
+});
+
+test("Insert > Table in a table cell leaves the page as it was: the save writes tables only in the body, so the editor takes none in a cell", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("nested");
+  await docs.batchUpdate(id, [{ insertTable: { rows: 1, columns: 2, location: { index: 1 } } }] as never);
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 7 }, text: "Score" } }, { insertText: { location: { index: 5 }, text: "Name" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  // The editor's own plugins: DocSync (what's typed glows, what the save can't write isn't taken) and the table's
+  const docSync = (DocSync.config.addProseMirrorPlugins as unknown as (this: unknown) => Plugin[]).call({ name: "docSync", options: {}, storage: {}, editor: null, parent: undefined });
+  const doc = schema.nodeFromJSON(start);
+  let pos = -1;
+  doc.descendants((n, p) => { if (pos < 0 && n.isText && n.text === "Name") pos = p + 2; });
+  let state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, pos), plugins: [...docSync, tableEditing(), tableLinesPlugin()] });
+  state = state.applyTransaction(state.tr.replaceSelectionWith(createTable(schema, 2, 2, false))).state;
+  const editorDoc = state.doc.toJSON() as EditorNode;
+  assert.deepEqual(tableOf(editorDoc), [["Name", "Score"]], "the page has no table in a cell");
+  assert.equal(directEdits(start, editorDoc).requests.length, 0, "nothing to save");
+});
+
+test("the stub refuses a page break in a table cell, as Docs does (InsertPageBreakRequest: \"Page breaks cannot be inserted inside a table\")", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("cell-break");
+  await docs.batchUpdate(id, [{ insertTable: { rows: 1, columns: 1, location: { index: 1 } } }] as never);
+  // [section break 0][newline 1][table 2][row 3][cell 4][the cell's newline 5][table end 6][final newline 7]
+  await assert.rejects(docs.batchUpdate(id, [{ insertPageBreak: { location: { index: 5 } } }] as never), /table/);
+  await docs.batchUpdate(id, [{ insertPageBreak: { location: { index: 7 } } }] as never);
+});
+
+test("Ctrl+Enter in a table cell leaves the page as it was: Docs takes no page break in a table, so neither the save nor a sync could write it", async () => {
+  const docs = createStrictStubDocs({ ...STRICT });
+  const id = await docs.create("cell-break");
+  await docs.batchUpdate(id, [{ insertTable: { rows: 1, columns: 1, location: { index: 1 } } }] as never);
+  await docs.batchUpdate(id, [{ insertText: { location: { index: 5 }, text: "Name" } }] as never);
+  const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+  const docSync = (DocSync.config.addProseMirrorPlugins as unknown as (this: unknown) => Plugin[]).call({ name: "docSync", options: {}, storage: {}, editor: null, parent: undefined });
+  const doc = schema.nodeFromJSON(start);
+  let pos = -1;
+  doc.descendants((n, p) => { if (pos < 0 && n.isText && n.text === "Name") pos = p + 2; });
+  let state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, pos), plugins: [...docSync, tableEditing(), tableLinesPlugin()] });
+  // The editor's insertPageBreak: the break in place of the selection, the paragraph split after it
+  state = state.applyTransaction(state.tr.replaceSelectionWith(schema.nodes.pageBreak.create()).split(pos + 1)).state;
+  const editorDoc = state.doc.toJSON() as EditorNode;
+  assert.deepEqual(tableOf(editorDoc), [["Name"]], "the page has no page break in a cell");
+  assert.equal(directEdits(start, editorDoc).requests.length, 0, "nothing to save");
+  assert.equal(additions(start, editorDoc).segments.length, 0, "nothing for a sync to type");
+});
+
+test("a page that already has a table or a page break in a cell (a draft saved before the editor refused them) still takes a table in its body, and Undo brings back the break once deleted", () => {
+  const docSync = (DocSync.config.addProseMirrorPlugins as unknown as (this: unknown) => Plugin[]).call({ name: "docSync", options: {}, storage: {}, editor: null, parent: undefined });
+  const P = (...content: EditorNode[]): EditorNode => ({ type: "paragraph", attrs: {}, content });
+  const T = (t: string): EditorNode => ({ type: "text", text: t });
+  const cell = (...content: EditorNode[]): EditorNode => ({ type: "tableCell", attrs: {}, content });
+  const table = (...cells: EditorNode[]): EditorNode => ({ type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: cells }] });
+  const start: EditorNode = { type: "doc", content: [P(T("Intro")), table(cell(P(T("Up"), { type: "pageBreak" }, T("Down"))), cell(P(), table(cell(P(T("inner")))), P())), P(T("End"))] };
+  const doc = schema.nodeFromJSON(start);
+  let state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, doc.content.size - 1), plugins: [...docSync, tableEditing(), tableLinesPlugin(), history()] });
+  const apply = (tr: EditorState["tr"]) => { state = state.applyTransaction(tr).state; };
+  const count = (type: string, inCells: boolean) => {
+    let n = 0;
+    state.doc.descendants((node, _pos, parent) => {
+      if (node.type.name === type && (!inCells || parent?.type.name !== "doc")) n++;
+      return !(node.type.name === "table" && !inCells && type === "table");
+    });
+    return n;
+  };
+  // A table in the body: taken, though the page has one in a cell already
+  apply(closeHistory(state.tr.replaceSelectionWith(createTable(schema, 1, 1, false))));
+  assert.equal((state.doc.toJSON().content as EditorNode[]).filter((n) => n.type === "table").length, 2, "the body takes the new table");
+  // The break in the cell deleted, then Undo: it comes back
+  let at = -1;
+  state.doc.descendants((node, pos) => { if (node.type.name === "pageBreak") at = pos; });
+  apply(closeHistory(state.tr.delete(at, at + 1)));
+  assert.equal(count("pageBreak", true), 0, "the break is deleted");
+  assert.equal(undo(state, apply), true);
+  assert.equal(count("pageBreak", true), 1, "Undo brings it back");
+  // ...and Undo carries on to the table before it
+  assert.equal(undo(state, apply), true);
+  assert.equal((state.doc.toJSON().content as EditorNode[]).filter((n) => n.type === "table").length, 1, "Undo takes the new table out");
 });
