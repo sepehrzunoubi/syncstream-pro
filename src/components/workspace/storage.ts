@@ -20,8 +20,12 @@ export interface Draft {
   /** The tab of it shown (absent: its first) */
   selectedTabId?: string;
   durationMinutes?: number | null;
-  breaksMode?: BreaksMode;
+  /** "custom" is the old "Choose", which opens as Manual */
+  breaksMode?: BreaksMode | "custom";
+  /** Old drafts' chosen break lengths (no longer used) */
   customBreaks?: number[];
+  /** What was typed in Manual's Break length field */
+  breakLength?: string;
   typoFrequency?: number;
   zoom?: number | "fit";
   pageless?: boolean;
@@ -76,7 +80,7 @@ export function loadDraft(): Draft {
     if (raw) return JSON.parse(raw) as Draft;
     const legacy = localStorage.getItem(LEGACY_DRAFT_KEY);
     if (legacy) {
-      const old = JSON.parse(legacy) as { sourceText?: string; selectedDocId?: string; typoFrequency?: number; durationMinutes?: number | null; customBreaks?: number[]; breaksMode?: BreaksMode };
+      const old = JSON.parse(legacy) as { sourceText?: string; selectedDocId?: string; typoFrequency?: number; durationMinutes?: number | null; customBreaks?: number[]; breaksMode?: BreaksMode | "custom" };
       return { ...old, doc: old.sourceText ? plainToDoc(old.sourceText) : undefined };
     }
   } catch { /* unreadable draft */ }

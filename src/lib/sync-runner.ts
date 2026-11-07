@@ -16,6 +16,7 @@
  */
 
 import type { DripAction } from "./drip-engine";
+import { applyBreakEdit, editableFrom } from "./breaks";
 import type { DocSnapshot } from "./google";
 import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, type ImageRef, type ParagraphClose } from "./rich-text";
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
@@ -199,8 +200,10 @@ export async function runJobWindow(
       if (ctx.job.nextActionAt == null) {
         const delay = ctx.job.typoSubStep === 1 ? action.holdMs ?? 1_000 : action.delayMs;
         // Anchored on when the last action was due, so Google round trips and late deliveries
-        // do not stretch the plan; a backlog is caught up by at most a little
-        const due = ctx.job.lastDueAt != null ? ctx.job.lastDueAt + delay : now() + delay;
+        // do not stretch the plan; a backlog is caught up by at most a little. After a pause the
+        // wait goes on from where it stopped.
+        const due = ctx.job.waitLeftMs != null ? now() + ctx.job.waitLeftMs : ctx.job.lastDueAt != null ? ctx.job.lastDueAt + delay : now() + delay;
+        ctx.job.waitLeftMs = undefined;
         ctx.job.nextActionAt = Math.max(due, now() - MAX_CATCHUP_MS);
         ctx.job.activity = ctx.job.typoSubStep === 1 ? "Fixing a typo" : action.activity;
         ctx.refreshEstimates();
@@ -210,10 +213,11 @@ export async function runJobWindow(
       const windowLeft = windowMs - (now() - windowStart);
       if (wait > windowLeft) {
         await ctx.persist();
-        await handOff(Math.ceil(wait / 1000));
+        // (a change to the breaks applied just now can have moved the wait)
+        await handOff(Math.max(0, Math.ceil((ctx.job.nextActionAt! - now()) / 1000)));
         return { outcome: "waiting", job: toPublicJob(ctx.job) };
       }
-      if (wait > 0) await ctx.waitUntil(ctx.job.nextActionAt);
+      if (wait > 0) await ctx.waitUntil();
 
       await ctx.execute(action);
 
@@ -374,6 +378,7 @@ class Context {
 
   constructor(
     public job: SyncJob,
+    /** Its actions change when the breaks still ahead are changed */
     private readonly plan: SyncPlan,
     private readonly deps: RunnerDeps,
     private readonly now: () => number,
@@ -405,6 +410,20 @@ class Context {
       const applied = await applyControl(store, this.job, control, this.now);
       throw new Interrupted(applied.status === "paused" ? "paused" : "cancelled", applied);
     }
+    // A change to the breaks left while this worker held the lock: applied to our plan and cursor
+    const edit = await store.getBreakEdit(this.job.id);
+    if (edit) {
+      await store.clearBreakEdit(this.job.id);
+      const result = applyBreakEdit(this.plan, this.job, edit, this.now(), { lenient: true });
+      if (result.ok) {
+        await store.setPlan(this.plan);
+        this.refreshEstimates();
+        await store.setJob(this.job);
+        log.info("sync.breaks_changed", { ...this.tag, action: this.job.currentAction, breaks: this.plan.breaks.length, via: "intent" });
+      } else {
+        log.info("sync.breaks_refused", { ...this.tag, action: this.job.currentAction, reason: result.error });
+      }
+    }
   }
 
   /** Write the job, unless pause/cancel/resume happened underneath us. */
@@ -414,8 +433,9 @@ class Context {
     await this.deps.store.setJob(this.job);
   }
 
-  async waitUntil(target: number): Promise<void> {
-    let left = target - this.now();
+  /** Wait for the current action's time, which a change to the breaks can move while waiting */
+  async waitUntil(): Promise<void> {
+    let left = (this.job.nextActionAt ?? 0) - this.now();
     while (left > 0) {
       await this.sleep(Math.min(PAUSE_CHECK_MS, left));
       await this.checkInterrupt();
@@ -423,7 +443,7 @@ class Context {
         log.warn("sync.lock_lost", { ...this.tag, action: this.job.currentAction, during: "wait" });
         throw new Interrupted("busy", this.job);
       }
-      left = target - this.now();
+      left = (this.job.nextActionAt ?? 0) - this.now();
     }
   }
 
@@ -448,7 +468,7 @@ class Context {
       this.job.activity = "Fixing a typo";
       this.refreshEstimates();
       await this.persist();
-      await this.waitUntil(this.job.nextActionAt);
+      await this.waitUntil();
     }
     if (this.job.typoSubStep === 1) {
       await this.erase(wrong);
@@ -738,36 +758,46 @@ class Context {
   }
 
   refreshEstimates(): void {
-    const { actions } = this.plan;
-    const job = this.job;
-    const idx = job.currentAction;
-    const anchor = job.nextActionAt ?? this.now();
-    // Time still ahead for the current action after its wait ends
-    const current = actions[idx];
-    const aheadForCurrent = current && current.kind === "typo" && job.typoSubStep === 0 ? current.holdMs ?? 0 : 0;
-    let after = 0;
-    for (let i = idx + 1; i < actions.length; i++) after += actions[i].delayMs + (actions[i].holdMs ?? 0);
-    job.etaTargetAt = anchor + aheadForCurrent + after;
-
-    // Next break: the current action if it is a break, else the next pause action
-    let nextBreak: number | undefined;
-    let until = 0;
-    if (current?.kind === "pause") {
-      nextBreak = idx;
-      until = 0;
-    } else {
-      until = aheadForCurrent;
-      for (let i = idx + 1; i < actions.length; i++) {
-        if (actions[i].kind === "pause") { nextBreak = i; break; }
-        until += actions[i].delayMs + (actions[i].holdMs ?? 0);
-      }
-    }
-    job.nextBreakAction = nextBreak;
-    job.nextBreakAt = nextBreak != null ? (current?.kind === "pause" ? anchor - current.delayMs : anchor + until) : undefined;
-
-    const elapsedMin = job.startedAt ? Math.max(0.05, (this.now() - job.startedAt) / 60_000) : 0.05;
-    job.wpm = job.charsSent > 0 ? Math.round(job.charsSent / 5 / elapsedMin) : 0;
+    estimateJob(this.job, this.plan.actions, this.now());
   }
+}
+
+/** The job's finish time, next break and pace from where it is in the plan */
+export function estimateJob(job: SyncJob, actions: DripAction[], nowMs: number): void {
+  const idx = job.currentAction;
+  job.editableFrom = editableFrom(actions, idx);
+  const anchor = job.nextActionAt ?? nowMs + (job.waitLeftMs ?? 0);
+  // Time still ahead for the current action after its wait ends
+  const current = actions[idx];
+  const aheadForCurrent = current && current.kind === "typo" && job.typoSubStep === 0 ? current.holdMs ?? 0 : 0;
+  let after = 0;
+  for (let i = idx + 1; i < actions.length; i++) after += actions[i].delayMs + (actions[i].holdMs ?? 0);
+  job.etaTargetAt = anchor + aheadForCurrent + after;
+
+  // Next break: the current action if it is a break, else the next pause action
+  let nextBreak: number | undefined;
+  let until = 0;
+  if (current?.kind === "pause") {
+    nextBreak = idx;
+    until = 0;
+  } else {
+    until = aheadForCurrent;
+    for (let i = idx + 1; i < actions.length; i++) {
+      if (actions[i].kind === "pause") { nextBreak = i; break; }
+      until += actions[i].delayMs + (actions[i].holdMs ?? 0);
+    }
+  }
+  job.nextBreakAction = nextBreak;
+  job.nextBreakAt = nextBreak != null ? (current?.kind === "pause" ? anchor - current.delayMs : anchor + until) : undefined;
+
+  const elapsedMin = job.startedAt ? Math.max(0.05, (nowMs - job.startedAt) / 60_000) : 0.05;
+  job.wpm = job.charsSent > 0 ? Math.round(job.charsSent / 5 / elapsedMin) : 0;
+}
+
+/** What is left of the current action's wait, kept on a pause so resuming goes on from there */
+export function waitLeft(job: SyncJob, t: number): number | undefined {
+  if (job.nextActionAt != null) return Math.max(0, job.nextActionAt - t);
+  return job.waitLeftMs;
 }
 
 /** Apply a pause/cancel request to a job we are allowed to write, and clear it. */
@@ -780,7 +810,7 @@ export async function applyControl(
   const t = now();
   const next: SyncJob =
     command === "pause"
-      ? { ...job, status: "paused", activity: "Paused", pausedAt: t, lastUpdate: t, nextActionAt: undefined }
+      ? { ...job, status: "paused", activity: "Paused", pausedAt: t, lastUpdate: t, nextActionAt: undefined, waitLeftMs: waitLeft(job, t) }
       : { ...job, status: "cancelled", activity: "Cancelled", finishedAt: t, lastUpdate: t, nextActionAt: undefined };
   await store.setJob(next);
   await store.clearControl(job.id);

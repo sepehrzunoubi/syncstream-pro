@@ -17,7 +17,7 @@ import { listLabels } from "@/lib/list-labels";
 import { AddMarkStep, AttrStep, RemoveMarkStep, ReplaceStep } from "@tiptap/pm/transform";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { cleanStyle, fontStack, styleFromMarks, type EditorNode } from "@/lib/rich-text";
-import { PENDING_MARK, groupColumns } from "@/lib/doc-model";
+import { BREAK_MARK, PENDING_MARK, groupColumns } from "@/lib/doc-model";
 import { deleteParts, editableParts, lockedRanges } from "./locked-edits";
 
 /** Transactions that load a document: not additions, not undoable */
@@ -186,8 +186,8 @@ export const DocSync = Extension.create({
       unsetFormattingMarks: () => ({ tr, state }) => {
         for (const range of state.selection.ranges) {
           for (const type of Object.values(state.schema.marks)) {
-            // Docs' Clear formatting keeps links
-            if (type.name !== PENDING_MARK && type.name !== "link") tr.removeMark(range.$from.pos, range.$to.pos, type);
+            // Docs' Clear formatting keeps links; additions stay additions and keep their breaks
+            if (type.name !== PENDING_MARK && type.name !== BREAK_MARK && type.name !== "link") tr.removeMark(range.$from.pos, range.$to.pos, type);
           }
         }
         return true;

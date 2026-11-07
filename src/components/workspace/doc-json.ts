@@ -42,3 +42,17 @@ export function sanitize(node: EditorNode): EditorNode | null {
   if (!node.content) return node;
   return { ...node, content: node.content.map(sanitize).filter((n): n is EditorNode => n !== null) };
 }
+
+/** The document with a mark taken off everything */
+export function withoutMark(doc: EditorNode, type: string): EditorNode {
+  const walk = (n: EditorNode): EditorNode => {
+    const out: EditorNode = { ...n };
+    if (n.marks) {
+      const marks = n.marks.filter((m) => m.type !== type);
+      if (marks.length) out.marks = marks; else delete out.marks;
+    }
+    if (n.content) out.content = n.content.map(walk);
+    return out;
+  };
+  return walk(doc);
+}

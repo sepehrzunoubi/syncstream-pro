@@ -9,6 +9,7 @@ import type { docs_v1 } from "googleapis";
 import type { DripPlan } from "./drip-engine";
 import { normalizeText, parseFormat, type DocListState, type ListType, type RichFormat } from "./rich-text";
 import { planSpots } from "./spots";
+import { breakOffsets } from "./breaks";
 import type { PlanSegment, SpotState, SyncJob, SyncPlan } from "./sync-store";
 
 /** One addition to an existing document, as the client sends it */
@@ -158,6 +159,9 @@ export function buildSyncRecords(input: SyncRecordsInput): { plan: SyncPlan; job
     baselineWordCount: input.baselineWordCount,
     ...(input.spots ? { spots: input.spots } : {}),
     breaks: plan.breaks,
+    breakAt: breakOffsets(plan.actions),
+    breaksVersion: 0,
+    editableFrom: 0,
     completedBreaks: [],
     lastUpdate: now,
   };

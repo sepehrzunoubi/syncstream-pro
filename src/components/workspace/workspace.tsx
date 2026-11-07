@@ -8,6 +8,9 @@ import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
 import { docsUrl, Header, RENAME_EVENT, type HeaderStatus, type HeaderUser } from "./header";
 import { Sidebar } from "./sidebar";
+import { BREAKS_CLEARED, useManualBreaks } from "./use-manual-breaks";
+import { useLiveBreaks } from "./use-live-breaks";
+import { BreakPopover, PlacingBar } from "./break-ui";
 import { SyncPanel } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
@@ -139,7 +142,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     return () => window.removeEventListener("keydown", onKey);
   }, [scale, setZoom]);
   const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON });
-  const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
+  const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, breakLength, setBreakLength, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
   const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
   useEditorDebugHook(editor);
   usePageCopy(focusedJob ? viewer : segmentEditor ?? editor);
@@ -157,9 +160,12 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { now, busy, startError, hasText, preview, focusedSource, startSync, jobAction, dismissJob, editAsNew } = useSyncJobs({
     editor, viewer, refs, canvasRef, jobs, setJobs, setReady, focusedJob, focusedJobId, setFocusedJobId, setComposing,
     docs, selectedDocId, setSelectedDocId, docContent, docBusy, docJSON,
-    settings: { durationMinutes, breaksMode, customBreaks, typoFrequency, startInMinutes, setStartInMinutes, seed, setSeed },
+    settings: { durationMinutes, breaksMode, breakLength, typoFrequency, startInMinutes, setStartInMinutes, seed, setSeed },
     fetchDocs, loadDocContent, saveNow, setDocJSON, setSnack, setScopeError,
   });
+  const breaks = useManualBreaks({ editor, breaksMode, breakLength, active: !focusedJob && !docBusy && !busy, setSnack });
+  const upsertJob = useCallback((job: PublicJob) => setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j))), [setJobs]);
+  const live = useLiveBreaks({ viewer, job: focusedJob ?? null, source: focusedSource, now, upsertJob, setSnack });
 
   const insertImages = useCallback(async (files: File[], at?: number) => {
     if (!editor) return;
@@ -410,6 +416,10 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             </button>
           )}
           <FindBar editor={editor} />
+          <AnimatePresence>
+            {!focusedJob && breaks.placing != null && <PlacingBar key="placing" minutes={breaks.placing} onDone={breaks.endPlacing} />}
+            {focusedJob && live.placing != null && <PlacingBar key="placing-live" live minutes={live.placing} onDone={live.endPlacing} />}
+          </AnimatePresence>
           <div className="ss-ruler-row">
             <div style={{ zoom: scale, position: "relative", left: shift / (scale || 1) }}>
               <Ruler editor={focusedJob ? viewer : segmentEditor ?? editor} disabled={!!focusedJob} geometry={geometry} />
@@ -453,6 +463,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
                   onCancel={() => jobAction("cancel", focusedJob.id)}
                   onDismiss={() => dismissJob(focusedJob.id)}
                   onEditAsNew={() => editAsNew(focusedJob)}
+                  live={live}
                 />
               ) : (
                 <SyncPanel
@@ -460,8 +471,13 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
                   onDurationChange={setDurationMinutes}
                   breaksMode={breaksMode}
                   onBreaksModeChange={setBreaksMode}
-                  customBreaks={customBreaks}
-                  onCustomBreaksChange={setCustomBreaks}
+                  breakLength={breakLength}
+                  onBreakLengthChange={setBreakLength}
+                  manualBreaks={breaks.rows}
+                  onRemoveBreak={breaks.remove}
+                  onClearBreaks={breaks.clear}
+                  onHoverBreak={breaks.hover}
+                  onJumpToBreak={breaks.jump}
                   typoFrequency={typoFrequency}
                   onTypoFrequencyChange={setTypoFrequency}
                   startInMinutes={startInMinutes}
@@ -482,7 +498,29 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       <ContextMenu editor={focusedJob ? null : editor} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
-      <Snackbar snack={snack} onDismiss={() => setSnack(null)} />
+      <Snackbar snack={snack} action={snack === BREAKS_CLEARED ? { label: "Undo", run: breaks.undoClear } : null} onDismiss={() => setSnack(null)} />
+      {breaks.popover && (
+        <BreakPopover
+          key={`${breaks.popover.from}-${breaks.popover.to}`}
+          rect={breaks.popover.rect}
+          minutes={breaks.popover.minutes}
+          onSave={(m) => breaks.changeLength(breaks.popover!, m)}
+          onRemove={() => breaks.removeAt(breaks.popover!)}
+          onClose={breaks.closePopover}
+        />
+      )}
+      {live.popover && (
+        <BreakPopover
+          key={`live-${live.popover.row.at}`}
+          rect={live.popover.rect}
+          minutes={live.popover.row.minutes}
+          title={live.popover.row.state === "now" ? "The break it's on now" : undefined}
+          onSave={(m) => { const r = live.popover!.row; if (r.state === "now") void live.setCurrentLength(m); else if (r.at != null) void live.changeLength(r.at, m); live.closePopover(); }}
+          onRemove={live.popover.row.state === "ahead" ? () => { const r = live.popover!.row; if (r.at != null) void live.remove(r.at); live.closePopover(); } : undefined}
+          extra={live.popover.row.state === "now" ? <button type="button" className="ss-link-btn" onClick={() => { void live.endNow(); live.closePopover(); }}>End now</button> : undefined}
+          onClose={live.closePopover}
+        />
+      )}
     </div>
     </MotionConfig>
   );

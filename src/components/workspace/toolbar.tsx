@@ -123,8 +123,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
     if (!editor) return;
     if (painter) { setPainter(null); return; }
     const { state } = editor;
-    // Paint format copies formatting, never whether text is an addition
-    const marks = (state.storedMarks ?? state.selection.$from.marks()).filter((m) => m.type.name !== "syncAdd").map((m) => ({ type: m.type.name, attrs: { ...m.attrs } }));
+    // Paint format copies formatting, never whether text is an addition or has a break after it
+    const marks = (state.storedMarks ?? state.selection.$from.marks()).filter((m) => m.type.name !== "syncAdd" && m.type.name !== "syncBreak").map((m) => ({ type: m.type.name, attrs: { ...m.attrs } }));
     setPainter({ marks, para: { ...editor.getAttributes("paragraph") } });
   };
   const s = useEditorState({

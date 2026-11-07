@@ -25,7 +25,7 @@ export function useSnack(): [string | null, Setter<string | null>] {
   return [snack, setSnack];
 }
 
-export function Snackbar({ snack, onDismiss }: { snack: string | null; onDismiss: () => void }) {
+export function Snackbar({ snack, action, onDismiss }: { snack: string | null; action?: { label: string; run: () => void } | null; onDismiss: () => void }) {
   return (
     <AnimatePresence>
       {snack && (
@@ -39,6 +39,7 @@ export function Snackbar({ snack, onDismiss }: { snack: string | null; onDismiss
           transition={{ type: "spring", stiffness: 500, damping: 38 }}
         >
           <span className="text-[14px]">{snack}</span>
+          {action && <button onClick={action.run}>{action.label}</button>}
           <button onClick={onDismiss}>Dismiss</button>
         </motion.div>
       )}

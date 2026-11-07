@@ -35,7 +35,7 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
   const { legacyTextRef, revisionRef } = refs;
   const [durationMinutes, setDurationMinutes] = useState<number | null>(null);
   const [breaksMode, setBreaksMode] = useState<BreaksMode>("auto");
-  const [customBreaks, setCustomBreaks] = useState<number[]>([]);
+  const [breakLength, setBreakLength] = useState("");
   const [typoFrequency, setTypoFrequency] = useState(0.5);
   const [startInMinutes, setStartInMinutes] = useState(0);
   const [seed, setSeed] = useState(() => randomSeed());
@@ -53,8 +53,9 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
     setDocJSON(editor.getJSON());
     if (d.selectedDocId) setSelectedDocId(d.selectedDocId, typeof d.selectedTabId === "string" ? d.selectedTabId : "");
     if (d.durationMinutes !== undefined) setDurationMinutes(d.durationMinutes);
-    if (d.breaksMode) setBreaksMode(d.breaksMode);
-    if (Array.isArray(d.customBreaks)) setCustomBreaks(d.customBreaks);
+    // The old "Choose" is now Manual: breaks placed on the page (there are none yet)
+    if (d.breaksMode) setBreaksMode(d.breaksMode === "custom" ? "manual" : d.breaksMode);
+    if (typeof d.breakLength === "string") setBreakLength(d.breakLength.slice(0, 40));
     if (typeof d.typoFrequency === "number") setTypoFrequency(d.typoFrequency);
     if (typeof d.zoom === "number" || d.zoom === "fit") setZoom(d.zoom);
     if (typeof d.pageless === "boolean") setPageless(d.pageless);
@@ -75,7 +76,7 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
           doc: !selectedDocId && json ? (json as JSONContent) : undefined,
           selectedDocId,
           ...(selectedDocId && selectedTabId ? { selectedTabId } : {}),
-          durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless,
+          durationMinutes, breaksMode, breakLength, typoFrequency, zoom, pageless,
           pageSetup: selectedDocId ? undefined : pageSetup,
         } satisfies Draft);
         if (json && docContent?.status === "ready" && docContent.docId === selectedDocId) {
@@ -84,7 +85,7 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
       } catch { /* storage full or blocked */ }
     }, 400);
     return () => clearTimeout(id);
-  }, [draftLoaded, docJSON, selectedDocId, selectedTabId, durationMinutes, breaksMode, customBreaks, typoFrequency, zoom, pageless, pageSetup, docContent, revisionRef]);
+  }, [draftLoaded, docJSON, selectedDocId, selectedTabId, durationMinutes, breaksMode, breakLength, typoFrequency, zoom, pageless, pageSetup, docContent, revisionRef]);
 
-  return { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded };
+  return { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, breakLength, setBreakLength, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded };
 }
