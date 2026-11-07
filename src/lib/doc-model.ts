@@ -275,12 +275,7 @@ export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000, sameCel
   // there, since Docs can't delete a cell's edge
   const baseCell = cellIds(base);
   const targetCell = cellIds(target);
-  // On a reload (sameCellOnly off) a row or cell matches any of its table's by kind: their ids are by
-  // position, so a row or column a collaborator added before the editor's gives every one after it
-  // another id, and the editor's text would be aligned with the new, empty one's
-  const sameAt = sameCellOnly
-    ? (i: number, j: number) => baseCell[i] === targetCell[j] && same(base[i], target[j])
-    : (i: number, j: number) => same(base[i], target[j]) || sameRowOrCell(base[i], target[j]);
+  const sameAt = (i: number, j: number) => (!sameCellOnly || baseCell[i] === targetCell[j]) && same(base[i], target[j]);
   const match = myers(base, target, sameAt, maxEdits);
   // The newline after a page break being added is the one the break brings: of two alignments as close
   // as each other, the one that leaves it to the addition (see afterAddedBreak). A document newline it
@@ -353,13 +348,6 @@ function myers(base: Tok[], target: Tok[], sameAt: (i: number, j: number) => boo
 }
 
 /** The table cell each token is in (its cell's id), or "" outside tables; a cell's own start and end are outside it */
-/** A row or cell (or its end) of the same table, wherever it is in it */
-function sameRowOrCell(b: Tok, t: Tok): boolean {
-  if (b.k !== "st" || t.k !== "st" || b.kind !== t.kind || isPending(t)) return false;
-  if (b.kind === "table" || b.kind === "tableEnd") return false;
-  return b.id.split(":")[0] === t.id.split(":")[0];
-}
-
 function cellIds(tokens: Tok[]): string[] {
   const out = new Array<string>(tokens.length);
   const open: string[] = [];

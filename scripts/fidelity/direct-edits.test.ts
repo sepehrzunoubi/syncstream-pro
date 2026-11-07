@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { getSchema } from "@tiptap/core";
 import { createTable } from "@tiptap/extension-table";
 import { EditorState, Plugin, TextSelection, type Command } from "@tiptap/pm/state";
+import { closeHistory, history, undo } from "@tiptap/pm/history";
 import { addColumnAfter, addRowAfter, deleteColumn, deleteRow, tableEditing } from "@tiptap/pm/tables";
 import { DocSync } from "../../src/components/workspace/doc-sync";
 import { editorExtensions } from "../../src/components/workspace/extensions";
@@ -609,4 +610,37 @@ test("Ctrl+Enter in a table cell leaves the page as it was: Docs takes no page b
   assert.deepEqual(tableOf(editorDoc), [["Name"]], "the page has no page break in a cell");
   assert.equal(directEdits(start, editorDoc).requests.length, 0, "nothing to save");
   assert.equal(additions(start, editorDoc).segments.length, 0, "nothing for a sync to type");
+});
+
+test("a page that already has a table or a page break in a cell (a draft saved before the editor refused them) still takes a table in its body, and Undo brings back the break once deleted", () => {
+  const docSync = (DocSync.config.addProseMirrorPlugins as unknown as (this: unknown) => Plugin[]).call({ name: "docSync", options: {}, storage: {}, editor: null, parent: undefined });
+  const P = (...content: EditorNode[]): EditorNode => ({ type: "paragraph", attrs: {}, content });
+  const T = (t: string): EditorNode => ({ type: "text", text: t });
+  const cell = (...content: EditorNode[]): EditorNode => ({ type: "tableCell", attrs: {}, content });
+  const table = (...cells: EditorNode[]): EditorNode => ({ type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: cells }] });
+  const start: EditorNode = { type: "doc", content: [P(T("Intro")), table(cell(P(T("Up"), { type: "pageBreak" }, T("Down"))), cell(P(), table(cell(P(T("inner")))), P())), P(T("End"))] };
+  const doc = schema.nodeFromJSON(start);
+  let state = EditorState.create({ schema, doc, selection: TextSelection.create(doc, doc.content.size - 1), plugins: [...docSync, tableEditing(), tableLinesPlugin(), history()] });
+  const apply = (tr: EditorState["tr"]) => { state = state.applyTransaction(tr).state; };
+  const count = (type: string, inCells: boolean) => {
+    let n = 0;
+    state.doc.descendants((node, _pos, parent) => {
+      if (node.type.name === type && (!inCells || parent?.type.name !== "doc")) n++;
+      return !(node.type.name === "table" && !inCells && type === "table");
+    });
+    return n;
+  };
+  // A table in the body: taken, though the page has one in a cell already
+  apply(closeHistory(state.tr.replaceSelectionWith(createTable(schema, 1, 1, false))));
+  assert.equal((state.doc.toJSON().content as EditorNode[]).filter((n) => n.type === "table").length, 2, "the body takes the new table");
+  // The break in the cell deleted, then Undo: it comes back
+  let at = -1;
+  state.doc.descendants((node, pos) => { if (node.type.name === "pageBreak") at = pos; });
+  apply(closeHistory(state.tr.delete(at, at + 1)));
+  assert.equal(count("pageBreak", true), 0, "the break is deleted");
+  assert.equal(undo(state, apply), true);
+  assert.equal(count("pageBreak", true), 1, "Undo brings it back");
+  // ...and Undo carries on to the table before it
+  assert.equal(undo(state, apply), true);
+  assert.equal((state.doc.toJSON().content as EditorNode[]).filter((n) => n.type === "table").length, 1, "Undo takes the new table out");
 });

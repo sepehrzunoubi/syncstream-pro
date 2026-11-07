@@ -143,20 +143,33 @@ function keepsLocked(tr: Transaction): boolean {
 }
 
 /**
+ * Undo and redo only bring back what the page already had (and passed these checks, or was loaded so),
+ * so they're never refused: one refused would stop every undo before it
+ */
+const HISTORY_META = "history$";
+
+/**
  * Whether a transaction puts a table in a table cell (Insert > Table there, or a paste): Docs could hold
  * it, but the save writes tables only in the body, so its table and text would never reach the document.
  * A document's own table in a table is read as locked paragraphs, so loading one never does this.
  */
 function nestsTable(tr: Transaction): boolean {
-  if (!tr.docChanged || tr.getMeta(LOAD_META)) return false;
+  if (!tr.docChanged || tr.getMeta(LOAD_META) || tr.getMeta(HISTORY_META)) return false;
   if (!tr.steps.some((step) => brings(step, "table"))) return false;
-  let nested = false;
-  tr.doc.descendants((node, _pos, parent) => {
-    if (nested || node.isTextblock) return false;
-    if (node.type.name === "table" && parent?.type.name !== "doc" && parent?.type.name !== "columnSection") nested = true;
-    return !nested;
+  // Only more of them than before, so a page that already has one (a draft saved before this was
+  // refused) can still take tables in its body
+  return nestedTables(tr.doc) > nestedTables(tr.before);
+}
+
+/** Tables inside table cells */
+function nestedTables(doc: PMNode): number {
+  let n = 0;
+  doc.descendants((node, _pos, parent) => {
+    if (node.isTextblock) return false;
+    if (node.type.name === "table" && parent?.type.name !== "doc" && parent?.type.name !== "columnSection") n++;
+    return true;
   });
-  return nested;
+  return n;
 }
 
 /**
@@ -165,7 +178,7 @@ function nestsTable(tr: Transaction): boolean {
  * could write it.
  */
 function breaksInCell(tr: Transaction): boolean {
-  if (!tr.docChanged || tr.getMeta(LOAD_META)) return false;
+  if (!tr.docChanged || tr.getMeta(LOAD_META) || tr.getMeta(HISTORY_META)) return false;
   // Where breaks end up, whether brought (Ctrl+Enter, a paste) or joined in (a deletion or paste from a
   // cell to past its table); only more of them than before, so a page that already has one (a draft
   // saved before this was refused) can still be edited
