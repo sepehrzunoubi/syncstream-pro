@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon, type IconName } from "./icon";
+import { ZOOM_LEVELS } from "./use-page-setup";
 import { ColorMenu } from "./color-menu";
 import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
@@ -53,7 +54,6 @@ function ListButton({ kind, on, preset, disabled, title, icon, presets, onToggle
   );
 }
 
-const ZOOMS = [50, 75, 90, 100, 125, 150];
 const ALIGN_ICONS = { left: "format_align_left", center: "format_align_center", right: "format_align_right", justify: "format_align_justify" } as const;
 const ALIGN_LABELS = { left: "Left", center: "Center", right: "Right", justify: "Justify" } as const;
 const ALIGN_KEYS = { left: "L", center: "E", right: "R", justify: "J" } as const;
@@ -205,7 +205,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
 
       <Menu label="Zoom" trigger={<button className="ss-select-btn ss-zoom-btn" title="Zoom"><span className="ss-caption">{zoom === "fit" ? `${Math.round((scale ?? 1) * 100)}%` : `${zoom}%`}</span><Icon name="arrow_drop_down" /></button>}>
         <MenuItem checkable checked={zoom === "fit"} onSelect={() => onZoom("fit")}>Fit</MenuItem>
-        {ZOOMS.map((z) => (
+        {ZOOM_LEVELS.map((z) => (
           <MenuItem key={z} checkable checked={z === zoom} onSelect={() => onZoom(z)}>{z}%</MenuItem>
         ))}
       </Menu>

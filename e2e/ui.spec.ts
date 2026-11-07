@@ -57,6 +57,36 @@ test.describe("workspace", () => {
     await expect(app.doc).toContainText(CLOSING_TEXT + "!");
   });
 
+  test("Ctrl + and Ctrl − zoom the document one Docs level at a time, Ctrl 0 fits it again; the rest of the window stays", async ({ app, page }) => {
+    await app.open();
+    const caption = page.locator(".ss-zoom-btn .ss-caption");
+    const sheetWidth = () => page.locator(".ss-sheet").first().evaluate((e) => Math.round(e.getBoundingClientRect().width));
+    const toolbarHeight = () => page.locator(".ss-toolbar").evaluate((e) => e.getBoundingClientRect().height);
+    // At 1440 the page fits between the side panels at 88%
+    await expect(caption).toHaveText("88%");
+    const before = await toolbarHeight();
+    // The key reaches the page, not the browser's zoom
+    const prevented = page.evaluate(() => new Promise<boolean>((done) => { const on = (e: KeyboardEvent) => { if (e.key === "Control") return; window.removeEventListener("keydown", on); setTimeout(() => done(e.defaultPrevented)); }; window.addEventListener("keydown", on); }));
+    await page.keyboard.press("Control+Equal");
+    expect(await prevented).toBe(true);
+    await expect(caption).toHaveText("90%");
+    await expect.poll(sheetWidth).toBe(Math.round(816 * 0.9));
+    await page.keyboard.press("Control+Equal");
+    await expect(caption).toHaveText("100%");
+    await expect.poll(sheetWidth).toBe(816);
+    await page.keyboard.press("Control+Minus");
+    await page.keyboard.press("Control+Minus");
+    await expect(caption).toHaveText("75%");
+    await expect.poll(sheetWidth).toBe(612);
+    // Past the smallest level it stays there
+    await page.keyboard.press("Control+Minus");
+    await page.keyboard.press("Control+Minus");
+    await expect(caption).toHaveText("50%");
+    await page.keyboard.press("Control+0");
+    await expect(caption).toHaveText("88%");
+    expect(await toolbarHeight()).toBe(before);
+  });
+
   test("the Edit menu opens Find and replace, the View menu hides tabs & outlines", async ({ app, page }) => {
     await app.open();
     await app.menu("Edit", "Find and replace");

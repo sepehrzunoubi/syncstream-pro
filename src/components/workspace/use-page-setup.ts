@@ -17,6 +17,18 @@ import { writePageDefault } from "./storage";
 import { screenStack } from "./space-faces";
 import { shownTab, tabFields, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
+/** Docs' zoom levels, in percent */
+export const ZOOM_LEVELS = [50, 75, 90, 100, 125, 150, 200];
+
+/**
+ * The next zoom level up (dir 1) or down (-1) from the scale shown now, as Ctrl + and Ctrl − step it.
+ * Past either end it stays at the end.
+ */
+export function stepZoom(shownPercent: number, dir: 1 | -1): number {
+  if (dir > 0) return ZOOM_LEVELS.find((z) => z > shownPercent + 0.5) ?? ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
+  return [...ZOOM_LEVELS].reverse().find((z) => z < shownPercent - 0.5) ?? ZOOM_LEVELS[0];
+}
+
 export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent }: {
   editor: Editor | null;
   viewer: Editor | null;

@@ -32,7 +32,7 @@ import { useDocsList } from "./use-docs-list";
 import { useDialogs, WorkspaceDialogs } from "./use-dialogs";
 import { useAutosave } from "./use-autosave";
 import { useHeaderFooters } from "./use-header-footers";
-import { usePageSetup } from "./use-page-setup";
+import { stepZoom, usePageSetup } from "./use-page-setup";
 import { useDraft } from "./use-draft";
 import { useDocLoader } from "./use-doc-loader";
 import { fontsIn, loadFonts } from "./web-fonts";
@@ -123,6 +123,21 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor });
   const page = usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent });
   const { zoom, setZoom, canvasRef, pageless, pageSetup, geometry, textWidthPt, scale, effectivePageless } = page;
+  // Ctrl + and Ctrl − zoom the document, not the whole window (the browser's own zoom), one of Docs'
+  // zoom levels at a time; Ctrl 0 goes back to fitting the page to the window
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const up = e.key === "+" || e.key === "=" || e.code === "NumpadAdd";
+      const down = e.key === "-" || e.key === "_" || e.code === "NumpadSubtract";
+      if (!up && !down && e.key !== "0" && e.code !== "Numpad0") return;
+      e.preventDefault();
+      if (!up && !down) { setZoom("fit"); return; }
+      setZoom(stepZoom(Math.round(scale * 100), up ? 1 : -1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scale, setZoom]);
   const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON });
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
   const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });

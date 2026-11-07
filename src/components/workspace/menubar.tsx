@@ -5,6 +5,7 @@ import * as MB from "@radix-ui/react-menubar";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
+import { ZOOM_LEVELS } from "./use-page-setup";
 import { BULLET_PRESETS, effectiveKeep, LINE_SPACINGS, NAMED_STYLES, NAMED_STYLE_ORDER, NUMBER_PRESETS, startAlign, type KeepOptions, type NamedStyle } from "@/lib/rich-text";
 import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
@@ -199,7 +200,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
       <TopMenu label="View">
         <Sub label="Zoom">
           <Item checkable checked={p.zoom === "fit"} onSelect={() => p.onZoom("fit")}>Fit</Item>
-          {[50, 75, 90, 100, 125, 150].map((z) => (
+          {ZOOM_LEVELS.map((z) => (
             <Item key={z} checkable checked={p.zoom === z} onSelect={() => p.onZoom(z)}>{z}%</Item>
           ))}
         </Sub>
