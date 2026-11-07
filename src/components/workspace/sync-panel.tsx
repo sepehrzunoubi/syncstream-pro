@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Shuffle, X } from "lucide-react";
+import { FileUp, Shuffle, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { DripPlan } from "@/lib/drip-engine";
 import { describeBreak, formatBreak, parseBreakLength } from "@/lib/breaks";
@@ -56,6 +56,8 @@ interface SyncPanelProps {
   disabled?: boolean;
   scopeError?: boolean;
   startError?: string | null;
+  /** Import PDF: opens its dialog; why it can't now, when it can't */
+  pdfImport?: { onOpen: () => void; disabledReason: string | null; prominent: boolean };
 }
 
 export function SyncPanel(p: SyncPanelProps) {
@@ -134,6 +136,8 @@ export function SyncPanel(p: SyncPanelProps) {
       {p.startError && (
         <p role="alert" className="rounded-lg bg-[#fce8e6] p-3 text-[13px] leading-5 text-[#8c1d18]">{p.startError}</p>
       )}
+
+      {p.pdfImport && <PdfCard {...p.pdfImport} />}
 
       {/* Pinned to the bottom of the panel so the plan stays visible on short screens */}
       <div className="sticky bottom-0 -mx-5 -mt-3 bg-[linear-gradient(to_bottom,transparent,var(--ss-surface)_12px)] px-5 pb-4 pt-3">
@@ -280,5 +284,35 @@ function ManualBreaks(p: SyncPanelProps) {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Import PDF, under the settings: a PDF rebuilt on the page, to edit and sync like anything typed.
+ * Offered up front on an empty page (a doc just made); in a line once the page has something on it.
+ */
+function PdfCard({ onOpen, disabledReason, prominent }: { onOpen: () => void; disabledReason: string | null; prominent: boolean }) {
+  if (!prominent) {
+    return (
+      <span className="inline-flex self-start" title={disabledReason ?? undefined}>
+        <button type="button" className="ss-pdf-link" onClick={onOpen} disabled={!!disabledReason} title={disabledReason ?? "Rebuild a PDF here, then sync it"}>
+          <FileUp className="h-4 w-4" aria-hidden="true" />
+          Import PDF
+        </button>
+      </span>
+    );
+  }
+  return (
+    <section className="ss-pdf-card" aria-labelledby="ss-pdf-card-title">
+      <span className="ss-pdf-card-icon" aria-hidden="true"><FileUp className="h-[18px] w-[18px]" /></span>
+      <div className="min-w-0 flex-1">
+        <h3 id="ss-pdf-card-title" className="ss-pdf-card-title">Start from a PDF</h3>
+        <p className="ss-pdf-card-body">Rebuild a PDF here — text, fonts, lists, tables and images — then sync it.</p>
+        {/* (the reason is on the wrapper too: a disabled button shows no tooltip in every browser) */}
+        <span className="inline-flex" title={disabledReason ?? undefined}>
+          <button type="button" className="ss-btn ss-btn-outlined ss-pdf-card-btn" onClick={onOpen} disabled={!!disabledReason} title={disabledReason ?? undefined}>Import PDF</button>
+        </span>
+      </div>
+    </section>
   );
 }

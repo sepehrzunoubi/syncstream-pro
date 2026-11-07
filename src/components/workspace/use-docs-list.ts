@@ -74,7 +74,8 @@ export function useDocsList({ setSnack, setScopeError }: { setSnack: Setter<stri
   }, [setScopeError, setSnack, setSelectedDocId]);
 
   /** Make a Google Doc and select it; resolves with its id, or null when it couldn't be made */
-  const createDoc = useCallback(async (): Promise<string | null> => {
+  /** A new Google Doc, opened: named `title` (Import PDF names it after the file), else "Untitled document" */
+  const createDoc = useCallback(async (title?: string): Promise<string | null> => {
     // One at a time: a second click while Google is making the first would make two
     if (creating.current) return null;
     creating.current = true;
@@ -86,7 +87,7 @@ export function useDocsList({ setSnack, setScopeError }: { setSnack: Setter<stri
         res = await fetch("/api/docs/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "Untitled document", pageSetup: def?.setup, pageless: def?.pageless === true }),
+          body: JSON.stringify({ title: title?.trim() || "Untitled document", pageSetup: def?.setup, pageless: def?.pageless === true }),
           signal: AbortSignal.timeout(CREATE_TIMEOUT_MS),
         });
       } catch (err) {
@@ -102,7 +103,7 @@ export function useDocsList({ setSnack, setScopeError }: { setSnack: Setter<stri
       // It may have been made all the same (Google didn't answer in time): the list shows it once Drive has it
       if (res.status >= 500) setTimeout(() => { void fetchDocs(); }, 5000);
       if (!res.ok || !data.id) throw new Error(data.error || "Couldn't create the document");
-      const doc: Doc = { id: data.id, name: data.name || "Untitled document", modifiedTime: new Date().toISOString() };
+      const doc: Doc = { id: data.id, name: data.name || title?.trim() || "Untitled document", modifiedTime: new Date().toISOString() };
       made.current = [doc, ...made.current.filter((d) => d.id !== doc.id)];
       setDocs((prev) => [doc, ...prev.filter((d) => d.id !== doc.id)]);
       createdDocRef.current = doc.id;

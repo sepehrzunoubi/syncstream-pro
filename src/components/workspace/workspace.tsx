@@ -43,6 +43,8 @@ import { fontsIn, loadFonts } from "./web-fonts";
 import { useSyncJobs } from "./use-sync-jobs";
 import { SectionSwitch } from "../compare/section-switch";
 import { takeFocusHandoff } from "../compare/storage";
+import { usePdfImport } from "./use-pdf-import";
+import { PdfImportDialog } from "./pdf-import-dialog";
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
   const [snack, setSnack] = useSnack();
@@ -192,6 +194,14 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     if (handoff.note) setSnack(handoff.note);
   }, [ready, draftLoaded, jobs, setSelectedDocId, setSnack]);
   const live = useLiveBreaks({ viewer, job: focusedJob ?? null, source: view?.source ?? focusedSource, shown: view, now, upsertJob, setSnack });
+  // Import PDF: a PDF rebuilt on the page as new text, or in a new Google Doc made for it
+  const pdf = usePdfImport({
+    editor, refs, docContent, selectedDocId, docKey, docJSON, setDocJSON, setSnack, setScopeError, saveNow,
+    pageSetup, pageless, applyPageSetup: page.applyPageSetup, setSegments,
+    hasHeader: !!(headerFooters.header || headerFooters.firstPageHeader), hasFooter: !!(headerFooters.footer || headerFooters.firstPageFooter),
+    createDoc,
+    blocked: { focusedJob: !!focusedJob, docBusy, docLoading, startingSync: busy, creatingDoc: isCreatingDoc },
+  });
 
   const insertImages = useCallback(async (files: File[], at?: number) => {
     if (!editor) return;
@@ -381,6 +391,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onColumns={(n) => { if (n === "options") dialogs.setColumnsOpen(true); else editor?.chain().focus().setColumns({ columns: n, textWidth: textWidthPt }).run(); }}
             onShortcuts={() => dialogs.setShortcutsOpen(true)}
             docOpen={docContent?.status === "ready"}
+            onImportPdf={pdf.openDialog}
+            importPdfDisabled={!!pdf.disabledReason}
           />
         }
       />
@@ -523,6 +535,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
                   disabled={busy}
                   scopeError={scopeError}
                   startError={startError}
+                  pdfImport={{ onOpen: pdf.openDialog, disabledReason: pdf.disabledReason, prominent: pdf.pageBlank }}
                 />
               )}
             </motion.div>
@@ -531,10 +544,11 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       </div>
 
       <WorkspaceDialogs editor={editor} dialogs={dialogs} pageSetup={pageSetup} pageless={pageless} onApplyPageSetup={page.applyPageSetup} onSetPageDefault={page.setPageDefault} textWidth={textWidthPt} />
+      <PdfImportDialog pdf={pdf} />
       <ContextMenu editor={focusedJob || pageLocked ? null : editor} />
       {/* Print on the document's paper with its margins */}
       <style>{`@media print { @page { size: ${pageSize(pageSetup).w / 72}in ${pageSize(pageSetup).h / 72}in; margin: ${pageSetup.margins.top}pt ${pageSetup.margins.right}pt ${pageSetup.margins.bottom}pt ${pageSetup.margins.left}pt; } }`}</style>
-      <Snackbar snack={snack} action={snack === BREAKS_CLEARED ? { label: "Undo", run: breaks.undoClear } : null} onDismiss={() => setSnack(null)} />
+      <Snackbar snack={snack} action={snack === BREAKS_CLEARED ? { label: "Undo", run: breaks.undoClear } : pdf.snackAction(snack)} onDismiss={() => setSnack(null)} />
       {breaks.popover && (
         <BreakPopover
           key={`${breaks.popover.from}-${breaks.popover.to}`}

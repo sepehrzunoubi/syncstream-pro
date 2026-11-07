@@ -33,7 +33,7 @@ const nextConfig = {
   // self-hosted Docker image.
   images: { unoptimized: true },
   // A native module (images re-hosted or read from PDFs on the server): loaded at run time, never bundled
-  serverExternalPackages: ["@napi-rs/canvas"],
+  serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
 };
 
 export default nextConfig;
