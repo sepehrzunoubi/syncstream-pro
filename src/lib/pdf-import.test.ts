@@ -262,6 +262,16 @@ for (const v of BOTH) {
   });
 }
 
+test("CJK text in a font the PDF only names: read with pdf.js's character maps", async () => {
+  // Japanese in KozMinPr6N-Regular, not embedded, with the UniJIS-UCS2-H character map
+  // (scripts/pdf-eval/make-cjk-fixture.mjs). Without pdf.js's character maps the line is dropped.
+  const r = await load("cjk-cmap");
+  assert.equal(r.pages, 1);
+  assert.deepEqual(paragraphs(r).map(textOf), ["Japanese below.", "日本語"]);
+  assert.deepEqual(r.warnings, []);
+  assertAllPending(r.nodes);
+});
+
 test("the content loads into the editor as it is: valid nodes and marks, no attributes it doesn't have", async () => {
   const schema = getSchema(editorExtensions as never);
   for (const name of ["styles", "lists", "table", "borderless", "images", "columns", "headerfooter", "rtl"].flatMap((f) => BOTH.map((v) => `${f}-${v}`))) {
@@ -341,4 +351,11 @@ test("list markers: bullets and numbering forms", () => {
   assert.equal(parseMarker("Hello"), null);
   assert.equal(parseMarker("12"), null);
   assert.equal(parseMarker("(3"), null);
+});
+
+test("pdf.js's fonts and character maps are found from the app's folder, as a deployment has them", async () => {
+  const { dataDirs } = await import("./pdf-extract");
+  const dirs = dataDirs();
+  assert.ok(dirs.standardFontDataUrl && fs.existsSync(path.join(dirs.standardFontDataUrl, "LiberationSans-Regular.ttf")), "the standard fonts");
+  assert.ok(dirs.cMapUrl && fs.existsSync(path.join(dirs.cMapUrl, "UniJIS-UCS2-H.bcmap")), "the character maps");
 });

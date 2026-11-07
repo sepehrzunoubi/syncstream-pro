@@ -15,7 +15,7 @@ import { documentStyleRequest } from "./page-setup";
 import { buildDripPlan } from "./drip-engine";
 import { parseAnchors, withAnchors } from "./breaks";
 import { plainFormat } from "./rich-text";
-import { buildSyncRecords, MAX_COMPARE_SEGMENTS, parseSegments, segmentBoundaries, spotsForTabs, type SegmentInput } from "./sync-plan";
+import { buildSyncRecords, MAX_COMPARE_SEGMENTS, parseSegments, planSegmentsOf, segmentBoundaries, spotsForTabs, type SegmentInput } from "./sync-plan";
 import { MAX_STORED_JSON, storedSize, type SyncContext, type SyncJob, type SyncPlan } from "./sync-store";
 import { wordsInTabs } from "./google";
 import { isStaleRevision } from "./sync-runner";
@@ -159,6 +159,8 @@ const WORST_PACKING = 2.5;
 const TOO_MANY_SPOTS = `That's more than ${MAX_COMPARE_SEGMENTS.toLocaleString("en-US")} separate places to type into in one sync. Skip some changes, or copy one tab at a time.`;
 const TOO_MUCH = "That's more than one sync can copy. Choose “Don't copy this tab” for some of the reference's tabs, or skip some changes, then copy the rest in a second sync.";
 const TOO_MANY_TABS = `Google Docs allows at most ${TAB_LIMIT} tabs in a document. Choose “Don't copy this tab” for some of the reference's tabs.`;
+/** A tab id as long as the ones Google gives new tabs, for sizing a plan before they're made */
+const NEW_TAB_ID = "t.000000000000";
 
 const bodyOf = (doc: ImportedDoc): EditorNode => ({ type: "doc", content: doc.nodes });
 
@@ -169,25 +171,32 @@ const bodyOf = (doc: ImportedDoc): EditorNode => ({ type: "doc", content: doc.no
  */
 function preflight(work: TabCompare[], leftTabCount: number, pace?: PlanPace) {
   if (leftTabCount + work.filter((t) => t.target.kind === "new").length > TAB_LIMIT) throw new CompareRefusedError(TOO_MANY_TABS, 400, "tooManyTabs");
-  let segments = 0;
-  const formats: unknown[] = [];
-  let text = "";
+  const segments: SegmentInput[] = [];
   for (const t of work) {
-    // LEFT once the set-up is in is the structure; the rest is typed
+    // LEFT once the set-up is in is the structure; the rest is typed. (A new tab's id isn't known
+    // yet: one as long as Google's stands for it.)
     const typed = additions(structureOnly(t.merged, t.origin), t.merged);
-    segments += typed.segments.length;
-    formats.push(typed.segments.map((s) => s.format));
-    text += typed.text;
+    const tabId = t.target.kind === "tab" ? t.target.leftTabId : NEW_TAB_ID;
+    for (const s of typed.segments) segments.push({ at: s.at, mode: s.mode, text: s.text, format: s.format, tabId });
   }
-  if (segments > MAX_COMPARE_SEGMENTS) throw new CompareRefusedError(TOO_MANY_SPOTS, 400, "tooManyPlaces");
+  const text = segments.map((s) => s.text).join("");
+  if (segments.length > MAX_COMPARE_SEGMENTS) throw new CompareRefusedError(TOO_MANY_SPOTS, 400, "tooManyPlaces");
   if (text.length > MAX_TEXT_CHARS) throw new CompareRefusedError(TOO_MUCH, 400, "tooLarge");
-  // The plan as stored: its actions as the sync will make them, packed; or as many as typos at
-  // their most would make, packed as little as text ever packs
-  const size = pace && text.trim()
-    ? storedSize({ actions: dripPlan(text, pace, []).actions, formats })
-    : (text.length * PLAN_BYTES_PER_CHAR + JSON.stringify(formats).length) / WORST_PACKING;
-  if (size > MAX_STORED_JSON) throw new CompareRefusedError(TOO_MUCH, 400, "tooLarge");
+  // The plan as stored: its actions as the sync will make them (each place's text chunked on its
+  // own, as buildCompareJob has it), with its segments, packed; or as many actions as typos at their
+  // most would make, packed as little as text ever packs
+  const stored = planSegmentsOf(segments);
+  let size: number;
+  if (pace && text.trim()) {
+    const plan = dripPlan(text, pace, segmentBoundaries(segments));
+    size = storedSize({ actions: plan.actions, totalChars: plan.totalChars, totalMs: plan.totalMs, breaks: plan.breaks, seed: plan.seed, segments: stored });
+  } else size = (text.length * PLAN_BYTES_PER_CHAR + JSON.stringify(stored).length) / WORST_PACKING;
+  // (with room for what only the start adds: the record's ids and time, and manual breaks' pauses)
+  if (size > MAX_STORED_JSON - PREFLIGHT_SLACK) throw new CompareRefusedError(TOO_MUCH, 400, "tooLarge");
 }
+
+/** What the stored plan has beyond what preflight sizes, at most: about 5 KB for 200 manual breaks */
+const PREFLIGHT_SLACK = 8_192;
 
 /** How a sync is paced: what the start's plan is made with */
 export type PlanPace = Pick<CompareJobInput, "breaksMode" | "targetMinutes" | "typoFrequency" | "seed">;
@@ -668,8 +677,12 @@ function tabBreakAnchors(target: EditorNode, segments: Segment[]): { at: number;
 }
 
 export const COMPARE_CHANGED = "One of the documents changed since you compared them. Here's the comparison again.";
-/** The live page's context comes back whole from /api/sync/source, well under Vercel's 4.5 MB */
-const MAX_CONTEXT_JSON = 3_000_000;
+/**
+ * The live page's context comes back whole from /api/sync/source, with the text the sync types, in
+ * one reply: kept only while that reply stays well under Vercel's 4.5 MB, counted in bytes (a
+ * Cyrillic or Greek letter takes two, a Chinese one three)
+ */
+const MAX_SOURCE_REPLY_BYTES = 4_000_000;
 const MAX_TEXT_CHARS = 1_000_000;
 
 export interface CompareJobInput {
@@ -739,7 +752,9 @@ export function buildCompareJob(prepared: PreparedCompare, o: CompareJobInput): 
   const lead = tabs[0];
   // (the live page reads a sync's tabs from `tabs` alone: the first tab isn't stored twice)
   let context: SyncContext | null = { tabs };
-  if (JSON.stringify(context).length > MAX_CONTEXT_JSON || storedSize(context) > MAX_STORED_JSON) context = null;
+  // The reply as /api/sync/source sends it (a plan of segments has no one format)
+  const reply = { sourceText: text, format: null, context, breaks: plan.breaks, totalMs: plan.totalMs };
+  if (Buffer.byteLength(JSON.stringify(reply)) > MAX_SOURCE_REPLY_BYTES || storedSize(context) > MAX_STORED_JSON) context = null;
   const many = prepared.tabs.length > 1 || (prepared.leftDoc.tabs?.length ?? 0) > 1;
   const { plan: syncPlan, job } = buildSyncRecords({
     id: o.id,

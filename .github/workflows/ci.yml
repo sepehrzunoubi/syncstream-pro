@@ -47,6 +47,8 @@ jobs:
           NEXT_PUBLIC_BASE_URL: http://localhost:3000
       # A deployment ships only the files the build traced: the PDF routes need pdf.js's worker and data
       - run: node scripts/check-trace.mjs
+      # The standalone server, from a copy with no node_modules above it, imports PDFs with only those files
+      - run: npm run smoke:standalone
       - uses: actions/upload-artifact@v4
         with:
           name: next-build

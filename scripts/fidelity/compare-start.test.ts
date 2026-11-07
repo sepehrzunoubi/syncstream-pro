@@ -710,3 +710,95 @@ test("a section LEFT lacks, ending with an empty line, before a heading LEFT has
   assert.deepEqual(styles, ["Heading A", "Intro text here.", "More.", "", "Heading B", "Body B."]);
   assert.deepEqual((await named()).map((x) => x[1]), ["HEADING_1", "NORMAL_TEXT", "NORMAL_TEXT", "NORMAL_TEXT", "HEADING_1", "NORMAL_TEXT"]);
 });
+
+test("too much to store once typed into its many places: refused before anything is written, not after the set-up", async () => {
+  // 200 paragraphs, each followed in the reference by a long new one, and a tab LEFT lacks. The sync
+  // chunks each place's text on its own, in far more steps than one stretch of the same text takes
+  let seed = 11;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const syllables = ["ka", "ri", "mo", "ten", "sa", "lu", "vor", "pe", "dan", "is", "el", "tro", "mi", "gra", "ul", "bes", "no", "fa", "ze", "chi"];
+  const vocab = Array.from({ length: 3000 }, () => Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => syllables[Math.floor(rnd() * syllables.length)]).join(""));
+  const sentence = () => {
+    let s = "";
+    while (s.length < 3700) s += (s ? " " : "") + vocab[Math.floor(rnd() * rnd() * vocab.length)];
+    return s.slice(0, 3699) + ".";
+  };
+  const pace = { breaksMode: "auto" as const, targetMinutes: 1200, typoFrequency: 1, seed: 1 };
+  const setUp = (n: number, leftId: string, rightId: string) => {
+    const paragraphs = Array.from({ length: n }, (_, k) => `Paragraph number ${k + 1} of the notes.`);
+    const left = stub(leftId, "Mine", [{ id: "t.0", title: "Notes", text: paragraphs.join("\n") }]);
+    const right = stub(rightId, "Ref", [{ id: "t.0", title: "Notes" }, { id: "t.ap", title: "Appendix", text: "The appendix." }]);
+    const pieces = paragraphs.map((p) => `${p}\n${sentence()}`);
+    // (a few big insertions: the stub is slow with many)
+    for (let k = pieces.length - 1; k >= 0; k -= 25) right.tab("t.0").batchUpdate([{ insertText: { location: { index: 1 }, text: pieces.slice(Math.max(0, k - 24), k + 1).join("\n") + (k === pieces.length - 1 ? "" : "\n") } }]);
+    return left;
+  };
+  const begin = async (leftId: string, rightId: string) => {
+    const [l, r] = await Promise.all([getRawDocument("t", leftId), getRawDocument("t", rightId)]);
+    return prepareCompare(g, { leftId, rightId, leftRevision: l.revisionId!, rightRevision: r.revisionId!, tabMap: {}, skip: [], breaks: [], pace });
+  };
+  const build = (prepared: Awaited<ReturnType<typeof prepareCompare>>, leftId: string) =>
+    buildCompareJob(prepared, { id: `job_${leftId}`, userId: "u", documentId: leftId, documentName: "", ...pace, startInMinutes: 0, now: 0, accessToken: "a", refreshToken: "r" });
+
+  const left = setUp(200, "left-doc-0000900", "right-doc-000900");
+  const rev = left.revisionId;
+  const started = await begin("left-doc-0000900", "right-doc-000900").then((prepared) => ({ prepared }), (err: Error) => ({ err }));
+  if ("prepared" in started) {
+    const built = build(started.prepared, "left-doc-0000900");
+    assert.fail(`set up (revision ${rev} → ${left.revisionId}, tabs ${left.all().map((t) => t.title).join(", ")}), then ${built.ok ? "stored" : `refused: ${built.code}`}`);
+  }
+  assert.ok(started.err instanceof CompareRefusedError && started.err.code === "tooLarge", String(started.err));
+  assert.equal(left.revisionId, rev, "nothing written, not even the Appendix tab");
+  assert.deepEqual(left.all().map((t) => t.title), ["Notes"]);
+
+  // A quarter of it fits, and is stored
+  const small = setUp(50, "left-doc-0000901", "right-doc-000901");
+  const built = build(await begin("left-doc-0000901", "right-doc-000901"), "left-doc-0000901");
+  assert.ok(built.ok, built.ok ? "" : built.error);
+  assert.deepEqual(small.all().map((t) => t.title), ["Notes", "Appendix"]);
+  assert.ok(built.plan.segments!.length > 50 && storedSize(built.plan) < MAX_STORED_JSON);
+});
+
+test("the live page's view of a long sync is kept only while /api/sync/source's reply fits Vercel's 4.5 MB, in bytes: dropped for a Cyrillic text, kept for a Latin one as long", async () => {
+  // About 290 pages in short paragraphs, and the same in Cyrillic letters: as many characters, twice
+  // the bytes. The reference is made as Google reads it out (the stub is slow to type one this long)
+  let seed = 3;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const latin = "abcdefghijklmnopqrstuvwxyz";
+  const cyrillic = "абвгдежзиклмнопрстуфхцчшщэюя";
+  const vocab = Array.from({ length: 3000 }, () => Array.from({ length: 2 + Math.floor(rnd() * 7) }, () => latin[Math.floor(rnd() * latin.length)]).join(""));
+  const lines = Array.from({ length: 5200 }, () => Array.from({ length: 28 }, () => vocab[Math.floor(rnd() * rnd() * vocab.length)]).join(" ") + ".");
+  const pace = { breaksMode: "auto" as const, targetMinutes: 1200, typoFrequency: 0.5, seed: 1 };
+  const startWith = async (n: number, paragraphs: string[]) => {
+    const leftId = `left-doc-000${n}`;
+    const rightId = `right-doc-00${n}`;
+    stub(leftId, "Mine", [{ id: "t.0", title: "Tab 1" }]);
+    const right = new TabbedStub(rightId, "Ref", [{ id: "t.0", title: "Book", children: [] }]).get(true);
+    const body = right.tabs![0].documentTab!.body!;
+    let at = 1;
+    body.content = [body.content![0], ...paragraphs.map((p) => {
+      const content = `${p}\n`;
+      const range = { startIndex: at, endIndex: (at += content.length) };
+      return { ...range, paragraph: { elements: [{ ...range, textRun: { content, textStyle: {} } }], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } };
+    })];
+    const reading: CompareGoogle = { ...g, read: async (id) => (id === rightId ? right : g.read(id)) };
+    const l = await getRawDocument("t", leftId);
+    const prepared = await prepareCompare(reading, { leftId, rightId, leftRevision: l.revisionId!, rightRevision: right.revisionId!, tabMap: {}, skip: [], breaks: [], pace });
+    const built = buildCompareJob(prepared, { id: `job_${leftId}`, userId: "u", documentId: leftId, documentName: "", ...pace, startInMinutes: 0, now: 0, accessToken: "a", refreshToken: "r" });
+    assert.ok(built.ok, built.ok ? "" : built.error);
+    if (!built.ok) throw new Error("unreachable");
+    // What /api/sync/source answers with: the text the plan types, and the view
+    const sourceText = built.plan.actions.map((a) => (a.kind === "pause" ? "" : a.text)).join("");
+    const reply = { sourceText, format: built.plan.format ?? null, context: built.context, breaks: built.plan.breaks, totalMs: built.plan.totalMs };
+    return { built, bytes: Buffer.byteLength(JSON.stringify(reply)) };
+  };
+  const lat = await startWith(910, lines);
+  const cyr = await startWith(911, lines.map((line) => line.replace(/[a-z]/g, (c) => cyrillic[latin.indexOf(c)])));
+  assert.equal(cyr.built.plan.totalChars, lat.built.plan.totalChars);
+  assert.ok(lat.built.plan.totalChars > 800_000, `${lat.built.plan.totalChars} characters`);
+  // (checked as booleans: an assertion that fails on a view this big takes minutes to describe it)
+  assert.ok(lat.built.context != null, "the Latin text's view is kept");
+  assert.ok(lat.bytes < 4_000_000, `Latin reply ${lat.bytes} bytes`);
+  assert.ok(cyr.built.context === null, `the Cyrillic text's view is kept: the reply is ${cyr.bytes} bytes`);
+  assert.ok(cyr.bytes < 4_000_000, `Cyrillic reply ${cyr.bytes} bytes`);
+});

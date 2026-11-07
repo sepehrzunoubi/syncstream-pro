@@ -34,8 +34,9 @@ const nextConfig = {
   images: { unoptimized: true },
   // A native module (images re-hosted or read from PDFs on the server): loaded at run time, never bundled
   serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
-  // pdf.js reads these by paths worked out at run time, which the build's tracing can't follow:
-  // its standard fonts (a PDF that only names Helvetica still measures right) and character maps
+  // pdf.js reads these from the app's folder (src/lib/pdf-extract.ts), by paths the build's tracing
+  // can't follow: its standard fonts (a PDF that only names Helvetica still measures right) and
+  // character maps (CJK text in a font the PDF only names is read at all)
   outputFileTracingIncludes: {
     "/api/pdf/import": ["./node_modules/pdfjs-dist/standard_fonts/**/*", "./node_modules/pdfjs-dist/cmaps/**/*"],
   },

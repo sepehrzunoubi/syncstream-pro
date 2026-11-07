@@ -4,6 +4,7 @@ import { buildSides } from "@/lib/compare-server";
 import type { CompareLoadResponse } from "@/lib/compare-types";
 import { applyAuthCookies, googleStatus, resolveUser, unauthorized, withGoogleToken } from "@/lib/auth";
 import { withRoute } from "@/lib/route";
+import { jsonReply } from "@/lib/json-response";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
 
@@ -45,7 +46,8 @@ export const GET = withRoute(async (req: NextRequest) => {
     const sides = buildSides(left, leftId, right, rightId, map);
     const body: CompareLoadResponse = { ...sides, canEdit };
     log.info("compare.load", { uid: uidTag(user.userId), leftTabs: sides.left.tabs.length, rightTabs: sides.right.tabs.length, ms: done() });
-    return applyAuthCookies(NextResponse.json(body, { headers: { "Cache-Control": "no-store" } }), user);
+    // (two long documents run past what Vercel sends as they are: gzipped, they fit)
+    return applyAuthCookies(jsonReply(req, body, { headers: { "Cache-Control": "no-store" } }), user);
   } catch (error) {
     const status = googleStatus(error);
     if (status === 401) return unauthorized();
