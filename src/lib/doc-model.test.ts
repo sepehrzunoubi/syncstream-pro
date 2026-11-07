@@ -398,3 +398,68 @@ test("re-making a list keeps a list item's next line in it: the items around it 
   assert.ok(after.some((r) => JSON.stringify(r) === JSON.stringify({ deleteParagraphBullets: { range: { startIndex: 5, endIndex: 14 } } })), "the line loses the bullet it got");
   assert.ok(after.some((r) => (r as { updateParagraphStyle?: { range: { startIndex: number }; paragraphStyle: { indentStart?: { magnitude: number } } } }).updateParagraphStyle?.range.startIndex === 5), "and gets its indents back");
 });
+
+// ── Large additions: the alignment stays exact however much is added ───────
+
+const big = (ch: string, n: number) => ch.repeat(n);
+const ABC = doc(p("Alpha one"), p("Beta two"), p("Gamma three"));
+
+test("thousands of added characters around a paragraph leave it alone: nothing deleted, nothing typed twice", () => {
+  // Over the old 4000-edit limit, where the paragraph between the additions was deleted and typed again
+  const target = doc(p("Alpha one"), p([add(big("x", 2100))]), p("Beta two"), p([add(big("y", 2100))]), p("Gamma three"));
+  assert.deepEqual(directEdits(ABC, target).requests, [], "nothing of the document is saved over");
+  const { segments } = additions(ABC, target);
+  assert.deepEqual(segments.map((s) => [s.at, s.mode, s.text.length]), [[10, "inline", 2101], [19, "inline", 2101]]);
+  assert.ok(segments.every((s) => !s.text.includes("Beta") && !s.text.includes("Gamma")), "only the additions are typed");
+  assert.deepEqual(rebase(ABC, target), target, "reloading puts each addition back once, where it was");
+});
+
+test("a large addition inside a paragraph and as new paragraphs, with an empty line kept in place", () => {
+  const base = doc(p("Alpha one"), p(""), p("Beta two"));
+  const target = doc(p(["Alpha", add(` ${big("w", 3000)}`), " one"]), p([add(big("n", 3000))]), p(""), p([add("After the empty line")]), p("Beta two"));
+  assert.deepEqual(directEdits(base, target).requests, []);
+  const { segments } = additions(base, target);
+  assert.deepEqual(segments.map((s) => [s.at, s.mode, s.text.slice(0, 3), s.text.length]), [[6, "inline", " ww", 3001], [10, "inline", "\nnn", 3001], [11, "inline", "\nAf", 21]]);
+  assert.deepEqual(rebase(base, target), target);
+});
+
+test("a whole document added to a blank one opens before its empty paragraph", () => {
+  const blank = doc(p(""));
+  const target = doc(p(""), ...Array.from({ length: 400 }, (_, i) => p([add(`Paragraph ${i} ${big("z", 20)}`)])), p(""));
+  assert.deepEqual(directEdits(blank, target).requests.filter((r) => !r.insertText), [], "only empty lines are made directly");
+  const { segments } = additions(blank, target);
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].at, 1);
+  assert.ok(segments[0].text.startsWith("\nParagraph 0 ") || segments[0].text.startsWith("Paragraph 0 "));
+});
+
+test("a new paragraph typed after one keeps that paragraph's newline in its look", () => {
+  const look = [{ type: "bold" }, { type: "textStyle", attrs: { fontFamily: "Georgia", fontSize: 14, color: "#cc0000" } }];
+  const base = doc(p([{ text: "Hello", marks: look }]), p("End"));
+  const target = doc(p([{ text: "Hello", marks: look }]), p([add("World")]), p("End"));
+  const [seg] = additions(base, target).segments;
+  assert.equal(seg.text, "\nWorld");
+  // The typed newline ends "Hello": it has its look, not the plain style
+  assert.deepEqual(seg.format.runs[0], { len: 1, b: 1, font: "Georgia", size: 14, color: "#cc0000" });
+  // An empty paragraph's newline keeps its own look
+  const nl = [{ type: "textStyle", attrs: { fontFamily: null, fontSize: 18, color: null } }];
+  const emptyBase = doc({ type: "paragraph", attrs: { nl }, content: [] }, p("End"));
+  const emptyTarget = doc({ type: "paragraph", attrs: { nl }, content: [] }, p([add("World")]), p("End"));
+  assert.deepEqual(additions(emptyBase, emptyTarget).segments[0].format.runs[0], { len: 1, size: 18 });
+});
+
+test("text typed into a paragraph the document has never restyles it", async () => {
+  const { SegmentFormat } = await import("./rich-text");
+  const h2 = { styleName: "h2", textAlign: "center", lineSpacing: 150, box: { start: 12, first: 6, above: 18, below: 4 } };
+  const base = doc(p("Intro text.", h2), p("Closing line."));
+  // Words inside it, and a new paragraph after it (typed as a newline at its end, then the text)
+  const target = doc(p(["Intro", add(" more"), " text."], h2), p([add("A new body paragraph")], { styleName: "normal" }), p("Closing line."));
+  const { segments } = additions(base, target);
+  assert.deepEqual(segments.map((s) => [s.at, s.mode, s.text]), [[6, "inline", " more"], [12, "inline", "\nA new body paragraph"]]);
+  for (const s of segments) {
+    assert.deepEqual(s.format.paragraphs[0], s.format.base, "line 0 is the paragraph as the document has it");
+    const { requests } = new SegmentFormat(s.text, s.format).writeRequests(0, s.text.length, s.at, null);
+    const restyled = requests.filter((r) => r.updateParagraphStyle).map((r) => (r.updateParagraphStyle as { range: { startIndex: number } }).range.startIndex);
+    assert.ok(restyled.every((at) => at > s.at), `nothing restyles the paragraph at ${s.at}: ${JSON.stringify(requests)}`);
+  }
+});

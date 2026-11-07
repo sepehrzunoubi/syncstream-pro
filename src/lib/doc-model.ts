@@ -258,11 +258,15 @@ function same(b: Tok, t: Tok): boolean {
 }
 
 /**
- * For each target token, the base token it is the same as (or -1). Myers'
- * diff after trimming the common start and end; very different documents
- * fall back to replacing the middle.
+ * For each target token, the base token it is the same as (or -1). When the
+ * target is the base with things added (the usual case: text typed or copied
+ * in), the alignment is exact and linear, however much was added. Otherwise
+ * Myers' diff after trimming the common start and end; very different
+ * documents fall back to replacing the middle.
  */
 export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000): number[] {
+  const added = additionsOnlyAlignment(base, target);
+  if (added) return added;
   const match = new Array<number>(target.length).fill(-1);
   let pre = 0;
   while (pre < base.length && pre < target.length && same(base[pre], target[pre])) { match[pre] = pre; pre++; }
@@ -311,6 +315,150 @@ export function alignTokens(base: Tok[], target: Tok[], maxEdits = 4000): number
     y = prevY;
   }
   while (x > 0 && y > 0) { x--; y--; match[pre + y] = pre + x; }
+  return match;
+}
+
+/** Paragraph ends and line breaks: the tokens an addition brings more of, which can't tell one another apart */
+const isBreakTok = (t: Tok) => t.k === "nl" || t.k === "br";
+
+/**
+ * The alignment of a target that is the base with things added, or null when it isn't: every base
+ * token is in the target, in order, and everything else in the target is an addition (pending text,
+ * images and page breaks) or comes with one (the paragraphs, line breaks, tables, rows, cells and
+ * footnotes it brings). Linear in the size of both, with no limit on how much was added, so a large
+ * addition never reads as the base's own content having changed.
+ *
+ * The base's characters, images and structure match the target's one for one, in order (table rows
+ * and cells by their document ids, so a row added in the middle doesn't shift the ones after it). Its
+ * paragraph ends and line breaks then go to the target's between those, each preferring the one that
+ * ends the same paragraph: the one after its own text, or for an empty paragraph an empty one with its
+ * attributes, the earliest on a tie.
+ */
+function additionsOnlyAlignment(base: Tok[], target: Tok[]): number[] | null {
+  const match = new Array<number>(target.length).fill(-1);
+  // Each token's table cell (the index of the cell's start), or -1 outside tables
+  const cellsOf = (tokens: Tok[]) => {
+    const out = new Int32Array(tokens.length).fill(-1);
+    const open: number[] = [];
+    tokens.forEach((t, i) => {
+      if (t.k === "st" && t.kind === "cellEnd") open.pop();
+      out[i] = open.length ? open[open.length - 1] : -1;
+      if (t.k === "st" && t.kind === "cell") open.push(i);
+    });
+    return out;
+  };
+  // Characters, images and structure, in order: each base one must be the next of the target's
+  const rigid: number[] = [];
+  for (let i = 0; i < base.length; i++) if (!isBreakTok(base[i])) rigid.push(i);
+  let p = 0;
+  // The target's open table structure: whether each piece was matched (its end goes the same way)
+  const opened: boolean[] = [];
+  const idOf = (t: Tok, key: string) => (typeof (t as Extract<Tok, { k: "st" }>).attrs?.[key] === "string" ? (t as Extract<Tok, { k: "st" }>).attrs[key] as string : null);
+  for (let j = 0; j < target.length; j++) {
+    const t = target[j];
+    if (isPending(t) || isBreakTok(t)) continue;
+    const b = p < rigid.length ? base[rigid[p]] : undefined;
+    let ok = false;
+    if (t.k === "st") {
+      if (t.kind === "table" || t.kind === "row" || t.kind === "cell") {
+        // A row or cell only in a matched table or row, and by its document id when the base has one
+        const inMatched = t.kind === "table" || opened[opened.length - 1] === true;
+        const key = t.kind === "row" ? "rid" : "cid";
+        ok = inMatched && b?.k === "st" && b.kind === t.kind && (t.kind === "table" || idOf(b, key) == null ? b.id === t.id : idOf(b, key) === idOf(t, key));
+        opened.push(ok);
+      } else {
+        ok = opened.pop() === true;
+        if (ok && (b?.k !== "st" || b.kind !== t.kind)) return null;
+      }
+    } else ok = !!b && same(b, t);
+    if (ok) { match[j] = rigid[p++]; continue; }
+    // What an addition may bring along: structure of its own, a footnote not made yet, a section break
+    const brought = t.k === "st" || (t.k === "fn" && t.fid == null) || isNewSection(t);
+    if (!brought) return null;
+  }
+  if (p < rigid.length) return null;
+
+  // Paragraph ends and line breaks, between each two matched tokens
+  const baseCell = cellsOf(base);
+  const targetCell = cellsOf(target);
+  // Per target paragraph end: whether its paragraph has base content, and additions
+  const hasBase = new Uint8Array(target.length);
+  const hasAdded = new Uint8Array(target.length);
+  {
+    let sawBase = false;
+    let sawAdded = false;
+    target.forEach((t, j) => {
+      if (t.k === "nl") { hasBase[j] = sawBase ? 1 : 0; hasAdded[j] = sawAdded ? 1 : 0; }
+      if (t.k === "nl" || t.k === "st" || t.k === "block") { sawBase = false; sawAdded = false; return; }
+      if (match[j] >= 0) sawBase = true;
+      if (isPending(t)) sawAdded = true;
+    });
+  }
+  const baseEmpty = (i: number) => i === 0 || base[i - 1].k === "nl" || base[i - 1].k === "st" || base[i - 1].k === "block";
+  const attrsKey = new Map<number, string>();
+  const keyOf = (tokens: Tok[], i: number, offset: number) => {
+    const at = offset + i;
+    let k = attrsKey.get(at);
+    if (k === undefined) { k = JSON.stringify((tokens[i] as Extract<Tok, { k: "nl" }>).attrs ?? null); attrsKey.set(at, k); }
+    return k;
+  };
+  const fits = (bi: number, tj: number) => {
+    const b = base[bi];
+    const t = target[tj];
+    if (b.k !== t.k) return false;
+    const tc = targetCell[tj];
+    return tc < 0 ? baseCell[bi] < 0 : match[tc] === baseCell[bi] && baseCell[bi] >= 0;
+  };
+  const score = (bi: number, tj: number) => {
+    if (base[bi].k !== "nl") return 0;
+    const empty = baseEmpty(bi);
+    let s = (!empty) === (hasBase[tj] === 1) ? 4 : 0;
+    if (empty && !hasAdded[tj]) s += 2;
+    if (keyOf(base, bi, 0) === keyOf(target, tj, base.length)) s += 1;
+    return s;
+  };
+  let prevB = -1;
+  let prevT = -1;
+  // The document's last paragraph end is the target's: nothing can be typed after it
+  const lastB = base.length - 1;
+  const lastT = target.length - 1;
+  if (lastB >= 0 && lastT >= 0 && base[lastB].k === "nl" && target[lastT].k === "nl" && baseCell[lastB] < 0 && targetCell[lastT] < 0) match[lastT] = lastB;
+  const anchors: [number, number][] = [];
+  for (let j = 0; j < target.length; j++) if (match[j] >= 0) anchors.push([match[j], j]);
+  anchors.push([base.length, target.length]);
+  for (const [ab, at] of anchors) {
+    const bs: number[] = [];
+    for (let i = prevB + 1; i < ab; i++) bs.push(i);
+    if (bs.length) {
+      const ts: number[] = [];
+      for (let j = prevT + 1; j < at; j++) if (isBreakTok(target[j])) ts.push(j);
+      // The latest each can take and still leave one for each after it
+      const latest = new Array<number>(bs.length);
+      let k = ts.length - 1;
+      for (let q = bs.length - 1; q >= 0; q--) {
+        while (k >= 0 && (!fits(bs[q], ts[k]) || (q + 1 < bs.length && ts[k] >= latest[q + 1]))) k--;
+        if (k < 0) return null;
+        latest[q] = ts[k];
+        k--;
+      }
+      let from = 0;
+      for (let q = 0; q < bs.length; q++) {
+        let best = -1;
+        let bestScore = -1;
+        // The best a paragraph end can do (a line break takes the first that fits)
+        const enough = base[bs[q]].k !== "nl" ? 0 : baseEmpty(bs[q]) ? 7 : 4;
+        for (let c = from; c < ts.length && ts[c] <= latest[q]; c++) {
+          if (!fits(bs[q], ts[c])) continue;
+          const s = score(bs[q], ts[c]);
+          if (s > bestScore) { best = c; bestScore = s; if (s >= enough) break; }
+        }
+        match[ts[best]] = bs[q];
+        from = best + 1;
+      }
+    }
+    prevB = ab;
+    prevT = at;
+  }
   return match;
 }
 
@@ -1039,7 +1187,10 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     if (last && sameStyle(last, style)) last.len += len;
     else runs.push({ len, ...style });
   };
-  let lastStyle: RunStyle = {};
+  // A newline typed first ends the text before it (a new paragraph typed after an existing one): it
+  // keeps that text's look, as the paragraph's own newline had it, instead of the plain style
+  const before = ts > 0 ? target[ts - 1] : undefined;
+  let lastStyle: RunStyle = before && (before.k === "c" || before.k === "img" || before.k === "pb") ? styleFromMarks(withoutPending(before.marks)) : {};
   let lineStart = true;
   for (let q = ts; q < te; q++) {
     const t = target[q];
