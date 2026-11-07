@@ -245,6 +245,23 @@ test.describe("starting a sync", () => {
     await expect(page.getByRole("status").filter({ hasText: "Sync started" })).toBeVisible();
   });
 
+  test("the live page greys out exactly what is still to type, after a footnote too", async ({ app, page, api }) => {
+    await app.open();
+    // The closing paragraph comes after the footnote's: its positions used to be off by one
+    await app.caretAtEnd(CLOSING_TEXT);
+    const added = " Typed later.";
+    await page.keyboard.type(added);
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect.poll(() => api.starts.length).toBe(1);
+    const untyped = () => page.locator(".ss-untyped").evaluateAll((els) => els.map((e) => e.textContent).join(""));
+    await expect.poll(untyped).toBe(added);
+    // The sync has typed 6 characters: the rest is grey, and the caret sits before it
+    api.jobs = api.jobs.map((j) => ({ ...j, charsSent: 6 }));
+    await expect.poll(untyped, { timeout: 10_000 }).toBe(added.slice(6));
+    const caretNext = await page.locator(".ss-caret").evaluate((c) => c.nextSibling?.textContent ?? c.parentElement?.nextSibling?.textContent ?? "");
+    expect(caretNext.startsWith(added.slice(6, 8))).toBe(true);
+  });
+
   test("a sync that is already running shows up in the rail and pauses on request", async ({ app, page, api }) => {
     const now = Date.now();
     api.jobs = [{

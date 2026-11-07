@@ -572,10 +572,14 @@ export const Pagination = Extension.create<{ enabled: boolean }>({
 
 export const progressKey = new PluginKey<Progress>("ssProgress");
 
-/** How far a sync has typed; `ranges` are the editor tokens each segment came from */
+/**
+ * How far a sync has typed; `ranges` are the editor tokens each segment came from, and `chars` (from
+ * segmentCharTokens) the token each of a segment's characters came from, since `typed` counts characters
+ */
 export interface Progress {
   typed: number;
   ranges?: [number, number][] | null;
+  chars?: number[][] | null;
 }
 
 /**
@@ -620,7 +624,7 @@ export function tokenPositions(doc: Parameters<typeof DecorationSet.create>[0]):
     let p = pos + 1;
     node.forEach((child) => {
       if (child.isText) for (let i = 0; i < child.text!.length; i++) out.push(p + i);
-      else if (child.type.name === "image" || child.type.name === "hardBreak" || child.type.name === "pageBreak") out.push(p);
+      else if (child.type.name === "image" || child.type.name === "hardBreak" || child.type.name === "pageBreak" || child.type.name === "footnoteRef") out.push(p);
       p += child.nodeSize;
     });
     out.push(pos + node.nodeSize - 1); // the paragraph's end
@@ -683,13 +687,16 @@ export const ProgressMarks = Extension.create({
             const spans: [number, number][] = [];
             let left = progress.typed;
             let caretAt: number | null = null;
-            for (const [ts, te] of progress.ranges) {
-              const len = te - ts;
-              const from = Math.max(0, Math.min(len, left));
+            progress.ranges.forEach(([ts, te], r) => {
+              // `typed` counts characters; a segment's characters and its tokens don't line up one to one
+              const chars = progress.chars?.[r];
+              const len = chars ? chars.length : te - ts;
+              const done = Math.max(0, Math.min(len, left));
               left -= len;
-              if (from >= len) continue;
-              if (caretAt == null && positions[ts + from] != null) caretAt = positions[ts + from];
-              for (let q = ts + from; q < te; q++) {
+              if (done >= len) return;
+              const first = chars ? chars[done] : ts + done;
+              if (caretAt == null && positions[first] != null) caretAt = positions[first];
+              for (let q = first; q < te; q++) {
                 const p = positions[q];
                 if (p == null) continue;
                 const node = doc.nodeAt(p);
@@ -698,7 +705,7 @@ export const ProgressMarks = Extension.create({
                 if (last && last[1] === p) last[1] = p + 1;
                 else spans.push([p, p + 1]);
               }
-            }
+            });
             for (const [from, to] of spans) decos.push(Decoration.inline(from, to, { class: "ss-untyped" }));
             if (caretAt != null) decos.push(Decoration.widget(caretAt, caretWidget, { side: -1, key: "caret" }));
             return DecorationSet.create(doc, decos);

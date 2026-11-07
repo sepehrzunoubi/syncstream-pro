@@ -10,7 +10,7 @@ import type { Editor, JSONContent } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
 import type { EditorNode } from "@/lib/rich-text";
 import { isInsertableImageSrc, richFromEditorJSON, richToEditorJSON } from "@/lib/rich-text";
-import { additions, PENDING_MARK, rebase } from "@/lib/doc-model";
+import { additions, PENDING_MARK, rebase, segmentCharTokens } from "@/lib/doc-model";
 import { buildDripPlan } from "@/lib/drip-engine";
 import { randomSeed } from "@/lib/prng";
 import { formatClock } from "@/lib/format";
@@ -301,10 +301,15 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
     }
   }, [viewer, focusedJob, focusedSource]);
   const typed = focusedJob?.charsSent ?? 0;
+  // Which token each typed character comes from, once per sync
+  const chars = useMemo(() => {
+    const ctx = focusedSource?.context;
+    return ctx?.doc && ctx.ranges ? segmentCharTokens(ctx.doc, ctx.ranges) : null;
+  }, [focusedSource]);
   useEffect(() => {
     if (!viewer || !focusedJob || loadedRef.current !== focusedJob.id) return;
     const ranges = focusedSource?.context?.doc ? focusedSource.context.ranges ?? null : null;
-    viewer.view.dispatch(viewer.state.tr.setMeta(progressKey, { typed, ranges }).setMeta("addToHistory", false));
+    viewer.view.dispatch(viewer.state.tr.setMeta(progressKey, { typed, ranges, chars }).setMeta("addToHistory", false));
     const frame = requestAnimationFrame(() => {
       const caret = viewer.view.dom.querySelector(".ss-caret");
       const canvas = canvasRef.current;
@@ -317,7 +322,7 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [viewer, focusedJob, typed, focusedSource, canvasRef]);
+  }, [viewer, focusedJob, typed, focusedSource, chars, canvasRef]);
 
   return { now, busy, startError, hasText, preview, focusedSource, startSync, jobAction, dismissJob, editAsNew };
 }
