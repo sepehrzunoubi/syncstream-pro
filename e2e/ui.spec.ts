@@ -25,6 +25,8 @@ test.describe("workspace", () => {
 
   test("right-click opens the context menu and Select all selects the document", async ({ app, page }) => {
     await app.open();
+    // The menu is the page's: it opens once the document is open and the page takes edits
+    await expect.poll(() => page.evaluate(() => window.ssEditor!.isEditable)).toBe(true);
     // A paragraph at the top of the first page: the menu closes on any scroll, and right-clicking
     // text that is only partly in view would scroll it into view
     const target = app.doc.locator("p", { hasText: "Notes on three works" });
