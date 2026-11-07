@@ -20,7 +20,7 @@ export interface Draft {
   /** The tab of it shown (absent: its first) */
   selectedTabId?: string;
   durationMinutes?: number | null;
-  /** "custom" is the old "Choose", which opens as Manual */
+  /** "custom" is the old "Choose", which opens as Automatic */
   breaksMode?: BreaksMode | "custom";
   /** Old drafts' chosen break lengths (no longer used) */
   customBreaks?: number[];

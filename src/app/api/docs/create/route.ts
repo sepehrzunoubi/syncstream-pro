@@ -38,6 +38,10 @@ export const POST = withRoute(async (req: NextRequest) => {
     if (status === 403) {
       return NextResponse.json({ error: "Google didn't allow SyncStream to create documents. Reconnect your Google account from the account menu." }, { status: 403 });
     }
+    // Google may have made it and not answered in time: trying again at once could make a second one
+    if (status == null || status >= 500) {
+      return NextResponse.json({ error: "Google didn't confirm the new document. If it was made, it shows in the list in a moment: check there before trying again." }, { status: 502 });
+    }
     return NextResponse.json({ error: "Couldn't create the document. Try again." }, { status: 502 });
   }
 });

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import * as MB from "@radix-ui/react-menubar";
+import { useRouter } from "next/navigation";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon } from "./icon";
@@ -82,6 +83,8 @@ function TopMenu({ label, children }: { label: string; children: React.ReactNode
 }
 
 const Sep = () => <MB.Separator className="ss-menu-sep" />;
+/** The menu bar's pieces, for the dashboard's other sections */
+export { TopMenu as MenubarMenu, Item as MenubarItem, Sub as MenubarSub, Sep as MenubarSeparator };
 /** Menus never take the editor's selection: a mousedown on them would collapse it before the command runs */
 const keepSelection = (e: React.MouseEvent) => e.preventDefault();
 /**
@@ -123,6 +126,7 @@ interface DocsMenubarProps {
 
 export function DocsMenubar(p: DocsMenubarProps) {
   const mod = useMod();
+  const router = useRouter();
   const st = useEditorState({
     editor: p.editor,
     selector: ({ editor: e }) => {
@@ -175,6 +179,7 @@ export function DocsMenubar(p: DocsMenubarProps) {
           <Sep />
           <Item onSelect={p.onRefreshDocs}>Refresh list</Item>
         </Sub>
+        <Item onSelect={() => router.push("/dashboard/compare")}>Compare &amp; Sync</Item>
         <Item disabled={!p.onRename} onSelect={afterMenu(() => p.onRename?.())}>Rename</Item>
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
         <Sep />

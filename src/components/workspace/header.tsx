@@ -38,6 +38,8 @@ interface HeaderProps {
   menubar: React.ReactNode;
   /** Rename the open Google Doc (its Drive name) */
   onRename?: (name: string) => Promise<boolean>;
+  /** The switch between the dashboard's sections, first among the buttons */
+  tabs?: React.ReactNode;
 }
 
 /** File > Rename asks the header to start renaming */
@@ -137,6 +139,7 @@ export function Header(props: HeaderProps) {
       </div>
 
       <div className="ss-header-actions">
+        {props.tabs}
         {mode === "draft" && (
           <button className="ss-btn ss-btn-outlined max-md:w-10 max-md:px-0" onClick={props.onNewDoc} disabled={props.isCreatingDoc} title="Create a Google Doc and open it here" aria-label="New Google Doc">
             <Icon name="add" />

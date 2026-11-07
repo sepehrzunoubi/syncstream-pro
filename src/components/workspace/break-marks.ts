@@ -4,9 +4,11 @@
  * pill above the word's end, like "33m". The pill is a zero-size widget: it never moves text, and
  * it is neither copied nor printed nor synced into the Google Doc.
  *
- * While placing, hovering a new (glowing) word shows where the break would go; a click puts it
- * there without moving the cursor. On the live page of a running sync the same pills show where
- * its breaks are, with their state (done, on now, ahead, being typed).
+ * The pills and underlines show in Manual only (the other modes don't use them; the marks stay, for
+ * when Manual is chosen again). While placing, hovering a new (glowing) word shows where the break
+ * would go; a click puts it there without moving the cursor. A click anywhere else (on text that
+ * can't take a break, off the words) does what a click always does. On the live page of a running
+ * sync the same pills show where its breaks are, with their state (done, on now, ahead, being typed).
  */
 
 import { Extension, Mark, type Editor } from "@tiptap/core";
@@ -30,6 +32,12 @@ export interface LiveBreak {
 }
 
 interface BreakUiState {
+  /** The page's own breaks are drawn (Manual): their underline and pill */
+  showBreaks: boolean;
+  /** The breaks on the page, each with an id that follows its word through edits */
+  ranges: BreakRange[];
+  /** The page has new (glowing) words, which breaks can follow */
+  hasNew: boolean;
   /** Placing: the length (minutes) a click puts after a word */
   placing: number | null;
   /** Placing on the live page instead of marking words (the job's breaks change, not the text) */
@@ -42,13 +50,14 @@ interface BreakUiState {
 }
 
 export const breakUiKey = new PluginKey<BreakUiState>("ssBreakUi");
-const INITIAL: BreakUiState = { placing: null, placeLive: false, hover: null, live: null, flash: null };
+const INITIAL: BreakUiState = { showBreaks: true, ranges: [], hasNew: false, placing: null, placeLive: false, hover: null, live: null, flash: null };
 
 /** Asks the page to edit a break: from a pill click */
 export const BREAK_PILL_EVENT = "ss-break-pill";
 /** A click while placing on the live page: the source offset is worked out by the page */
 export const BREAK_PLACE_EVENT = "ss-break-place";
-export interface BreakPillDetail { from: number; to: number; minutes: number; rect: DOMRect; live?: LiveBreak }
+/** `dom` is the page the pill is on: each page's breaks are its own */
+export interface BreakPillDetail { from: number; to: number; minutes: number; rect: DOMRect; live?: LiveBreak; dom: HTMLElement }
 
 export const SyncBreak = Mark.create({
   name: BREAK_MARK,
@@ -58,10 +67,12 @@ export const SyncBreak = Mark.create({
   },
   // Never from pasted HTML: a break is placed, not pasted
   parseHTML: () => [],
-  renderHTML: () => ["span", { class: "ss-brk" }, 0],
+  // Its look (the underline) is drawn by the plugin, in Manual only
+  renderHTML: () => ["span", { "data-ss-brk": "" }, 0],
 });
 
-export interface BreakRange { from: number; to: number; minutes: number }
+/** A break on the page: the word it follows and its length; `id` stays the same while the word moves */
+export interface BreakRange { from: number; to: number; minutes: number; id?: number }
 
 /** The breaks on the page, in order: each marked word's range and length */
 export function breakRanges(doc: PMNode): BreakRange[] {
@@ -75,6 +86,46 @@ export function breakRanges(doc: PMNode): BreakRange[] {
     else out.push({ from: pos, to: pos + node.nodeSize, minutes: Number(m.attrs.minutes) || 5 });
   });
   return out;
+}
+
+let nextBreakId = 1;
+
+/**
+ * The breaks on the page after a change, each keeping the id it had before the change (found where
+ * the change moved its word), so a list of them doesn't take a break that only moved for a new one
+ */
+export function trackBreaks(prev: BreakRange[], tr: Pick<Transaction, "mapping"> | null, doc: PMNode): BreakRange[] {
+  const moved = prev.map((r) => ({ id: r.id, from: tr ? tr.mapping.map(r.from, 1) : r.from, to: tr ? tr.mapping.map(r.to, -1) : r.to }));
+  const taken = new Set<number>();
+  return breakRanges(doc).map((r) => {
+    const same = moved.find((m) => m.id != null && !taken.has(m.id) && m.to === r.to) ?? moved.find((m) => m.id != null && !taken.has(m.id) && m.from === r.from);
+    const id = same?.id ?? nextBreakId++;
+    taken.add(id);
+    return { ...r, id };
+  });
+}
+
+/** Whether the page has new words (text marked as an addition, not just spaces) */
+export function hasNewText(doc: PMNode): boolean {
+  let found = false;
+  doc.descendants((node) => {
+    if (found) return false;
+    if (node.isText && node.marks.some((m) => m.type.name === PENDING_MARK) && node.text!.trim()) found = true;
+    return !found;
+  });
+  return found;
+}
+
+/** "A 33-minute break", "An 8-minute break", "A 1-hour 5-minute break" */
+export function aBreakOf(minutes: number): string {
+  const m = Math.max(1, Math.round(minutes));
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  const words = [h ? `${h}-hour` : "", r ? `${r}-minute` : ""].filter(Boolean).join(" ");
+  // "an" before a number said with a vowel: eight, eleven, eighteen, eighty…
+  const lead = h || r;
+  const an = /^8/.test(String(lead)) || lead === 11 || lead === 18;
+  return `${an ? "An" : "A"} ${words} break`;
 }
 
 const WORD = /[\p{L}\p{N}\p{M}'’_\-.,;:!?)"\]»”]/u;
@@ -173,16 +224,17 @@ function decorations(state: EditorState): DecorationSet {
     for (const b of ui.live) {
       decos.push(Decoration.widget(b.pos, () => pill(b.label, { "data-state": b.state, "data-at": String(b.at), "data-minutes": String(b.minutes), title: b.title }), { side: -1, key: `live-${b.at}-${b.minutes}-${b.state}-${b.label}`, ignoreSelection: true }));
     }
-  } else {
-    for (const r of breakRanges(state.doc)) {
-      decos.push(Decoration.widget(r.to, () => pill(formatBreak(r.minutes), { "data-from": String(r.from), "data-to": String(r.to), "data-minutes": String(r.minutes), title: `A ${formatBreak(r.minutes)} break starts after this word. Click to change it.` }), { side: -1, key: `brk-${r.from}-${r.to}-${r.minutes}`, ignoreSelection: true }));
+  } else if (ui.showBreaks) {
+    for (const r of ui.ranges) {
+      decos.push(Decoration.inline(r.from, r.to, { class: "ss-brk" }));
+      decos.push(Decoration.widget(r.to, () => pill(formatBreak(r.minutes), { "data-from": String(r.from), "data-to": String(r.to), "data-minutes": String(r.minutes), title: `${aBreakOf(r.minutes)} starts after this word. Click to change it.` }), { side: -1, key: `brk-${r.from}-${r.to}-${r.minutes}`, ignoreSelection: true }));
     }
   }
   if (ui.flash) decos.push(Decoration.inline(ui.flash.from, ui.flash.to, { class: "ss-brk-flash" }));
-  if (ui.placing != null && ui.hover) {
-    const { from, to, reason } = ui.hover;
-    decos.push(Decoration.inline(from, to, { class: reason ? "ss-brk-ghost ss-brk-ghost-no" : "ss-brk-ghost" }));
-    if (!reason) decos.push(Decoration.widget(to, () => pill(formatBreak(ui.placing!), { "data-ghost": "true" }), { side: -1, key: `ghost-${to}-${ui.placing}`, ignoreSelection: true }));
+  if (ui.placing != null && ui.hover && !ui.hover.reason) {
+    const { from, to } = ui.hover;
+    decos.push(Decoration.inline(from, to, { class: "ss-brk-ghost" }));
+    decos.push(Decoration.widget(to, () => pill(formatBreak(ui.placing!), { "data-ghost": "true" }), { side: -1, key: `ghost-${to}-${ui.placing}`, ignoreSelection: true }));
   }
   return DecorationSet.create(state.doc, decos);
 }
@@ -197,82 +249,90 @@ function hoverAt(view: EditorView, event: MouseEvent, live: boolean): BreakUiSta
   return { ...word, reason };
 }
 
-/** On the live page only text not typed yet (and not being typed) can take a new break */
+/** On the live page only text not typed yet (and not being typed) can take a new break: the word's last letter is in it */
 function liveRefusal(view: EditorView, to: number): string | null {
-  let untyped = false;
-  view.dom.querySelectorAll(".ss-untyped").forEach((el) => {
-    if (untyped) return;
-    const pos = view.posAtDOM(el, 0);
-    if (pos >= to - 1) untyped = true;
+  const last = to - 1;
+  for (const el of Array.from(view.dom.querySelectorAll(".ss-untyped"))) {
+    const start = view.posAtDOM(el, 0);
+    if (start <= last && last < start + (el.textContent?.length ?? 0)) return null;
+  }
+  return "That part is already typed";
+}
+
+/** The plugin behind the pills, placing and the live page's breaks */
+export function breakUiPlugin(): Plugin<BreakUiState> {
+  return new Plugin<BreakUiState>({
+    key: breakUiKey,
+    state: {
+      init: (_config, state) => ({ ...INITIAL, ranges: trackBreaks([], null, state.doc), hasNew: hasNewText(state.doc) }),
+      apply: (tr: Transaction, value, _old, state) => {
+        const patch = tr.getMeta(breakUiKey) as Partial<BreakUiState> | undefined;
+        let next = patch ? { ...value, ...patch } : value;
+        if (tr.docChanged) {
+          next = { ...next, ranges: trackBreaks(value.ranges, tr, state.doc), hasNew: hasNewText(state.doc) };
+          if (next.hover || next.flash) next = { ...next, hover: null, flash: null };
+        }
+        return next;
+      },
+    },
+    props: {
+      decorations,
+      handleDOMEvents: {
+        mousedown: (view, event) => {
+          const target = event.target as HTMLElement;
+          const pillEl = target.closest?.(".ss-brk-pill") as HTMLElement | null;
+          if (pillEl && !pillEl.dataset.ghost) {
+            event.preventDefault();
+            const ui = breakUiKey.getState(view.state)!;
+            const live = ui.live?.find((b) => String(b.at) === pillEl.dataset.at);
+            const detail: BreakPillDetail = { from: Number(pillEl.dataset.from ?? -1), to: Number(pillEl.dataset.to ?? -1), minutes: Number(pillEl.dataset.minutes), rect: pillEl.getBoundingClientRect(), live, dom: view.dom };
+            window.dispatchEvent(new CustomEvent(BREAK_PILL_EVENT, { detail }));
+            return true;
+          }
+          const ui = breakUiKey.getState(view.state)!;
+          // A modified click (extend the selection, open a link) keeps its own meaning
+          if (ui.placing == null || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
+          const hover = hoverAt(view, event, ui.placeLive);
+          // Off the words, or on one that can't take a break: the click puts the caret there, as always
+          if (!hover || hover.reason) return false;
+          // Placing never moves the cursor or types anything
+          event.preventDefault();
+          if (ui.placeLive) {
+            window.dispatchEvent(new CustomEvent(BREAK_PLACE_EVENT, { detail: { from: hover.from, to: hover.to, minutes: ui.placing } }));
+            return true;
+          }
+          const type = view.state.schema.marks[BREAK_MARK];
+          view.dispatch(view.state.tr.removeMark(hover.from, hover.to, type).addMark(hover.from, hover.to, type.create({ minutes: ui.placing })));
+          return true;
+        },
+        mousemove: (view, event) => {
+          const ui = breakUiKey.getState(view.state)!;
+          if (ui.placing == null) return false;
+          const hover = hoverAt(view, event, ui.placeLive);
+          const same = hover && ui.hover && hover.from === ui.hover.from && hover.to === ui.hover.to && hover.reason === ui.hover.reason;
+          if (!same && (hover || ui.hover)) setBreakUi(view, { hover });
+          view.dom.title = hover?.reason ?? "";
+          return false;
+        },
+        mouseleave: (view) => {
+          const ui = breakUiKey.getState(view.state)!;
+          if (ui.hover) setBreakUi(view, { hover: null });
+          view.dom.title = "";
+          return false;
+        },
+      },
+      // The pointer only over a word a click puts a break after; elsewhere the page's own cursor
+      attributes: (state): Record<string, string> => {
+        const ui = breakUiKey.getState(state) ?? INITIAL;
+        return ui.placing != null && ui.hover && !ui.hover.reason ? { class: "ss-placing" } : {};
+      },
+    },
   });
-  return untyped ? null : "That part is already typed";
 }
 
 export const BreakMarks = Extension.create({
   name: "breakMarks",
   addProseMirrorPlugins() {
-    return [
-      new Plugin<BreakUiState>({
-        key: breakUiKey,
-        state: {
-          init: () => INITIAL,
-          apply: (tr: Transaction, value) => {
-            const patch = tr.getMeta(breakUiKey) as Partial<BreakUiState> | undefined;
-            let next = patch ? { ...value, ...patch } : value;
-            if (tr.docChanged && (next.hover || next.flash)) next = { ...next, hover: null, flash: null };
-            return next;
-          },
-        },
-        props: {
-          decorations,
-          handleDOMEvents: {
-            mousedown: (view, event) => {
-              const target = event.target as HTMLElement;
-              const pillEl = target.closest?.(".ss-brk-pill") as HTMLElement | null;
-              if (pillEl && !pillEl.dataset.ghost) {
-                event.preventDefault();
-                const ui = breakUiKey.getState(view.state)!;
-                const live = ui.live?.find((b) => String(b.at) === pillEl.dataset.at);
-                const detail: BreakPillDetail = { from: Number(pillEl.dataset.from ?? -1), to: Number(pillEl.dataset.to ?? -1), minutes: Number(pillEl.dataset.minutes), rect: pillEl.getBoundingClientRect(), live };
-                window.dispatchEvent(new CustomEvent(BREAK_PILL_EVENT, { detail }));
-                return true;
-              }
-              const ui = breakUiKey.getState(view.state)!;
-              if (ui.placing == null || event.button !== 0) return false;
-              const hover = hoverAt(view, event, ui.placeLive);
-              if (!hover) return false;
-              // Placing never moves the cursor or types anything
-              event.preventDefault();
-              if (hover.reason) return true;
-              if (ui.placeLive) {
-                window.dispatchEvent(new CustomEvent(BREAK_PLACE_EVENT, { detail: { from: hover.from, to: hover.to, minutes: ui.placing } }));
-                return true;
-              }
-              const type = view.state.schema.marks[BREAK_MARK];
-              view.dispatch(view.state.tr.removeMark(hover.from, hover.to, type).addMark(hover.from, hover.to, type.create({ minutes: ui.placing })));
-              return true;
-            },
-            mousemove: (view, event) => {
-              const ui = breakUiKey.getState(view.state)!;
-              if (ui.placing == null) return false;
-              const hover = hoverAt(view, event, ui.placeLive);
-              const same = hover && ui.hover && hover.from === ui.hover.from && hover.to === ui.hover.to && hover.reason === ui.hover.reason;
-              if (!same && (hover || ui.hover)) setBreakUi(view, { hover });
-              view.dom.classList.toggle("ss-placing-no", !!hover?.reason);
-              view.dom.title = hover?.reason ?? "";
-              return false;
-            },
-            mouseleave: (view) => {
-              const ui = breakUiKey.getState(view.state)!;
-              if (ui.hover) setBreakUi(view, { hover: null });
-              view.dom.classList.remove("ss-placing-no");
-              view.dom.title = "";
-              return false;
-            },
-          },
-          attributes: (state): Record<string, string> => ((breakUiKey.getState(state) ?? INITIAL).placing != null ? { class: "ss-placing" } : {}),
-        },
-      }),
-    ];
+    return [breakUiPlugin()];
   },
 });

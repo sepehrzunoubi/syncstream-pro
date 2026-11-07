@@ -14,6 +14,10 @@ import {
 } from "@/lib/rich-text";
 import { docKeeps } from "@/lib/doc-import";
 import { presetGlyph, glyphNumber } from "@/lib/list-labels";
+import { escapeIsFree } from "./keys";
+
+/** A menu's trigger that can't open while the page can't be changed (it has no look of its own for that) */
+const OFF = "disabled:pointer-events-none disabled:opacity-[.38]";
 
 /** A small preview of a list style: its first three levels, as Docs' menus show them */
 function PresetPreview({ preset }: { preset: string }) {
@@ -40,7 +44,7 @@ function ListButton({ kind, on, preset, disabled, title, icon, presets, onToggle
         <Icon name={icon} />
       </button>
       <Menu keepFocus label={`${kind === "bullet" ? "Bulleted" : "Numbered"} list styles`} trigger={
-        <button className="ss-split-arrow" onMouseDown={keep} disabled={disabled} aria-label={`${kind === "bullet" ? "Bulleted" : "Numbered"} list styles`}><Icon name="arrow_drop_down" size={18} /></button>
+        <button className={`ss-split-arrow ${OFF}`} onMouseDown={keep} disabled={disabled} aria-label={`${kind === "bullet" ? "Bulleted" : "Numbered"} list styles`}><Icon name="arrow_drop_down" size={18} /></button>
       }>
         <div className="ss-preset-grid" role="group">
           {presets.map((p) => (
@@ -109,13 +113,13 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       chain.updateAttributes("paragraph", Object.fromEntries(PAINTED.map((k) => [k, painter.para[k] ?? null]))).run();
       setPainter(null);
     }, 0);
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPainter(null); };
+    const onKey = (e: KeyboardEvent) => { if (escapeIsFree(e)) setPainter(null); };
     dom.addEventListener("mouseup", applyPaint);
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     return () => {
       dom.classList.remove("ss-painting");
       dom.removeEventListener("mouseup", applyPaint);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     };
   }, [editor, painter]);
 
@@ -183,14 +187,17 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
 
   const keep = (e: React.MouseEvent) => e.preventDefault(); // keep the editor selection
   const alignIcon = ALIGN_ICONS[s?.align ?? "left"] ?? ALIGN_ICONS.left;
-  const off = disabled || !s;
+  // Formatting waits while the page can't be changed (a sync shown or typing into it, a document
+  // opening); zoom, print and spelling check don't change it and stay
+  const off = !!disabled || !s;
+  useEffect(() => { if (off) setPainter(null); }, [off]);
 
   return (
-    <div className="ss-toolbar" role="toolbar" aria-label="Formatting" aria-disabled={off ? "true" : undefined}>
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.undo())} disabled={!s?.canUndo} title={`Undo (${mod}Z)`} aria-label="Undo">
+    <div className="ss-toolbar" role="toolbar" aria-label="Formatting">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.undo())} disabled={off || !s?.canUndo} title={`Undo (${mod}Z)`} aria-label="Undo">
         <Icon name="undo" />
       </button>
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.redo())} disabled={!s?.canRedo} title={`Redo (${mod}Y)`} aria-label="Redo">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.redo())} disabled={off || !s?.canRedo} title={`Redo (${mod}Y)`} aria-label="Redo">
         <Icon name="redo" />
       </button>
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => window.print()} title={`Print (${mod}P)`} aria-label="Print">
@@ -199,7 +206,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       <button className="ss-icon-btn" data-on={spellcheck} onMouseDown={keep} onClick={() => setSpellcheck((v) => !v)} title="Spelling check" aria-label="Spelling check" aria-pressed={spellcheck}>
         <Icon name="spellcheck" />
       </button>
-      <button className="ss-icon-btn" data-armed={!!painter} onMouseDown={keep} onClick={togglePainter} title="Paint format" aria-label="Paint format" aria-pressed={!!painter}>
+      <button className="ss-icon-btn" data-armed={!!painter} onMouseDown={keep} onClick={togglePainter} disabled={off} title="Paint format" aria-label="Paint format" aria-pressed={!!painter}>
         <Icon name="format_paint" />
       </button>
 
@@ -213,7 +220,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       <span className="ss-sep" />
 
       <Menu keepFocus label="Styles" trigger={
-        <button className="ss-select-btn ss-style-btn" title="Styles">
+        <button className={`ss-select-btn ss-style-btn ${OFF}`} title="Styles" disabled={off}>
           <span className="ss-caption truncate">{NAMED_STYLES[s?.style ?? "normal"].label}</span><Icon name="arrow_drop_down" />
         </button>
       }>
@@ -234,7 +241,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       <span className="ss-sep" />
 
       <Menu keepFocus label="Font" trigger={
-        <button className="ss-select-btn ss-font-btn" title="Font">
+        <button className={`ss-select-btn ss-font-btn ${OFF}`} title="Font" disabled={off}>
           <span className="ss-caption truncate">{s?.font ?? DEFAULT_FONT}</span><Icon name="arrow_drop_down" />
         </button>
       }>
@@ -247,13 +254,14 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
 
       <span className="ss-sep" />
 
-      <button className="ss-icon-btn ss-step-btn" onMouseDown={keep} onClick={() => stepSize(-1)} title="Decrease font size" aria-label="Decrease font size">
+      <button className="ss-icon-btn ss-step-btn" onMouseDown={keep} onClick={() => stepSize(-1)} disabled={off} title="Decrease font size" aria-label="Decrease font size">
         <Icon name="remove" />
       </button>
       <Menu keepFocus label="Font size" trigger={
         <input
-          className="ss-size-input"
+          className={`ss-size-input ${OFF}`}
           aria-label="Font size"
+          disabled={off}
           inputMode="decimal"
           value={sizeDraft ?? String(s?.size ?? 11)}
           onFocus={(e) => { setSizeDraft(String(s?.size ?? 11)); e.currentTarget.select(); }}
@@ -275,23 +283,23 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
           <MenuItem key={sz} onSelect={() => applySize(sz)}>{sz}</MenuItem>
         ))}
       </Menu>
-      <button className="ss-icon-btn ss-step-btn" onMouseDown={keep} onClick={() => stepSize(1)} title="Increase font size" aria-label="Increase font size">
+      <button className="ss-icon-btn ss-step-btn" onMouseDown={keep} onClick={() => stepSize(1)} disabled={off} title="Increase font size" aria-label="Increase font size">
         <Icon name="add" />
       </button>
 
       <span className="ss-sep" />
 
-      <button className="ss-icon-btn" data-on={s?.bold} onMouseDown={keep} onClick={() => run((c) => c.toggleBold())} title={`Bold (${mod}B)`} aria-label="Bold" aria-pressed={!!s?.bold}>
+      <button className="ss-icon-btn" data-on={s?.bold} onMouseDown={keep} onClick={() => run((c) => c.toggleBold())} disabled={off} title={`Bold (${mod}B)`} aria-label="Bold" aria-pressed={!!s?.bold}>
         <Icon name="format_bold" />
       </button>
-      <button className="ss-icon-btn" data-on={s?.italic} onMouseDown={keep} onClick={() => run((c) => c.toggleItalic())} title={`Italic (${mod}I)`} aria-label="Italic" aria-pressed={!!s?.italic}>
+      <button className="ss-icon-btn" data-on={s?.italic} onMouseDown={keep} onClick={() => run((c) => c.toggleItalic())} disabled={off} title={`Italic (${mod}I)`} aria-label="Italic" aria-pressed={!!s?.italic}>
         <Icon name="format_italic" />
       </button>
-      <button className="ss-icon-btn" data-on={s?.underline} onMouseDown={keep} onClick={() => run((c) => c.toggleUnderline())} title={`Underline (${mod}U)`} aria-label="Underline" aria-pressed={!!s?.underline}>
+      <button className="ss-icon-btn" data-on={s?.underline} onMouseDown={keep} onClick={() => run((c) => c.toggleUnderline())} disabled={off} title={`Underline (${mod}U)`} aria-label="Underline" aria-pressed={!!s?.underline}>
         <Icon name="format_underlined" />
       </button>
-      <ColorMenu editor={editor} kind="text" current={s?.color ?? null} />
-      <ColorMenu editor={editor} kind="highlight" current={s?.highlight ?? null} />
+      <ColorMenu editor={editor} kind="text" current={s?.color ?? null} disabled={off} />
+      <ColorMenu editor={editor} kind="highlight" current={s?.highlight ?? null} disabled={off} />
 
       <span className="ss-sep" />
 
@@ -301,7 +309,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       <span className="ss-sep" />
 
       <Menu keepFocus label="Align" trigger={
-        <button className="ss-select-btn ss-align-btn" title="Align">
+        <button className={`ss-select-btn ss-align-btn ${OFF}`} title="Align" disabled={off}>
           <Icon name={alignIcon} className="text-[var(--ss-text-2)]" /><Icon name="arrow_drop_down" />
         </button>
       }>
@@ -315,7 +323,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       </Menu>
 
       <Menu keepFocus label="Line and paragraph spacing" trigger={
-        <button className="ss-icon-btn" title="Line & paragraph spacing" aria-label="Line & paragraph spacing">
+        <button className={`ss-icon-btn ${OFF}`} title="Line & paragraph spacing" aria-label="Line & paragraph spacing" disabled={off}>
           <Icon name="format_line_spacing" />
         </button>
       }>
@@ -338,7 +346,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
         </MenuItem>
       </Menu>
 
-      <button className="ss-icon-btn" data-on={s?.list === "check"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("check"))} title={`Checklist (${mod}Shift+9)`} aria-label="Checklist" aria-pressed={s?.list === "check"}>
+      <button className="ss-icon-btn" data-on={s?.list === "check"} onMouseDown={keep} onClick={() => run((c) => c.toggleList("check"))} disabled={off} title={`Checklist (${mod}Shift+9)`} aria-label="Checklist" aria-pressed={s?.list === "check"}>
         <Icon name="checklist" />
       </button>
       <ListButton kind="bullet" on={s?.list === "bullet"} preset={s?.preset ?? null} disabled={off} title={`Bulleted list (${mod}Shift+8)`} icon="format_list_bulleted" presets={BULLET_PRESETS.filter((p) => p !== "BULLET_CHECKBOX")}
@@ -346,13 +354,13 @@ export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages,
       <ListButton kind="ordered" on={s?.list === "ordered"} preset={s?.preset ?? null} disabled={off} title={`Numbered list (${mod}Shift+7)`} icon="format_list_numbered" presets={NUMBER_PRESETS}
         onToggle={() => run((c) => c.toggleList("ordered"))} onPreset={(p) => run((c) => (s?.list ? c.setListPreset(p) : c.toggleList("ordered", p)))} />
 
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.outdent())} disabled={s?.list ? (s.level ?? 0) === 0 : (s?.indent ?? 0) === 0} title={`Decrease indent (${mod}[)`} aria-label="Decrease indent">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.outdent())} disabled={off || (s?.list ? (s.level ?? 0) === 0 : (s?.indent ?? 0) === 0)} title={`Decrease indent (${mod}[)`} aria-label="Decrease indent">
         <Icon name="format_indent_decrease" />
       </button>
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.indent())} disabled={s?.list ? (s.level ?? 0) >= MAX_LIST_LEVEL : (s?.indent ?? 0) >= MAX_INDENT} title={`Increase indent (${mod}])`} aria-label="Increase indent">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.indent())} disabled={off || (s?.list ? (s.level ?? 0) >= MAX_LIST_LEVEL : (s?.indent ?? 0) >= MAX_INDENT)} title={`Increase indent (${mod}])`} aria-label="Increase indent">
         <Icon name="format_indent_increase" />
       </button>
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.clearFormatting())} title={`Clear formatting (${mod}\\)`} aria-label="Clear formatting">
+      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.clearFormatting())} disabled={off} title={`Clear formatting (${mod}\\)`} aria-label="Clear formatting">
         <Icon name="format_clear" />
       </button>
 
