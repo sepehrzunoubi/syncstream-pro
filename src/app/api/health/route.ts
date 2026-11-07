@@ -3,8 +3,6 @@ import { Redis } from "@upstash/redis";
 import { Client } from "@upstash/qstash";
 import { getBaseUrl } from "@/lib/base-url";
 import { getQStashBaseUrl } from "@/lib/qstash";
-import { llmConfig } from "@/lib/llm";
-import { styleReady } from "@/lib/style-spec";
 import { hasRedis } from "@/lib/sync-store";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
@@ -67,10 +65,6 @@ export const GET = withRoute(async (req: NextRequest) => {
     QSTASH_NEXT_SIGNING_KEY: describe("QSTASH_NEXT_SIGNING_KEY"),
     CRON_SECRET: describe("CRON_SECRET"),
     ERROR_WEBHOOK_URL: describe("ERROR_WEBHOOK_URL"),
-    LLM_PROVIDER: describe("LLM_PROVIDER"),
-    LLM_BASE_URL: describe("LLM_BASE_URL"),
-    LLM_MODEL: describe("LLM_MODEL"),
-    ANTHROPIC_API_KEY: describe("ANTHROPIC_API_KEY"),
   };
 
   const checks: Record<string, Check> = {};
@@ -130,13 +124,6 @@ export const GET = withRoute(async (req: NextRequest) => {
     detail: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET ? "client id + secret set" : "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing",
   };
 
-  // The Style engine is optional: syncing works without it
-  const llm = llmConfig();
-  checks.styleEngine = {
-    ok: llm.configured && styleReady(),
-    detail: !styleReady() ? "no compiled style yet (run the style lab)" : llm.configured ? llm.detail : `${llm.detail} (the Style engine tab is unavailable)`,
-  };
-
-  const allOk = Object.entries(checks).every(([name, c]) => c.ok || name === "styleEngine");
+  const allOk = Object.values(checks).every((c) => c.ok);
   return NextResponse.json({ ok: allOk, ...summary(), checks, env }, { headers: { "Cache-Control": "no-store" } });
 });

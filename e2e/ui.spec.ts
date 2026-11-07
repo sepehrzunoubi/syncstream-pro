@@ -152,20 +152,25 @@ test.describe("starting a sync", () => {
 
   test("an image whose upload finishes while its document isn't shown has its address after a reload", async ({ app, page, api }) => {
     api.contentMode = "always";
+    api.docs.push({ id: "doc-other-5678", name: "Other notes", modifiedTime: new Date(Date.now() - 60_000).toISOString() });
     await app.open();
     await app.caretAtEnd(CLOSING_TEXT);
     api.imageDelay = 1500;
     const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
     await app.paste({ html: `<meta charset="utf-8"><span>Logo </span><img src="${png}" width="24" height="24">`, text: "Logo " });
     await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("blob:"))).toBe(true);
-    // To the Style engine (the editor goes), where the upload finishes
+    // To another document, where the upload finishes
     await page.waitForTimeout(700);
-    await page.getByRole("link", { name: "Style engine" }).click();
-    await page.waitForURL(/\/dashboard\/style/);
+    await page.getByRole("button", { name: "Target Google Doc" }).click();
+    await page.getByRole("menuitem", { name: /Other notes/ }).click();
+    await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("blob:"))).toBe(false);
     await expect.poll(() => api.uploads.length, { timeout: 8000 }).toBe(1);
     await page.waitForTimeout(300);
-    await page.goto("/dashboard");
+    // Back on the first document after a reload
+    await page.reload();
     await page.waitForFunction(() => !!window.ssEditor);
+    await page.getByRole("button", { name: "Target Google Doc" }).click();
+    await page.getByRole("menuitem", { name: new RegExp(FIXTURE_DOC_NAME) }).click();
     await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("https://images.e2e.test/img/1.png")), { timeout: 8000 }).toBe(true);
     await expect(page.getByText(/Couldn't add a pasted image/)).toHaveCount(0);
   });

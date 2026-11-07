@@ -1,14 +1,12 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
 import { docsUrl, Header, type HeaderUser } from "./header";
-import { WorkspaceTabs } from "./workspace-tabs";
 import { SyncRail } from "./sync-rail";
 import { SyncPanel } from "./sync-panel";
 import { JobPanel } from "./job-panel";
@@ -42,7 +40,6 @@ import { fontsIn, loadFonts } from "./web-fonts";
 import { useSyncJobs } from "./use-sync-jobs";
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
-  const router = useRouter();
   const [snack, setSnack] = useSnack();
   const [scopeError, setScopeError] = useState(false);
   // Documents
@@ -115,7 +112,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor });
   const page = usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent });
   const { zoom, setZoom, canvasRef, pageless, pageSetup, geometry, textWidthPt, scale, effectivePageless } = page;
-  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON, setSnack });
+  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON });
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
   const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
   useEditorDebugHook(editor);
@@ -272,7 +269,6 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         onToggleRail={() => setRailOpen((o) => !o)}
         onReauth={onReauth}
         onSignOut={onSignOut}
-        tabs={<WorkspaceTabs active="sync" />}
         onRename={renameDoc}
         menubar={
           <DocsMenubar
@@ -285,7 +281,6 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             onNewSync={() => setComposing(true)}
             onCreateDoc={createDoc}
             onRefreshDocs={refreshDocs}
-            onOpenStyle={() => router.push("/dashboard/style")}
             docUrl={docUrlId ? docsUrl(docUrlId, headerTab?.id) : null}
             onSignOut={onSignOut}
             onPageSetup={() => dialogs.setPageSetupOpen(true)}

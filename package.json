@@ -10,17 +10,12 @@
     "test": "tsx --test src/**/*.test.ts src/components/**/*.test.ts scripts/**/*.test.ts",
     "fidelity": "tsx scripts/fidelity/run.ts",
     "typecheck": "tsc --noEmit",
-    "style:eval": "tsx scripts/style-lab/run.ts",
-    "style:compile": "tsx scripts/style-lab/compile.ts",
-    "style:fingerprint": "tsx scripts/style-lab/compile.ts --print",
-    "style:mock": "tsx scripts/style-lab/mock-ollama.ts",
     "e2e": "playwright test",
     "e2e:ui": "playwright test --ui",
     "e2e:live": "tsx scripts/e2e-live/run.ts",
     "e2e:live:auth": "tsx scripts/e2e-live/authorize.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
     "@radix-ui/react-dropdown-menu": "^2.1.24",
     "@radix-ui/react-menubar": "^1.1.24",
     "@radix-ui/react-popover": "^1.1.23",
@@ -50,8 +45,7 @@
     "pdfjs-dist": "^6.4.299",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "tailwind-merge": "^3.4.0",
-    "tsparticles": "^3.9.1"
+    "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

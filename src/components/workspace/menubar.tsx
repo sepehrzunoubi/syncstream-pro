@@ -100,8 +100,6 @@ interface DocsMenubarProps {
   onNewSync: () => void;
   onCreateDoc: () => void;
   onRefreshDocs: () => void;
-  /** Open the Style engine tab */
-  onOpenStyle?: () => void;
   docUrl: string | null;
   onSignOut: () => void;
   onPageSetup: () => void;
@@ -165,7 +163,6 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item onSelect={p.onCreateDoc}>Create a new Google Doc</Item>
         <Item onSelect={p.onRefreshDocs}>Refresh document list</Item>
         <Item disabled={!p.docUrl} onSelect={() => p.docUrl && window.open(p.docUrl, "_blank", "noopener")}>Open in Google Docs</Item>
-        {p.onOpenStyle && <Item onSelect={p.onOpenStyle}>Style engine</Item>}
         <Sep />
         <Item onSelect={afterMenu(p.onPageSetup)}>Page setup</Item>
         <Item shortcut={`${mod}P`} onSelect={() => window.print()}>Print</Item>

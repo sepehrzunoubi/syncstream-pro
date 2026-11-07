@@ -30,8 +30,6 @@ interface HeaderProps {
   onSignOut: () => void;
   /** The File / Edit / View / Format menu bar */
   menubar: React.ReactNode;
-  /** The Sync / Style engine switch */
-  tabs?: React.ReactNode;
   /** Rename the open Google Doc (its Drive name) */
   onRename?: (name: string) => Promise<boolean>;
 }
@@ -129,7 +127,6 @@ export function Header(props: HeaderProps) {
         </div>
       </div>
 
-      {props.tabs}
       <button
         className={`ss-btn ${primary.kind === "start" ? "ss-btn-tonal" : "ss-btn-outlined"} max-sm:w-10 max-sm:px-0`}
         onClick={primary.onClick}
@@ -146,7 +143,7 @@ export function Header(props: HeaderProps) {
   );
 }
 
-/** The account picture with the sign-in menu, shared by the Sync and Style engine headers */
+/** The account picture with the sign-in menu, in the header */
 export function AccountMenu({ user, onReauth, onSignOut }: { user: HeaderUser | null; onReauth: () => void; onSignOut: () => void }) {
   return (
     <Menu align="end" label="Account" trigger={
