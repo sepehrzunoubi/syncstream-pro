@@ -8,7 +8,7 @@ import { DEFAULT_GEOMETRY, type PageGeometry } from "./pagination";
 
 // CSS pixels (96 per inch); the ruler snaps to a sixteenth of an inch, like Docs
 const GRID = 6;
-const BLUE = "#0b57d0";
+const BLUE = "#4285f4";
 const px = (pt: number) => (pt * 96) / 72;
 const toPt = (x: number) => Math.round(((x * 72) / 96) * 100) / 100;
 
@@ -85,7 +85,8 @@ export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { edito
     setDrag(null);
   };
 
-  // Inches counted from the start margin, both ways
+  // Inches counted from the start margin, both ways: a number at each inch, a long tick at each half
+  // and a short one at each eighth, hanging from the ruler's bottom line as in Docs
   const origin = rtl ? W - MR : M;
   const ticks: React.ReactNode[] = [];
   for (let k = -Math.ceil(W / 12); k <= Math.ceil(W / 12); k++) {
@@ -94,17 +95,16 @@ export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { edito
     const fromStart = k * 12;
     if (fromStart % 96 === 0) {
       const n = fromStart / 96;
-      if (n !== 0 && x > 0 && x < W) {
+      if (x > 3 && x < W - 3) {
         ticks.push(
-          <text key={`n${k}`} x={x} y={16} textAnchor="middle" fontSize={10} fill="#5f6368" fontFamily="Google Sans, Roboto, Arial, sans-serif">
+          <text key={`n${k}`} x={x} y={10} textAnchor="middle" fontSize={11} fill="#444746" fontFamily="'Google Sans Mono', 'Roboto Mono', monospace">
             {Math.abs(n)}
           </text>
         );
       }
-    } else {
-      const h = fromStart % 48 === 0 ? 6 : 3;
-      ticks.push(<line key={`t${k}`} x1={x + 0.5} x2={x + 0.5} y1={12 - h / 2} y2={12 + h / 2} stroke="#80868b" strokeWidth={1} />);
     }
+    const h = fromStart % 96 === 0 ? 3 : fromStart % 48 === 0 ? 8 : 4;
+    ticks.push(<line key={`t${k}`} x1={x + 0.5} x2={x + 0.5} y1={15 - h} y2={15} stroke="#747775" strokeWidth={1} />);
   }
 
   const xStart = startX(shownStart);
@@ -112,18 +112,16 @@ export function Ruler({ editor, disabled, geometry = DEFAULT_GEOMETRY }: { edito
   const xEnd = endX(shownEnd);
   return (
     <div className="ss-ruler" aria-hidden="true" style={{ width: W }}>
-      <svg ref={svgRef} width={W} height={24} viewBox={`0 0 ${W} 24`} onPointerMove={move} onPointerUp={end} onPointerCancel={() => setDrag(null)}>
-        <rect x={0} y={4} width={W} height={16} fill="#e1e3e1" rx={2} />
-        <rect x={M} y={4} width={Math.max(0, W - M - MR)} height={16} fill="#fff" />
+      <svg ref={svgRef} width={W} height={15} viewBox={`0 0 ${W} 15`} onPointerMove={move} onPointerUp={end} onPointerCancel={() => setDrag(null)}>
         {ticks}
         {!disabled && (
           <g style={{ transition: drag ? undefined : "transform 180ms cubic-bezier(.2,0,0,1)" }}>
             {/* first-line indent: bar */}
-            <rect className="ss-marker" data-marker="first" x={xFirst - 6} y={0} width={12} height={4} rx={1} fill={BLUE} onPointerDown={begin("first")} />
+            <rect className="ss-marker" data-marker="first" x={xFirst - 6} y={2} width={12} height={4} rx={1} fill={BLUE} onPointerDown={begin("first")} />
             {/* start indent (the left, left to right): triangle */}
-            <path className="ss-marker" data-marker="start" d={`M ${xStart - 6} 5 L ${xStart + 6} 5 L ${xStart} 11 Z`} fill={BLUE} onPointerDown={begin("start")} />
+            <path className="ss-marker" data-marker="start" d={`M ${xStart - 6} 7 L ${xStart + 6} 7 L ${xStart} 13 Z`} fill={BLUE} onPointerDown={begin("start")} />
             {/* end indent */}
-            <path className="ss-marker" data-marker="end" d={`M ${xEnd - 6} 5 L ${xEnd + 6} 5 L ${xEnd} 11 Z`} fill={BLUE} onPointerDown={begin("end")} />
+            <path className="ss-marker" data-marker="end" d={`M ${xEnd - 6} 7 L ${xEnd + 6} 7 L ${xEnd} 13 Z`} fill={BLUE} onPointerDown={begin("end")} />
           </g>
         )}
       </svg>

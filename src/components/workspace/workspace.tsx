@@ -1,27 +1,24 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useEditor, type JSONContent } from "@tiptap/react";
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { Toolbar } from "./toolbar";
 import { DocsMenubar } from "./menubar";
 import { Ruler } from "./ruler";
-import { docsUrl, Header, type HeaderUser } from "./header";
-import { WorkspaceTabs } from "./workspace-tabs";
-import { SyncRail } from "./sync-rail";
+import { docsUrl, Header, RENAME_EVENT, type HeaderStatus, type HeaderUser } from "./header";
+import { Sidebar } from "./sidebar";
 import { SyncPanel } from "./sync-panel";
 import { JobPanel } from "./job-panel";
 import { PagedSurface } from "./paged-surface";
 import { fontMetrics, installLineMetrics } from "./line-metrics";
 import { FindBar } from "./find-bar";
-import { Outline } from "./outline";
-import { DocTabsPanel } from "./doc-tabs-panel";
 import { ContextMenu } from "./context-menu";
 import { pageSize } from "@/lib/page-setup";
 import { WordCount } from "./word-count";
 import { measureRemoteImage, uploadImage } from "./image-upload";
 import { isActive, statusLine } from "./job-status";
+import { Icon } from "./icon";
 import { randomSeed } from "@/lib/prng";
 import type { Editor } from "@tiptap/react";
 import type { PublicJob } from "@/lib/sync-store";
@@ -35,14 +32,13 @@ import { useDocsList } from "./use-docs-list";
 import { useDialogs, WorkspaceDialogs } from "./use-dialogs";
 import { useAutosave } from "./use-autosave";
 import { useHeaderFooters } from "./use-header-footers";
-import { usePageSetup } from "./use-page-setup";
+import { stepZoom, usePageSetup } from "./use-page-setup";
 import { useDraft } from "./use-draft";
 import { useDocLoader } from "./use-doc-loader";
 import { fontsIn, loadFonts } from "./web-fonts";
 import { useSyncJobs } from "./use-sync-jobs";
 
 export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | null; onSignOut: () => void; onReauth: () => void }) {
-  const router = useRouter();
   const [snack, setSnack] = useSnack();
   const [scopeError, setScopeError] = useState(false);
   // Documents
@@ -63,6 +59,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const [composing, setComposing] = useState(true);
   const [railOpen, setRailOpen] = useState(false);
   const [wide, setWide] = useState(true);
+  // Docs' word count box is off until asked for (Tools > Word count)
+  const [wordCountOpen, setWordCountOpen] = useState(false);
 
   // Pasted or dropped image files are uploaded, then inserted (the handler is set below)
   const imageFilesRef = useRef<ImageFilesHandler>(() => {});
@@ -100,14 +98,24 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     return () => { alive = false; };
   }, []);
 
-  // Layout: the syncs list is a column on wide screens and a drawer on narrow ones
+  // Layout: the sidebar is a column on wide screens (open unless it was hidden) and a drawer on narrow ones
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1200px)");
-    const apply = () => { setWide(mq.matches); setRailOpen(mq.matches); };
+    const apply = () => { setWide(mq.matches); setRailOpen(mq.matches && readFlag(SIDEBAR_KEY, true)); };
     apply();
+    setWordCountOpen(readFlag(WORD_COUNT_KEY, false));
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
   }, []);
+  const toggleRail = useCallback(() => setRailOpen((o) => { if (wide) writeFlag(SIDEBAR_KEY, !o); return !o; }), [wide]);
+  const toggleWordCount = useCallback(() => setWordCountOpen((o) => { writeFlag(WORD_COUNT_KEY, !o); return !o; }), []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === "KeyC") { e.preventDefault(); toggleWordCount(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleWordCount]);
   useEffect(() => { installLineMetrics(); }, []);
 
   // ── The selected Google Doc, editable ──
@@ -115,7 +123,22 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   const { setSegments, setHfSetup, setFootnotes, footnoteProps, headerFooters, openHeaderFooter } = useHeaderFooters({ editor, refs, saveNow, setSnack, setScopeError, editingHf, setEditingHf, setSegmentEditor });
   const page = usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScopeError, ready, docContent });
   const { zoom, setZoom, canvasRef, pageless, pageSetup, geometry, textWidthPt, scale, effectivePageless } = page;
-  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON, setSnack });
+  // Ctrl + and Ctrl − zoom the document, not the whole window (the browser's own zoom), one of Docs'
+  // zoom levels at a time; Ctrl 0 goes back to fitting the page to the window
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const up = e.key === "+" || e.key === "=" || e.code === "NumpadAdd";
+      const down = e.key === "-" || e.key === "_" || e.code === "NumpadSubtract";
+      if (!up && !down && e.key !== "0" && e.code !== "Numpad0") return;
+      e.preventDefault();
+      if (!up && !down) { setZoom("fit"); return; }
+      setZoom(stepZoom(Math.round(scale * 100), up ? 1 : -1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scale, setZoom]);
+  const draft = useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless: page.setPageless, pageSetup, setPageSetup: page.setPageSetup, docContent, docJSON, setDocJSON });
   const { durationMinutes, setDurationMinutes, breaksMode, setBreaksMode, customBreaks, setCustomBreaks, typoFrequency, setTypoFrequency, startInMinutes, setStartInMinutes, seed, setSeed, draftLoaded } = draft;
   const { loadDocContent } = useDocLoader({ editor, refs, saveNow, setSaveState, draftLoaded, composing, selectedDocId, selectedTabId, setSelectedTabId, docBusy, docContent, setDocContent, setDocJSON, setSnack, setScopeError, setPageSetup: page.setPageSetup, setPageless: page.setPageless, setSegments, setHfSetup, setFootnotes });
   useEditorDebugHook(editor);
@@ -165,30 +188,28 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     editor.chain().focus().insertContent({ type: "image", attrs: { src: url, width, height } }).run();
   }, [editor]);
 
-  // Header
-  const subtitle = focusedJob
-    ? statusLine(focusedJob)
+  // Header: the cloud badge beside the title, with words when something needs attention
+  const status: HeaderStatus | null = focusedJob
+    ? { text: statusLine(focusedJob), icon: "sync" }
     : !selectedDocId
-      ? "Pick the Google Doc to type into"
+      ? { text: "Pick the Google Doc to type into", icon: "cloud_off", visible: true }
       : docContent?.status === "loading"
-        ? "Opening the document"
+        ? { text: "Opening the document", icon: "cloud_sync" }
         : docContent?.status === "failed"
-          ? `Couldn't open this document (${docContent.error}). Your new text will be added at its end. Try File > Refresh.`
+          ? { text: `Couldn't open this document (${docContent.error}). Your new text will be added at its end. Try File > Open > Refresh list.`, icon: "cloud_off", visible: true }
         : docBusy
-          ? "A sync is typing into this document. You can edit it when it finishes."
+          ? { text: "A sync is typing into this document. You can edit it when it finishes.", icon: "lock", visible: true }
           : saveState === "saving"
-            ? "Saving to Google Docs"
+            ? { text: "Saving to Google Docs", icon: "cloud_sync" }
             : saveState === "error"
-              ? "Couldn't save the last change"
+              ? { text: "Couldn't save the last change", icon: "cloud_off", visible: true }
               : docContent?.status === "ready"
-                ? hasText
-                  ? "New text glows. Start sync types it in."
-                  : "Edits save to Google Docs. Type anywhere to add text."
+                ? { text: hasText ? "New text glows. Start sync types it in." : "Edits save to Google Docs. Type anywhere to add text.", icon: "cloud_done" }
                 : draftLoaded
-                  ? "Draft saved on this device"
-                  : "";
+                  ? { text: "Draft saved on this device", icon: "cloud_done" }
+                  : null;
   const primary = focusedJob
-    ? { kind: "new" as const, label: "New sync", onClick: () => setComposing(true) }
+    ? { kind: "back" as const, label: "Back to editing", onClick: () => setComposing(true) }
     : {
         kind: "start" as const,
         label: busy ? "Starting" : startInMinutes > 0 ? "Schedule sync" : "Start sync",
@@ -196,6 +217,37 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         disabled: busy || !hasText || !selectedDocId || docBusy,
         title: docBusy ? "A sync is already typing into this document" : !hasText ? "Type or paste your text first" : !selectedDocId ? "Pick a Google Doc first" : undefined,
       };
+  // New Google Doc: made, then opened on the page, ready to sync, from wherever the workspace is
+  const newDoc = useCallback(() => {
+    setComposing(true);
+    if (!wide) setRailOpen(false);
+    void createDoc();
+  }, [createDoc, wide]);
+  // The browser tab names the document, as Docs' does
+  const tabTitle = focusedJob?.documentName ?? docs.find((d) => d.id === selectedDocId)?.name;
+  useEffect(() => { document.title = tabTitle ? `${tabTitle} - SyncStream` : "SyncStream"; }, [tabTitle]);
+
+  // The page sits where Docs puts it: centred in the window when there's room beside the sidebar and
+  // the panel, otherwise as near the centre as it fits
+  const pageW = effectivePageless ? 0 : geometry.w * scale;
+  const [shift, setShift] = useState(0);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || !pageW) { setShift(0); return; }
+    const place = () => {
+      const r = el.getBoundingClientRect();
+      const centred = r.left + (r.width - pageW) / 2;
+      const want = (window.innerWidth - 22) / 2 - pageW / 2;
+      const lo = r.left + 5;
+      const hi = r.right - 17 - pageW;
+      setShift(hi < lo ? 0 : Math.round(Math.min(hi, Math.max(lo, want)) - centred));
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    window.addEventListener("resize", place);
+    return () => { ro.disconnect(); window.removeEventListener("resize", place); };
+  }, [canvasRef, pageW, railOpen, ready]);
 
   if (!ready) {
     return (
@@ -206,24 +258,21 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
   }
 
   const rail = (
-    <div className="flex h-full flex-col">
-    {!focusedJob && docContent?.tabs && (
-      <DocTabsPanel
-        tabs={docContent.tabs}
-        current={docContent.tabId}
-        disabled={docContent.status === "loading"}
-        onSelect={(id) => { setSelectedTabId(id); if (!wide) setRailOpen(false); }}
-      />
-    )}
-    {dialogs.outlineOpen && !focusedJob && <Outline editor={editor} />}
-    <SyncRail
+    <Sidebar
+      tabs={docContent?.tabs ?? null}
+      currentTab={docContent?.tabId}
+      tabsDisabled={docContent?.status === "loading"}
+      onSelectTab={(id) => { setComposing(true); if (id && id !== docContent?.tabId) setSelectedTabId(id); if (!wide) setRailOpen(false); }}
+      editor={focusedJob ? null : editor}
       jobs={jobs}
       focusedJobId={focusedJobId}
       composing={composing}
-      onCompose={() => { setComposing(true); if (!wide) setRailOpen(false); }}
-      onFocus={(id) => { setFocusedJobId(id); setComposing(false); if (!wide) setRailOpen(false); }}
+      onFocusJob={(id) => { setFocusedJobId(id); setComposing(false); if (!wide) setRailOpen(false); }}
+      onNewDoc={newDoc}
+      isCreatingDoc={isCreatingDoc}
+      onDismissJob={(id) => { void dismissJob(id); }}
+      onHide={toggleRail}
     />
-    </div>
   );
 
   const docUrlId = focusedJob ? focusedJob.documentId : selectedDocId;
@@ -261,18 +310,16 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         docs={docs}
         selectedDocId={selectedDocId}
         onSelectDoc={setSelectedDocId}
-        onCreateDoc={createDoc}
+        onNewDoc={newDoc}
         onRefreshDocs={refreshDocs}
         isCreatingDoc={isCreatingDoc}
         jobDocName={focusedJob?.documentName}
         jobDocId={focusedJob?.documentId}
         tab={headerTab}
-        subtitle={subtitle}
+        status={status}
         primary={primary}
-        onToggleRail={() => setRailOpen((o) => !o)}
         onReauth={onReauth}
         onSignOut={onSignOut}
-        tabs={<WorkspaceTabs active="sync" />}
         onRename={renameDoc}
         menubar={
           <DocsMenubar
@@ -280,32 +327,35 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
             editingDisabled={!!focusedJob}
             zoom={zoom}
             onZoom={setZoom}
-            railOpen={railOpen}
-            onToggleRail={() => setRailOpen((o) => !o)}
-            onNewSync={() => setComposing(true)}
-            onCreateDoc={createDoc}
+            sidebarOpen={railOpen}
+            onToggleSidebar={toggleRail}
+            onNewDoc={newDoc}
+            isCreatingDoc={isCreatingDoc}
+            docs={docs}
+            selectedDocId={selectedDocId}
+            onSelectDoc={(id) => { setComposing(true); setSelectedDocId(id); }}
             onRefreshDocs={refreshDocs}
-            onOpenStyle={() => router.push("/dashboard/style")}
+            onRename={!focusedJob && docs.some((d) => d.id === selectedDocId) ? () => window.dispatchEvent(new Event(RENAME_EVENT)) : null}
             docUrl={docUrlId ? docsUrl(docUrlId, headerTab?.id) : null}
-            onSignOut={onSignOut}
+            wordCountOpen={wordCountOpen}
+            onToggleWordCount={toggleWordCount}
             onPageSetup={() => dialogs.setPageSetupOpen(true)}
             onCustomSpacing={() => dialogs.setSpacingOpen(true)}
             onBorders={() => dialogs.setBordersOpen(true)}
             onHeaderFooter={(which) => { void openHeaderFooter(which); }}
             onColumns={(n) => { if (n === "options") dialogs.setColumnsOpen(true); else editor?.chain().focus().setColumns({ columns: n, textWidth: textWidthPt }).run(); }}
-            outlineOpen={dialogs.outlineOpen}
-            onToggleOutline={() => dialogs.setOutlineOpen((o) => !o)}
             onShortcuts={() => dialogs.setShortcutsOpen(true)}
             docOpen={docContent?.status === "ready"}
           />
         }
       />
 
-      <div className="ss-noprint flex-none px-4 pb-1">
+      <div className="ss-noprint ss-toolbar-wrap">
         <Toolbar
           editor={focusedJob ? viewer : segmentEditor ?? editor}
           disabled={!!focusedJob}
           zoom={zoom}
+          scale={scale}
           onZoom={setZoom}
           onInsertImages={insertImages}
           onInsertImageUrl={insertImageUrl}
@@ -318,9 +368,9 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           {railOpen && wide && (
             <motion.div
               key="rail"
-              className="h-full flex-none overflow-hidden"
+              className="ss-rail-docked h-full flex-none overflow-hidden"
               initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 264, opacity: 1 }}
+              animate={{ width: 296, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               transition={{ duration: 0.22, ease }}
             >
@@ -330,19 +380,19 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
         </AnimatePresence>
         <AnimatePresence>
           {railOpen && !wide && (
-            <motion.div key="drawer" className="fixed inset-0 z-50 flex" role="dialog" aria-label="Syncs">
+            <motion.div key="drawer" className="fixed inset-0 z-50 flex" role="dialog" aria-label="Tabs & outlines">
               <motion.div
-                className="h-full bg-[var(--ss-canvas)] pt-4 shadow-xl"
-                initial={{ x: -280 }}
+                className="h-full bg-[var(--ss-canvas)] shadow-xl"
+                initial={{ x: -300 }}
                 animate={{ x: 0 }}
-                exit={{ x: -280 }}
+                exit={{ x: -300 }}
                 transition={{ type: "spring", stiffness: 420, damping: 40 }}
               >
                 {rail}
               </motion.div>
               <motion.button
                 className="flex-1 bg-black/30"
-                aria-label="Close syncs"
+                aria-label="Close tabs & outlines"
                 onClick={() => setRailOpen(false)}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -353,28 +403,33 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
           )}
         </AnimatePresence>
 
-        <main ref={canvasRef} className="ss-canvas min-w-0 flex-none lg:h-full lg:flex-1">
+        <main ref={canvasRef} className="ss-canvas relative min-w-0 flex-none lg:h-full lg:flex-1">
+          {!railOpen && (
+            <button className="ss-icon-btn ss-side-open ss-noprint" onClick={toggleRail} title="Show tabs & outlines" aria-label="Show tabs & outlines">
+              <Icon name="notes" size={24} />
+            </button>
+          )}
           <FindBar editor={editor} />
           <div className="ss-ruler-row">
-            <div style={{ zoom: scale }}>
+            <div style={{ zoom: scale, position: "relative", left: shift / (scale || 1) }}>
               <Ruler editor={focusedJob ? viewer : segmentEditor ?? editor} disabled={!!focusedJob} geometry={geometry} />
             </div>
           </div>
 
           {focusedJob && (
-            <motion.div key={focusedJob.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease }}>
+            <motion.div key={focusedJob.id} style={{ position: "relative", left: shift }} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease }}>
               <PagedSurface editor={viewer} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} />
             </motion.div>
           )}
           <motion.div
-            style={{ display: focusedJob ? "none" : undefined }}
+            style={{ display: focusedJob ? "none" : undefined, position: "relative", left: shift }}
             initial={{ opacity: 0, y: 12 }}
             animate={focusedJob ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
             transition={{ duration: 0.32, ease }}
           >
             <PagedSurface editor={editor} pageless={effectivePageless} scale={scale} pageColor={pageSetup.color} onMouseDown={onPageMouseDown} headerFooters={docContent?.status === "ready" ? headerFooters : undefined} footnotes={docContent?.status === "ready" ? footnoteProps : undefined} />
           </motion.div>
-          <WordCount editor={focusedJob ? viewer : editor} />
+          {wordCountOpen && <WordCount editor={focusedJob ? viewer : editor} />}
         </main>
 
         <aside className="flex-none bg-[var(--ss-surface)] lg:m-2 lg:mt-0 lg:h-[calc(100%-8px)] lg:w-[360px] lg:overflow-y-auto lg:overflow-x-hidden lg:rounded-2xl" aria-label={focusedJob ? "This sync" : "Sync settings"}>
@@ -431,4 +486,13 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     </div>
     </MotionConfig>
   );
+}
+
+const SIDEBAR_KEY = "ss_sidebar";
+const WORD_COUNT_KEY = "ss_word_count";
+function readFlag(key: string, fallback: boolean): boolean {
+  try { const v = localStorage.getItem(key); return v == null ? fallback : v === "1"; } catch { return fallback; }
+}
+function writeFlag(key: string, on: boolean) {
+  try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* storage blocked */ }
 }

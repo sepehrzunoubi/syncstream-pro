@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useEditorState } from "@tiptap/react";
 import { Icon, type IconName } from "./icon";
+import { ZOOM_LEVELS } from "./use-page-setup";
 import { ColorMenu } from "./color-menu";
 import { ImageMenu, LinkPopover } from "./insert-popovers";
 import { Menu, MenuItem, MenuSeparator } from "./menu";
@@ -53,7 +54,6 @@ function ListButton({ kind, on, preset, disabled, title, icon, presets, onToggle
   );
 }
 
-const ZOOMS = [50, 75, 90, 100, 125, 150];
 const ALIGN_ICONS = { left: "format_align_left", center: "format_align_center", right: "format_align_right", justify: "format_align_justify" } as const;
 const ALIGN_LABELS = { left: "Left", center: "Center", right: "Right", justify: "Justify" } as const;
 const ALIGN_KEYS = { left: "L", center: "E", right: "R", justify: "J" } as const;
@@ -75,6 +75,8 @@ interface ToolbarProps {
   /** A percentage, or "fit" to scale the page to the available width */
   zoom: number | "fit";
   onZoom: (z: number | "fit") => void;
+  /** The page's scale, shown as the zoom when it fits the page to the window */
+  scale?: number;
 }
 
 type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para: Record<string, unknown> } | null;
@@ -86,7 +88,7 @@ type Painter = { marks: { type: string; attrs: Record<string, unknown> }[]; para
  */
 const PAINTED = ["styleName", "textAlign", "dir", "lineSpacing", "indent", "firstLine", "indentEnd", "list", "level", "preset", "box", "keep", "borders", "shading", "spacingMode"];
 
-export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInsertImageUrl, onCustomSpacing }: ToolbarProps) {
+export function Toolbar({ editor, disabled, zoom, onZoom, scale, onInsertImages, onInsertImageUrl, onCustomSpacing }: ToolbarProps) {
   const mod = useModKey();
   const [spellcheck, setSpellcheck] = useState(true);
   const [painter, setPainter] = useState<Painter>(null);
@@ -201,11 +203,9 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         <Icon name="format_paint" />
       </button>
 
-      <span className="ss-sep" />
-
-      <Menu label="Zoom" trigger={<button className="ss-select-btn" title="Zoom">{zoom === "fit" ? "Fit" : `${zoom}%`}<Icon name="arrow_drop_down" /></button>}>
+      <Menu label="Zoom" trigger={<button className="ss-select-btn ss-zoom-btn" title="Zoom"><span className="ss-caption">{zoom === "fit" ? `${Math.round((scale ?? 1) * 100)}%` : `${zoom}%`}</span><Icon name="arrow_drop_down" /></button>}>
         <MenuItem checkable checked={zoom === "fit"} onSelect={() => onZoom("fit")}>Fit</MenuItem>
-        {ZOOMS.map((z) => (
+        {ZOOM_LEVELS.map((z) => (
           <MenuItem key={z} checkable checked={z === zoom} onSelect={() => onZoom(z)}>{z}%</MenuItem>
         ))}
       </Menu>
@@ -213,8 +213,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <span className="ss-sep" />
 
       <Menu keepFocus label="Styles" trigger={
-        <button className="ss-select-btn min-w-[112px] justify-between pr-0.5" title="Styles">
-          {NAMED_STYLES[s?.style ?? "normal"].label}<Icon name="arrow_drop_down" />
+        <button className="ss-select-btn ss-style-btn" title="Styles">
+          <span className="ss-caption truncate">{NAMED_STYLES[s?.style ?? "normal"].label}</span><Icon name="arrow_drop_down" />
         </button>
       }>
         {NAMED_STYLE_ORDER.map((st) => (
@@ -234,8 +234,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <span className="ss-sep" />
 
       <Menu keepFocus label="Font" trigger={
-        <button className="ss-select-btn min-w-[120px] justify-between pr-0.5" title="Font">
-          <span className="max-w-[110px] truncate">{s?.font ?? DEFAULT_FONT}</span><Icon name="arrow_drop_down" />
+        <button className="ss-select-btn ss-font-btn" title="Font">
+          <span className="ss-caption truncate">{s?.font ?? DEFAULT_FONT}</span><Icon name="arrow_drop_down" />
         </button>
       }>
         {FONT_FAMILIES.map((f) => (
@@ -247,7 +247,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
 
       <span className="ss-sep" />
 
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => stepSize(-1)} title="Decrease font size" aria-label="Decrease font size">
+      <button className="ss-icon-btn ss-step-btn" onMouseDown={keep} onClick={() => stepSize(-1)} title="Decrease font size" aria-label="Decrease font size">
         <Icon name="remove" />
       </button>
       <Menu keepFocus label="Font size" trigger={
@@ -275,7 +275,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
           <MenuItem key={sz} onSelect={() => applySize(sz)}>{sz}</MenuItem>
         ))}
       </Menu>
-      <button className="ss-icon-btn" onMouseDown={keep} onClick={() => stepSize(1)} title="Increase font size" aria-label="Increase font size">
+      <button className="ss-icon-btn ss-step-btn" onMouseDown={keep} onClick={() => stepSize(1)} title="Increase font size" aria-label="Increase font size">
         <Icon name="add" />
       </button>
 
@@ -290,9 +290,6 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <button className="ss-icon-btn" data-on={s?.underline} onMouseDown={keep} onClick={() => run((c) => c.toggleUnderline())} title={`Underline (${mod}U)`} aria-label="Underline" aria-pressed={!!s?.underline}>
         <Icon name="format_underlined" />
       </button>
-      <button className="ss-icon-btn" data-on={s?.strike} onMouseDown={keep} onClick={() => run((c) => c.toggleStrike())} title="Strikethrough (Alt+Shift+5)" aria-label="Strikethrough" aria-pressed={!!s?.strike}>
-        <Icon name="format_strikethrough" />
-      </button>
       <ColorMenu editor={editor} kind="text" current={s?.color ?? null} />
       <ColorMenu editor={editor} kind="highlight" current={s?.highlight ?? null} />
 
@@ -304,7 +301,7 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       <span className="ss-sep" />
 
       <Menu keepFocus label="Align" trigger={
-        <button className="ss-select-btn" title="Align">
+        <button className="ss-select-btn ss-align-btn" title="Align">
           <Icon name={alignIcon} className="text-[var(--ss-text-2)]" /><Icon name="arrow_drop_down" />
         </button>
       }>
@@ -318,8 +315,8 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
       </Menu>
 
       <Menu keepFocus label="Line and paragraph spacing" trigger={
-        <button className="ss-select-btn" title="Line & paragraph spacing">
-          <Icon name="format_line_spacing" className="text-[var(--ss-text-2)]" /><Icon name="arrow_drop_down" />
+        <button className="ss-icon-btn" title="Line & paragraph spacing" aria-label="Line & paragraph spacing">
+          <Icon name="format_line_spacing" />
         </button>
       }>
         {LINE_SPACINGS.map((ls) => (
@@ -348,8 +345,6 @@ export function Toolbar({ editor, disabled, zoom, onZoom, onInsertImages, onInse
         onToggle={() => run((c) => c.toggleList("bullet"))} onPreset={(p) => run((c) => (s?.list ? c.setListPreset(p) : c.toggleList("bullet", p)))} />
       <ListButton kind="ordered" on={s?.list === "ordered"} preset={s?.preset ?? null} disabled={off} title={`Numbered list (${mod}Shift+7)`} icon="format_list_numbered" presets={NUMBER_PRESETS}
         onToggle={() => run((c) => c.toggleList("ordered"))} onPreset={(p) => run((c) => (s?.list ? c.setListPreset(p) : c.toggleList("ordered", p)))} />
-
-      <span className="ss-sep" />
 
       <button className="ss-icon-btn" onMouseDown={keep} onClick={() => run((c) => c.outdent())} disabled={s?.list ? (s.level ?? 0) === 0 : (s?.indent ?? 0) === 0} title={`Decrease indent (${mod}[)`} aria-label="Decrease indent">
         <Icon name="format_indent_decrease" />

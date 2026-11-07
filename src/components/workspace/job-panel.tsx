@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import type { PublicJob } from "@/lib/sync-store";
 import { formatClock, formatSpan, formatWait } from "@/lib/format";
 import { isActive, isFinished, progressOf, statusTitle } from "./job-status";
+import { docsUrl } from "./header";
 
 interface JobPanelProps {
   job: PublicJob;
@@ -100,7 +101,7 @@ export function JobPanel({ job, now, sourceWords, busy, canEditAsNew, onPause, o
         {job.status === "paused" && (
           <button className="ss-btn ss-btn-filled" onClick={onResume} disabled={busy}>Resume</button>
         )}
-        <a className="ss-btn ss-btn-outlined" href={`https://docs.google.com/document/d/${job.documentId}/edit`} target="_blank" rel="noopener noreferrer">
+        <a className="ss-btn ss-btn-outlined" href={docsUrl(job.documentId, job.tabId)} target="_blank" rel="noopener noreferrer">
           Open in Google Docs
         </a>
         {isActive(job) && <button className="ss-btn ss-btn-danger" onClick={onCancel} disabled={busy}>Cancel sync</button>}

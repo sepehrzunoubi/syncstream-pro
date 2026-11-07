@@ -210,6 +210,8 @@ test.describe("pasting Google Docs' HTML", () => {
     expect(Array.from(copied.matchAll(/<ol\b([^>]*)>/g), (m) => /start="(\d+)"/.exec(m[1])?.[1] ?? null)).toEqual([null, "2", "4", null]);
     // Taking the bullet off "Step two" (Ctrl+Shift+7): it stays between items of the list, which count on as in Docs
     await app.doc.getByText("Step two").click();
+    // The browser reports the click's selection a moment after mouseup; a key pressed before then acts on the old caret
+    await expect.poll(() => page.evaluate(() => { const v = window.ssEditor!.view; return v.state.doc.resolve(v.state.selection.from).parent.textContent; })).toBe("Step two");
     await page.keyboard.press("Control+Shift+7");
     await expect.poll(shownLabels).toEqual(["1.", "2.", "3.", "1."]);
     // And back: it is an item again, numbered in its place

@@ -961,7 +961,7 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
     const seg = segmentText(target, r.ts, te);
     // The paragraph the text is typed into (or copied for a new one) as the document has it
     seg.format.base = paragraphFromAttrs(nextNl(base, r.bs)?.attrs);
-    segments.push({ at: index[r.bs], mode, ...seg, tokens: [r.ts, te] });
+    segments.push({ at: index[r.bs], mode, text: seg.text, format: seg.format, tokens: [r.ts, te] });
   }
   let text = "";
   const boundaries: number[] = [];
@@ -972,9 +972,22 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
   return { segments, text, boundaries };
 }
 
-/** Text and formatting of target tokens [ts, te): line k is paragraph k */
-function segmentText(target: Tok[], ts: number, te: number): { text: string; format: RichFormat } {
+/**
+ * For each range of target tokens (a segment's `tokens`), the token each character of its text came
+ * from: character k of the segment is typed from token `result[r][k]`. Tokens with no character
+ * (footnote references, table structure, locked blocks) appear in none; a page break inside a
+ * paragraph appears twice (the break and the new paragraph after it). This is how a running sync's
+ * typed character count maps back onto the page.
+ */
+export function segmentCharTokens(targetDoc: EditorNode, ranges: [number, number][]): number[][] {
+  const target = tokenize(targetDoc);
+  return ranges.map(([ts, te]) => segmentText(target, Math.max(0, ts), Math.min(te, target.length)).tok);
+}
+
+/** Text and formatting of target tokens [ts, te): line k is paragraph k; `tok[k]` is the token character k came from */
+function segmentText(target: Tok[], ts: number, te: number): { text: string; format: RichFormat; tok: number[] } {
   let text = "";
+  const tok: number[] = [];
   const runs: RunFormat[] = [];
   const images: ImageRef[] = [];
   const paragraphs: ParagraphFormat[] = [];
@@ -1000,6 +1013,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
       const style = empty ? own : { ...lastStyle };
       delete style.link;
       text += "\n";
+      tok.push(q);
       push(1, style);
       lineStart = true;
       continue;
@@ -1009,9 +1023,10 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     lastStyle = style;
     if (t.k === "pb") {
       text += PAGE_BREAK;
+      tok.push(q);
       push(1, style);
       // Docs puts a page break at the end of a paragraph: what follows it starts a new one
-      if (target[q + 1]?.k !== "nl") { text += "\n"; push(1, style); paragraphs.push(paragraphFromAttrs(nextNl(target, q)?.attrs)); }
+      if (target[q + 1]?.k !== "nl") { text += "\n"; tok.push(q); push(1, style); paragraphs.push(paragraphFromAttrs(nextNl(target, q)?.attrs)); }
       continue;
     }
     if (t.k === "img") {
@@ -1021,6 +1036,7 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
         images.push({ at: text.length, src, w: Math.round(num(t.attrs.width) * 0.75 * 10) / 10, h: Math.round(num(t.attrs.height) * 0.75 * 10) / 10 });
         text += OBJ;
       } else text += " ";
+      tok.push(q);
       push(1, style);
       continue;
     }
@@ -1030,13 +1046,14 @@ function segmentText(target: Tok[], ts: number, te: number): { text: string; for
     const atParagraphStart = q === 0 || target[q - 1].k === "nl" || target[q - 1].k === "block" || target[q - 1].k === "st";
     if (ch === "\t" && paragraphs[paragraphs.length - 1]?.list && atParagraphStart) ch = " ";
     text += ch;
+    tok.push(q);
     push(1, style);
   }
   if (lineStart) paragraphs.push(paragraphFromAttrs(nextNl(target, te)?.attrs));
   if (!paragraphs.length) paragraphs.push({ ...DEFAULT_PARAGRAPH });
   const format: RichFormat = { v: 1, paragraphs, runs };
   if (images.length) format.images = images;
-  return { text, format };
+  return { text, format, tok };
 }
 
 // ── Reloading ───────────────────────────────────────────────────────────────

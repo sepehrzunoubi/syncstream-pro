@@ -13,7 +13,7 @@ test.describe("workspace", () => {
 
   test("renaming the document posts the new name and shows it", async ({ app, page, api }) => {
     await app.open();
-    await page.getByRole("button", { name: "Rename document" }).click();
+    await app.menu("File", "Rename");
     const input = page.locator(".ss-title-input");
     await expect(input).toBeFocused();
     await input.fill("Renamed Field Notes");
@@ -57,13 +57,43 @@ test.describe("workspace", () => {
     await expect(app.doc).toContainText(CLOSING_TEXT + "!");
   });
 
-  test("the Edit menu opens Find and replace, the View menu hides the outline", async ({ app, page }) => {
+  test("Ctrl + and Ctrl − zoom the document one Docs level at a time, Ctrl 0 fits it again; the rest of the window stays", async ({ app, page }) => {
+    await app.open();
+    const caption = page.locator(".ss-zoom-btn .ss-caption");
+    const sheetWidth = () => page.locator(".ss-sheet").first().evaluate((e) => Math.round(e.getBoundingClientRect().width));
+    const toolbarHeight = () => page.locator(".ss-toolbar").evaluate((e) => e.getBoundingClientRect().height);
+    // At 1440 the page fits between the side panels at 88%
+    await expect(caption).toHaveText("88%");
+    const before = await toolbarHeight();
+    // The key reaches the page, not the browser's zoom
+    const prevented = page.evaluate(() => new Promise<boolean>((done) => { const on = (e: KeyboardEvent) => { if (e.key === "Control") return; window.removeEventListener("keydown", on); setTimeout(() => done(e.defaultPrevented)); }; window.addEventListener("keydown", on); }));
+    await page.keyboard.press("Control+Equal");
+    expect(await prevented).toBe(true);
+    await expect(caption).toHaveText("90%");
+    await expect.poll(sheetWidth).toBe(Math.round(816 * 0.9));
+    await page.keyboard.press("Control+Equal");
+    await expect(caption).toHaveText("100%");
+    await expect.poll(sheetWidth).toBe(816);
+    await page.keyboard.press("Control+Minus");
+    await page.keyboard.press("Control+Minus");
+    await expect(caption).toHaveText("75%");
+    await expect.poll(sheetWidth).toBe(612);
+    // Past the smallest level it stays there
+    await page.keyboard.press("Control+Minus");
+    await page.keyboard.press("Control+Minus");
+    await expect(caption).toHaveText("50%");
+    await page.keyboard.press("Control+0");
+    await expect(caption).toHaveText("88%");
+    expect(await toolbarHeight()).toBe(before);
+  });
+
+  test("the Edit menu opens Find and replace, the View menu hides tabs & outlines", async ({ app, page }) => {
     await app.open();
     await app.menu("Edit", "Find and replace");
     await expect(page.getByRole("dialog", { name: "Find and replace" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ss-outline")).toBeVisible();
-    await app.menu("View", "Show outline");
+    await app.menu("View", "Show tabs & outlines");
     await expect(page.locator(".ss-outline")).toHaveCount(0);
   });
 });
@@ -152,20 +182,25 @@ test.describe("starting a sync", () => {
 
   test("an image whose upload finishes while its document isn't shown has its address after a reload", async ({ app, page, api }) => {
     api.contentMode = "always";
+    api.docs.push({ id: "doc-other-5678", name: "Other notes", modifiedTime: new Date(Date.now() - 60_000).toISOString() });
     await app.open();
     await app.caretAtEnd(CLOSING_TEXT);
     api.imageDelay = 1500;
     const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
     await app.paste({ html: `<meta charset="utf-8"><span>Logo </span><img src="${png}" width="24" height="24">`, text: "Logo " });
     await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("blob:"))).toBe(true);
-    // To the Style engine (the editor goes), where the upload finishes
+    // To another document, where the upload finishes
     await page.waitForTimeout(700);
-    await page.getByRole("link", { name: "Style engine" }).click();
-    await page.waitForURL(/\/dashboard\/style/);
+    await page.getByRole("button", { name: "Target Google Doc" }).click();
+    await page.getByRole("menuitem", { name: /Other notes/ }).click();
+    await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("blob:"))).toBe(false);
     await expect.poll(() => api.uploads.length, { timeout: 8000 }).toBe(1);
     await page.waitForTimeout(300);
-    await page.goto("/dashboard");
+    // Back on the first document after a reload
+    await page.reload();
     await page.waitForFunction(() => !!window.ssEditor);
+    await page.getByRole("button", { name: "Target Google Doc" }).click();
+    await page.getByRole("menuitem", { name: new RegExp(FIXTURE_DOC_NAME) }).click();
     await expect.poll(() => page.evaluate(() => JSON.stringify(window.ssEditor!.getJSON()).includes("https://images.e2e.test/img/1.png")), { timeout: 8000 }).toBe(true);
     await expect(page.getByText(/Couldn't add a pasted image/)).toHaveCount(0);
   });
@@ -234,10 +269,27 @@ test.describe("starting a sync", () => {
     expect(api.edits).toEqual([]);
     // The running view: the sync's panel, a caret where typing is, the untyped text marked
     await expect(page.getByRole("complementary", { name: "This sync" })).toBeVisible();
-    await expect(page.locator("header").getByRole("button", { name: "New sync" })).toBeVisible();
+    await expect(page.locator("header").getByRole("button", { name: "Back to editing" })).toBeVisible();
     await expect(page.locator(".ss-caret")).toHaveCount(1);
     await expect(page.locator(".ss-untyped").first()).toBeAttached();
     await expect(page.getByRole("status").filter({ hasText: "Sync started" })).toBeVisible();
+  });
+
+  test("the live page greys out exactly what is still to type, after a footnote too", async ({ app, page, api }) => {
+    await app.open();
+    // The closing paragraph comes after the footnote's: its positions used to be off by one
+    await app.caretAtEnd(CLOSING_TEXT);
+    const added = " Typed later.";
+    await page.keyboard.type(added);
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect.poll(() => api.starts.length).toBe(1);
+    const untyped = () => page.locator(".ss-untyped").evaluateAll((els) => els.map((e) => e.textContent).join(""));
+    await expect.poll(untyped).toBe(added);
+    // The sync has typed 6 characters: the rest is grey, and the caret sits before it
+    api.jobs = api.jobs.map((j) => ({ ...j, charsSent: 6 }));
+    await expect.poll(untyped, { timeout: 10_000 }).toBe(added.slice(6));
+    const caretNext = await page.locator(".ss-caret").evaluate((c) => c.nextSibling?.textContent ?? c.parentElement?.nextSibling?.textContent ?? "");
+    expect(caretNext.startsWith(added.slice(6, 8))).toBe(true);
   });
 
   test("a sync that is already running shows up in the rail and pauses on request", async ({ app, page, api }) => {

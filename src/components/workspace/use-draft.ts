@@ -10,14 +10,13 @@ import type { EditorNode } from "@/lib/rich-text";
 import { parsePageSetup, type PageSetup } from "@/lib/page-setup";
 import { hasPending } from "@/lib/doc-model";
 import { randomSeed } from "@/lib/prng";
-import { takeStyleHandoff } from "@/components/style/style-store";
 import type { BreaksMode } from "./sync-panel";
 import { loadDocument } from "./doc-sync";
-import { markAllAdded, plainToDoc } from "./doc-json";
+import { markAllAdded } from "./doc-json";
 import { loadDraft, readPageDefault, saveDraft, writeAdditions, type Draft } from "./storage";
 import { shownTab, type DocContent, type DocRefs, type Setter } from "./doc-state";
 
-export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless, pageSetup, setPageSetup, docContent, docJSON, setDocJSON, setSnack }: {
+export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, selectedTabId, zoom, setZoom, pageless, setPageless, pageSetup, setPageSetup, docContent, docJSON, setDocJSON }: {
   editor: Editor | null;
   refs: DocRefs;
   selectedDocId: string;
@@ -32,7 +31,6 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
   docContent: DocContent | null;
   docJSON: JSONContent | null;
   setDocJSON: Setter<JSONContent | null>;
-  setSnack: Setter<string | null>;
 }) {
   const { legacyTextRef, revisionRef } = refs;
   const [durationMinutes, setDurationMinutes] = useState<number | null>(null);
@@ -66,16 +64,6 @@ export function useDraft({ editor, refs, selectedDocId, setSelectedDocId, select
     else if (def) { setPageSetup(def.setup); if (typeof d.pageless !== "boolean") setPageless(def.pageless); }
     setDraftLoaded(true);
   }, [editor, draftLoaded, legacyTextRef, setDocJSON, setSelectedDocId, setZoom, setPageless, setPageSetup]);
-
-  // Text handed over from the Style engine tab goes in at the end, as new text to sync
-  useEffect(() => {
-    if (!editor || !draftLoaded) return;
-    const text = takeStyleHandoff();
-    if (!text) return;
-    editor.chain().focus("end").insertContent(plainToDoc(text).content ?? []).run();
-    setDocJSON(editor.getJSON());
-    setSnack("The text from the Style engine was added. It glows until a sync types it in.");
-  }, [editor, draftLoaded, setDocJSON, setSnack]);
 
   useEffect(() => {
     if (!draftLoaded) return;

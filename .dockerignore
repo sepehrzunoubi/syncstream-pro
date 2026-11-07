@@ -5,5 +5,4 @@ node_modules
 *.log
 .env*
 !.env.example
-style-data/*/results
 public/client_secret*.json

@@ -184,9 +184,6 @@ export class FakeGoogle {
           this.docs = this.docs.map((d) => (d.id === b.documentId ? { ...d, name: b.name } : d));
           return json(route, { name: b.name });
         }
-        // The Style engine's tab, when a test goes there: not set up
-        case "/api/style/status":
-          return json(route, { llm: { provider: "none", model: "", configured: false, reachable: false, detail: "" }, style: { ready: false, name: "", samples: 0, candidateId: null, builtAt: null, evaluation: null } });
         case "/api/sync/list":
           return json(route, { jobs: this.jobs, now: Date.now() });
         case "/api/sync/start": {
@@ -304,7 +301,7 @@ export class App {
 
   /** The line under the document name: what the workspace is doing */
   subtitle() {
-    return this.page.locator("header .text-\\[12px\\]").first();
+    return this.page.locator("header [data-ss-status-text]").first();
   }
 
   /** The editor's document as JSON */

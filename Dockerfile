@@ -1,4 +1,4 @@
-# SyncStream Pro, self-hosted next to a local model (see docker-compose.yml).
+# SyncStream Pro, self-hosted (see docker-compose.yml).
 # Multi-stage: install, build, then a small image with Next's standalone output.
 
 FROM node:22-alpine AS deps
