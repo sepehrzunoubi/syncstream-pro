@@ -3,6 +3,8 @@ import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test, CLOSING_TEXT, DOC, FIXTURE_DOC_ID, FIXTURE_DOC_NAME, tabContent, type App } from "./fixtures";
 import { importPdfForEditor, type PdfImportBody } from "../src/lib/pdf-route";
+import { importDoc } from "../src/lib/doc-import";
+import { EMPTY_DOC } from "./fixtures/empty-doc";
 
 // Import PDF: a PDF read on the server comes onto the page as new text, glowing, with the PDF's page
 // setup and header on a blank page; a page with content gets a new Google Doc, the PDF after what's
@@ -135,6 +137,80 @@ test.describe("Import PDF", () => {
     await expect(page.locator(".ss-hf", { hasText: "Project Atlas" })).toHaveCount(0);
     // An empty page again: the card is back up front
     await expect(card).toBeVisible();
+  });
+
+  test("a blank doc that has a header of its own keeps it: the dialog doesn't offer the PDF's, and none is made", async ({ app, page, api }) => {
+    // An empty body under a header that says "Our letterhead"
+    const line = (t: string, at: number) => ({ startIndex: at, endIndex: at + t.length + 1, paragraph: { elements: [{ startIndex: at, endIndex: at + t.length + 1, textRun: { content: `${t}\n`, textStyle: {} } }], paragraphStyle: { namedStyleType: "NORMAL_TEXT" } } });
+    api.content = importDoc({ ...EMPTY_DOC, documentStyle: { ...EMPTY_DOC.documentStyle, defaultHeaderId: "kix.own" }, headers: { "kix.own": { headerId: "kix.own", content: [line("Our letterhead", 0)] } } } as never);
+    api.revision = api.content.revisionId;
+    await app.open({ named: false });
+    await expect(page.locator(".ss-hf").first()).toContainText("Our letterhead");
+    const pdf = await readFixture("headerfooter-tagged");
+    await fakeImport(page, pdf);
+    await headersMade(app);
+    await panel(page).getByRole("button", { name: "Import PDF" }).click();
+    await choosePdf(page, "headerfooter-tagged");
+    // What the PDF has, and what this doc takes of it: its page setup, not its header
+    await expect(dialog(page)).toContainText("Header on every page");
+    await expect(dialog(page).locator(".ss-pdf-dest-note")).toHaveText("This doc is empty, so the PDF goes straight onto the page, with its page size and margins. You can edit it, add breaks, then start the sync.");
+    await dialog(page).getByRole("button", { name: "Put it on the page" }).click();
+    await expect(snackbar(page)).toContainText("PDF imported. Check it over, then start the sync.");
+    await expect.poll(() => api.requests("updateDocumentStyle").length).toBe(1);
+    expect(api.requests("createHeader")).toEqual([]);
+    await expect(page.locator(".ss-hf").first()).toContainText("Our letterhead");
+  });
+
+  test("a page setup Google Docs refuses is said, not covered by \"PDF imported\"", async ({ app, page, api }) => {
+    api.content = tabContent([""]);
+    await app.open({ named: false });
+    // (an A4 PDF: this doc is Letter)
+    const pdf = await readFixture("headerfooter-tagged");
+    await fakeImport(page, pdf);
+    await headersMade(app);
+    // Someone changed the document a moment ago: Google refuses the page setup
+    await page.route(/\/api\/docs\/edit$/, async (route) => {
+      const body = route.request().postDataJSON() as { requests: Record<string, unknown>[] };
+      if (!body.requests.some((r) => "updateDocumentStyle" in r)) return route.fallback();
+      return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Couldn't save that change to Google Docs.", code: "conflict" }) });
+    });
+    await panel(page).getByRole("button", { name: "Import PDF" }).click();
+    await choosePdf(page, "headerfooter-tagged");
+    await dialog(page).getByRole("button", { name: "Put it on the page" }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect.poll(() => pendingText(app)).toBe(pdfText(pdf.body));
+    await expect(snackbar(page)).toContainText("PDF imported, without its page size and margins: Google Docs didn't take them. Check it over, then start the sync.");
+    // Undo still takes the PDF off the page
+    await snackbar(page).getByRole("button", { name: "Undo" }).click();
+    await expect.poll(() => app.text()).toBe("");
+  });
+
+  test("Undo, then straight away another document: the PDF's header still goes from the document it was made in", async ({ app, page, api }) => {
+    api.content = tabContent([""]);
+    const other = "doc-other-pdf-0000";
+    api.docs.push({ id: other, name: "Other notes", modifiedTime: new Date(Date.now() - 60_000).toISOString() });
+    api.contents[other] = tabContent(["Other notes, already in the document."]);
+    api.contentDelay[other] = 3000;
+    await app.open({ named: false });
+    const pdf = await readFixture("headerfooter-tagged");
+    await fakeImport(page, pdf);
+    await headersMade(app);
+    await panel(page).getByRole("button", { name: "Import PDF" }).click();
+    await choosePdf(page, "headerfooter-tagged");
+    await dialog(page).getByRole("button", { name: "Put it on the page" }).click();
+    await expect.poll(() => api.requests("createHeader").length).toBe(1);
+    // Google takes a moment over the page setup going back
+    await page.route(/\/api\/docs\/edit$/, async (route) => {
+      const body = route.request().postDataJSON() as { requests: Record<string, unknown>[] };
+      if (body.requests.some((r) => "updateDocumentStyle" in r)) await new Promise((r) => setTimeout(r, 1500));
+      return route.fallback();
+    });
+    await snackbar(page).getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("button", { name: "Target Google Doc" }).click();
+    await page.getByRole("menuitem", { name: /Other notes/ }).click();
+    await expect.poll(() => api.edits.filter((e) => e.requests.some((r) => "deleteHeader" in r)).map((e) => [e.documentId, e.requests])).toEqual([[FIXTURE_DOC_ID, [{ deleteHeader: { headerId: "kix.hdr1" } }]]]);
+    await expect(app.doc).toContainText("Other notes, already in the document.");
+    expect(api.edits.filter((e) => e.documentId === other)).toEqual([]);
   });
 
   test("a doc with content: three choices, a new Google Doc first; Add after what's here keeps every word and adds the PDF as new text", async ({ app, page, api }) => {

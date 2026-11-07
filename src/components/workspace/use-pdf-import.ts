@@ -56,6 +56,18 @@ export function isBlankDoc(doc: EditorNode | JSONContent | null | undefined): bo
 const flat = (blocks: EditorNode[]): EditorNode[] => blocks.flatMap((b) => (b.type === "columnSection" ? flat(b.content ?? []) : [b]));
 const EMPTY_PARAGRAPH: EditorNode = { type: "paragraph", attrs: {}, content: [] };
 
+/**
+ * Docs has a paragraph before every table: one it makes, if there is none. A PDF that starts with a
+ * table, put at the start of a document (or after a block kept there), starts with that empty line,
+ * as Docs will have it; else the save would try to take Docs' line out again, and Docs refuses.
+ */
+const lineBeforeTable = (nodes: EditorNode[]): EditorNode[] => (nodes[0]?.type === "table" ? [EMPTY_PARAGRAPH, ...nodes] : nodes);
+
+/** A blank document with the PDF's content */
+export function blankWithPdf(nodes: EditorNode[]): EditorNode {
+  return { type: "doc", content: groupColumns(lineBeforeTable(nodes)) };
+}
+
 /** The document with the PDF's content after what it has (in its last section) */
 export function appendPdf(doc: EditorNode, nodes: EditorNode[]): EditorNode {
   return { type: "doc", content: groupColumns([...(doc.content ?? []), ...nodes]) };
@@ -64,7 +76,9 @@ export function appendPdf(doc: EditorNode, nodes: EditorNode[]): EditorNode {
 /**
  * The PDF's content in place of the document's. What the page can't change (section breaks, smart
  * chips, a table of contents) stays, each after an empty paragraph as Docs needs it; everything else
- * goes, and the save deletes it from the Google Doc.
+ * goes, and the save deletes it from the Google Doc. Kept blocks that were next to each other (the
+ * entries of a table of contents, smart chips one after another) stay next to each other: Docs had
+ * them so, and a paragraph between them would be a new one.
  */
 export function replaceWithPdf(doc: EditorNode, nodes: EditorNode[]): EditorNode {
   const kept: EditorNode[] = [];
@@ -75,14 +89,14 @@ export function replaceWithPdf(doc: EditorNode, nodes: EditorNode[]): EditorNode
       continue;
     }
     const first = b.attrs?.kind === "section" && b.attrs?.first === true;
-    if (!first && (!kept.length || kept[kept.length - 1].attrs?.locked)) {
+    if (!first && before) {
       // The paragraph before it, emptied (it keeps its style, so nothing else about it changes)
-      kept.push(before?.type === "paragraph" ? { ...before, content: [] } : EMPTY_PARAGRAPH);
+      kept.push(before.type === "paragraph" ? { ...before, content: [] } : EMPTY_PARAGRAPH);
     }
     kept.push(b);
     before = null;
   }
-  return { type: "doc", content: groupColumns([...kept, ...nodes]) };
+  return { type: "doc", content: groupColumns([...kept, ...lineBeforeTable(nodes)]) };
 }
 
 /** A header's or footer's content as it is saved: written straight to the new segment */
@@ -222,8 +236,8 @@ export function usePdfImport({ editor, refs, docContent, selectedDocId, docKey, 
   saveNow: () => Promise<boolean>;
   pageSetup: PageSetup;
   pageless: boolean;
-  /** Page setup as the dialog applies it: shown here and written to the Google Doc */
-  applyPageSetup: (setup: PageSetup, pageless: boolean) => Promise<void>;
+  /** Page setup as the dialog applies it: shown here and written to the Google Doc; false when Google Docs refused it */
+  applyPageSetup: (setup: PageSetup, pageless: boolean) => Promise<boolean>;
   /** The document has a header (footer) already: the PDF's isn't added then */
   hasHeader: boolean;
   hasFooter: boolean;
@@ -410,23 +424,26 @@ export function usePdfImport({ editor, refs, docContent, selectedDocId, docKey, 
     const setup = latest.current.pageSetup;
     const wasPageless = latest.current.pageless;
     const startsAt = mode === "append" ? editor.state.doc.content.size : 0;
-    const target = mode === "append" ? appendPdf(before, r.nodes) : mode === "replace" ? replaceWithPdf(before, r.nodes) : { type: "doc", content: groupColumns(r.nodes) };
+    const target = mode === "append" ? appendPdf(before, r.nodes) : mode === "replace" ? replaceWithPdf(before, r.nodes) : blankWithPdf(r.nodes);
     if (!show(target)) {
       setStage({ kind: "result", file, result: r, choice: mode === "blank" ? "new" : mode, confirming: false, error: "Couldn't put this PDF on the page. Try another PDF." });
       return;
     }
     let failed = false;
+    let setupOk = true;
     let created: UndoState["created"] = {};
     // The page takes the PDF's paper and margins, as Page setup would (one added at the end keeps this one's)
     if (mode !== "append") {
-      await latest.current.applyPageSetup(r.pageSetup, false);
+      setupOk = await latest.current.applyPageSetup(r.pageSetup, false);
       ({ created, failed } = await addSegments(r, content));
     }
     undoRef.current = mode === "replace" ? null : { key, mode, before, setup, pageless: wasPageless, created };
     setCanUndo(mode !== "replace");
     setOpen(false);
     setStage({ kind: "pick" });
-    setSnack(failed ? "PDF imported, without its header or footer: Google Docs didn't take them. Check it over, then start the sync." : PDF_IMPORTED);
+    // This message takes the place of Google's refusal, so it says what didn't go in
+    const missed = [!setupOk && "page size and margins", failed && "header or footer"].filter(Boolean).join(" or its ");
+    setSnack(missed ? `PDF imported, without its ${missed}: Google Docs didn't take them. Check it over, then start the sync.` : PDF_IMPORTED);
     // The caret goes to where the PDF starts, once the dialog has given focus back
     setTimeout(() => {
       if (editor.isDestroyed) return;
@@ -481,21 +498,25 @@ export function usePdfImport({ editor, refs, docContent, selectedDocId, docKey, 
     const u = undoRef.current;
     undoRef.current = null;
     setCanUndo(false);
-    if (!u || !editor || u.key !== latest.current.docKey || refs.docContentRef.current?.status !== "ready") return;
+    const content = refs.docContentRef.current;
+    if (!u || !editor || u.key !== latest.current.docKey || content?.status !== "ready") return;
     show(u.before);
     setSnack(null);
     if (u.mode !== "blank") return;
     await latest.current.applyPageSetup(u.setup, u.pageless);
-    const content = refs.docContentRef.current;
     const requests = [
       ...(u.created.header ? [{ deleteHeader: { headerId: u.created.header } }] : []),
       ...(u.created.footer ? [{ deleteFooter: { footerId: u.created.footer } }] : []),
     ];
-    if (!requests.length || content?.status !== "ready") return;
-    await latest.current.saveNow();
-    const { ok, data } = await postJson<{ revisionId?: string }>("/api/docs/edit", { documentId: content.docId, revisionId: refs.revisionRef.current, requests, ...tabFields(content) });
+    if (!requests.length) return;
+    // The header and footer go from the document and tab they were made in, even when another one
+    // has opened meanwhile (then without a revision: the page knows only the open one's)
+    const shown = () => { const c = refs.docContentRef.current; return c?.status === "ready" && c.docId === content.docId && (c.tabId ?? null) === (content.tabId ?? null); };
+    const here = shown();
+    if (here) await latest.current.saveNow();
+    const { ok, data } = await postJson<{ revisionId?: string }>("/api/docs/edit", { documentId: content.docId, ...(here ? { revisionId: refs.revisionRef.current } : {}), requests, ...tabFields(content) });
     if (!ok) { setSnack("Couldn't remove the PDF's header and footer. Remove them from Insert > Headers & footers."); return; }
-    if (data.revisionId) refs.revisionRef.current = data.revisionId;
+    if (data.revisionId && shown()) refs.revisionRef.current = data.revisionId;
     setSegments((s) => ({
       ...s,
       ...(u.created.header && s.header?.id === u.created.header ? { header: null } : {}),
@@ -506,7 +527,10 @@ export function usePdfImport({ editor, refs, docContent, selectedDocId, docKey, 
   /** The snackbar's action while it says the PDF was imported */
   const snackAction = useCallback((snack: string | null) => (snack?.startsWith("PDF imported") && canUndo ? { label: "Undo", run: () => { void undo(); } } : null), [canUndo, undo]);
 
-  return { open, stage, blank, pageBlank, disabledReason, openDialog, close, pick, cancelReading, choose, confirmReplace, apply, snackAction };
+  /** The header and footer the document has already: the PDF's aren't added where it has one */
+  const docHas = useMemo(() => ({ header: hasHeader, footer: hasFooter }), [hasHeader, hasFooter]);
+
+  return { open, stage, blank, pageBlank, docHas, disabledReason, openDialog, close, pick, cancelReading, choose, confirmReplace, apply, snackAction };
 }
 
 export type PdfImport = ReturnType<typeof usePdfImport>;

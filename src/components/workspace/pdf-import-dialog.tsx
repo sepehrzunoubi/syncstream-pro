@@ -98,6 +98,8 @@ export function PdfImportDialog({ pdf }: { pdf: PdfImport }) {
     const r = stage.result;
     const name = pdfTitle(stage.file.name);
     const extras = [r.header && "header", r.footer && "footer"].filter(Boolean).join(" and ");
+    // (a document with a header or footer of its own keeps it)
+    const added = [r.header && !pdf.docHas.header && "header", r.footer && !pdf.docHas.footer && "footer"].filter(Boolean).join(" and ");
     body = (
       <>
         <FileRow file={stage.file} />
@@ -119,7 +121,7 @@ export function PdfImportDialog({ pdf }: { pdf: PdfImport }) {
           </div>
         )}
         {pdf.blank ? (
-          <p className="ss-pdf-dest-note">This doc is empty, so the PDF goes straight onto the page, with its page size and margins{extras ? ` and its ${extras}` : ""}. You can edit it, add breaks, then start the sync.</p>
+          <p className="ss-pdf-dest-note">This doc is empty, so the PDF goes straight onto the page, with its page size and margins{added ? ` and its ${added}` : ""}. You can edit it, add breaks, then start the sync.</p>
         ) : confirming ? (
           <p className="ss-pdf-confirm">This deletes everything in this document from Google Docs now. The PDF&apos;s content is then typed in by the sync.</p>
         ) : (

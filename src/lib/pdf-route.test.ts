@@ -109,6 +109,31 @@ test("a PDF that takes too long answers 504; the reader's own error codes pass t
   assert.equal(problems.length, 1);
 });
 
+test("a PDF with very many images: storing them stops in time, and the ones not stored are left out, said in the warnings", async () => {
+  // The function is allowed 60 s, the reading 45 s of them: storing has the rest, not as long as it takes
+  const count = 400;
+  const result: PdfImportResult = {
+    nodes: [{ type: "paragraph", content: Array.from({ length: count }, (_, i) => ({ type: "image", attrs: { src: `pdf-image:img${i + 1}`, width: 10, height: 10 }, marks: [{ type: PENDING_MARK }] })) }],
+    pageSetup: { paper: "letter", orientation: "portrait", margins: { top: 72, bottom: 72, left: 72, right: 72 } } as PdfImportResult["pageSetup"],
+    images: Array.from({ length: count }, (_, i) => ({ key: `img${i + 1}`, mime: "image/png" as const, data: new Uint8Array([1, 2, 3]), width: 10, height: 10 })),
+    fonts: [], pages: 1, tagged: false, warnings: [],
+    stats: { paragraphs: 1, headings: 0, listItems: 0, tables: 0, images: count, links: 0 },
+  };
+  let stored = 0;
+  // A store that takes 20 ms an image: 400 of them, 4 at a time, would take 2 s
+  const store = async () => { await new Promise((r) => setTimeout(r, 20)); return `id${++stored}`; };
+  const began = Date.now();
+  const body = ok(await importPdfForEditor(fixture("images-tagged"), { baseUrl: BASE, read: async () => result, store, storeTimeoutMs: 200 }));
+  const took = Date.now() - began;
+  assert.ok(took < 1000, `answered after ${took} ms`);
+  const placed = images(body.nodes);
+  assert.ok(placed.length > 0 && placed.length < count, `${placed.length} placed`);
+  assert.equal(placed.length, stored);
+  assert.ok(placed.every((i) => String(i.attrs?.src).startsWith(`${BASE}/api/images/`)));
+  assert.equal(body.stats.images, placed.length);
+  assert.deepEqual(body.warnings, ["An image in this PDF couldn't be copied."]);
+});
+
 test("placeImages: nested images (table cells) are placed; other images stay as they are", () => {
   const img = (src: string): EditorNode => ({ type: "image", attrs: { src, width: 10, height: 10 }, marks: [{ type: PENDING_MARK }] });
   const nodes: EditorNode[] = [

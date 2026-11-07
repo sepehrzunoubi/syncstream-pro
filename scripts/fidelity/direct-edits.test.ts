@@ -9,6 +9,7 @@ import { getSchema } from "@tiptap/core";
 import { EditorState, TextSelection, type Command } from "@tiptap/pm/state";
 import { addColumnAfter, addRowAfter, deleteColumn, deleteRow } from "@tiptap/pm/tables";
 import { editorExtensions } from "../../src/components/workspace/extensions";
+import { blankWithPdf, replaceWithPdf } from "../../src/components/workspace/use-pdf-import";
 import { importDoc } from "../../src/lib/doc-import";
 import { additions, adoptStructure, directEdits } from "../../src/lib/doc-model";
 import { EDIT_REQUESTS } from "../../src/lib/docs-requests";
@@ -292,4 +293,27 @@ test("deleting the document's last paragraph leaves the one before it with its o
   ], (base) => [base[0]]);
   assert.deepEqual(text(target), ["Title"]);
   assert.deepEqual(after.map((p) => [(p.content ?? []).map((c) => c.text ?? "").join(""), p.attrs?.styleName]), [["Title", "h1"]]);
+});
+
+test("Import PDF: a PDF that starts with a table, put on a blank page or in place of a document's content, is saved (Docs has a paragraph before every table)", async () => {
+  const cell = (text: string): EditorNode => ({ type: "tableCell", attrs: { colspan: 1, rowspan: 1 }, content: [{ type: "paragraph", attrs: {}, content: [{ type: "text", text, marks: [{ type: "syncAdd" }] }] }] });
+  const pdf: EditorNode[] = [
+    { type: "table", attrs: {}, content: [{ type: "tableRow", attrs: {}, content: [cell("Name"), cell("Score")] }] },
+    { type: "paragraph", attrs: {}, content: [{ type: "text", text: "After the table.", marks: [{ type: "syncAdd" }] }] },
+  ];
+  for (const [name, setup, page] of [
+    ["blank", [], () => blankWithPdf(pdf)],
+    ["replace", [{ insertText: { location: { index: 1 }, text: "Old title\nOld text" } }], (base: EditorNode) => replaceWithPdf(base, pdf)],
+  ] as const) {
+    const docs = createStrictStubDocs({ ...STRICT });
+    const id = await docs.create(name);
+    if (setup.length) await docs.batchUpdate(id, setup as never);
+    const start: EditorNode = { type: "doc", content: importDoc(await docs.get(id)).nodes };
+    // (each round is applied as the stub applies it: one Docs refuses throws here)
+    const { base, editor } = await autosave(docs, id, start, (page as (b: EditorNode) => EditorNode)(start));
+    assert.equal(directEdits(base, editor).requests.length, 0, `${name}: nothing left to save`);
+    const read = importDoc(await docs.get(id)).nodes;
+    assert.deepEqual(read.map((n) => (n.type === "table" ? "table" : text([n])[0])), ["", "table", ""], name);
+    assert.deepEqual(additions(base, editor).segments.map((x) => x.text), ["Name", "Score", "After the table."], name);
+  }
 });

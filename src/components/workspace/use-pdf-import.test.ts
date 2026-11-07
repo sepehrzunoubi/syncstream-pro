@@ -83,6 +83,18 @@ test("Replace what's here keeps what the page can't change, each after an emptie
   valid(next);
 });
 
+test("Replace what's here adds no paragraph between kept blocks that were next to each other: a contents table's entries, smart chips", () => {
+  // A contents table is shown entry by entry: the first carries the whole table's size, the others none
+  const entry = (text: string, span: number, bid: string): EditorNode => ({ type: "paragraph", attrs: { locked: true, span, bid }, content: [{ type: "text", text }] });
+  const base = doc(para("Title", { styleName: "title" }), entry("Intro", 30, "b1"), entry("Method", 0, "b2"), entry("Results", 0, "b3"), para("Body text."), entry("@Alice", 8, "b4"), entry("@Bob", 6, "b5"), para("After"));
+  const next = replaceWithPdf(base, pdfNodes);
+  valid(next);
+  assert.deepEqual(next.content!.map((n) => n.content?.[0]?.text ?? "(empty)"), ["(empty)", "Intro", "Method", "Results", "(empty)", "@Alice", "@Bob", "From the PDF", "Its first paragraph."]);
+  // The save only deletes: no new paragraph goes into the Google Doc
+  const { requests } = directEdits(base, next);
+  assert.ok(requests.length && kinds(requests).every((k) => k === "deleteContentRange"), kinds(requests).join(","));
+});
+
 test("a header from a PDF is written straight into the new header, as Docs requests in that segment", async () => {
   const r = await importPdf(new Uint8Array(fs.readFileSync(path.join(process.cwd(), "fixtures", "pdf", "headerfooter-tagged.pdf"))));
   assert.ok(r.header?.length);

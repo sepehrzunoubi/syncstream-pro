@@ -142,17 +142,17 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
     }
   }, [editor, viewer, docDefaults]);
 
-  /** Page setup from the dialog: shown here, and written to the open Google Doc */
-  const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean) => {
+  /** Page setup from the dialog: shown here, and written to the open Google Doc; false when Google Docs refused it */
+  const applyPageSetup = useCallback(async (next: PageSetup, nextPageless: boolean): Promise<boolean> => {
     const prev = pageSetup;
     const prevPageless = pageless;
     const setupChanged = !samePageSetup(prev, next);
     const modeChanged = prevPageless !== nextPageless;
     setPageless(nextPageless);
     if (setupChanged) setPageSetup(next);
-    if (!setupChanged && !modeChanged) return;
+    if (!setupChanged && !modeChanged) return true;
     const content = docContentRef.current;
-    if (content?.status !== "ready") return;
+    if (content?.status !== "ready") return true;
     await saveNow();
     const send = (requests: Record<string, unknown>[]) => postJson<{ revisionId: string }>("/api/docs/edit", { documentId: content.docId, revisionId: revisionRef.current, requests, ...tabFields(content) });
     if (setupChanged) {
@@ -162,18 +162,20 @@ export function usePageSetup({ editor, viewer, refs, saveNow, setSnack, setScope
         setPageless(prevPageless);
         if (status === 401) setScopeError(true);
         setSnack(data.error || "Couldn't change the page setup in Google Docs");
-        return;
+        return false;
       }
       if (data.revisionId) revisionRef.current = data.revisionId;
     }
     // Pages or pageless on its own, so the rest of the setup goes in even if this doesn't
     if (modeChanged) {
       const { ok, status, data } = await send([documentModeRequest(nextPageless)]);
-      if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return; }
+      if (ok) { if (data.revisionId) revisionRef.current = data.revisionId; return true; }
       setPageless(prevPageless);
       if (status === 401) setScopeError(true);
       setSnack(data.error || `Couldn't make the Google Doc ${nextPageless ? "pageless" : "paged"}`);
+      return false;
     }
+    return true;
   }, [pageSetup, pageless, saveNow, docContentRef, revisionRef, setScopeError, setSnack]);
   const setPageDefault = useCallback((setup: PageSetup, nextPageless: boolean) => {
     writePageDefault(setup, nextPageless);

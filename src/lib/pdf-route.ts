@@ -16,6 +16,8 @@ export const MAX_PDF_BYTES = 4 * 1024 * 1024;
 export const MAX_PDF_BODY = 4_400_000;
 /** Reading stops waiting after this; the function itself is allowed 60 s */
 export const PDF_TIMEOUT_MS = 45_000;
+/** Storing the images takes at most this after the reading: the answer comes before the 60 s are up */
+export const STORE_TIMEOUT_MS = 10_000;
 /** Images stored at the same time */
 const STORE_CONCURRENCY = 4;
 
@@ -76,10 +78,10 @@ export function placeImages(nodes: EditorNode[], urls: ReadonlyMap<string, strin
   return { nodes: walk(nodes), dropped };
 }
 
-/** Run `fn` over `items`, at most `limit` at a time */
-async function eachLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+/** Run `fn` over `items`, at most `limit` at a time; none is started once `until` (a time) has gone by */
+async function eachLimited<T>(items: T[], limit: number, until: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
-  const worker = async () => { while (next < items.length) await fn(items[next++]); };
+  const worker = async () => { while (next < items.length && Date.now() < until) await fn(items[next++]); };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
@@ -98,6 +100,8 @@ export interface ImportOptions {
   /** This deployment's address, which the stored images are served from (Google fetches them there) */
   baseUrl: string;
   timeoutMs?: number;
+  /** How long storing the images may take (STORE_TIMEOUT_MS); those not stored by then are left out */
+  storeTimeoutMs?: number;
   /** For tests: the reader and the image store */
   read?: (bytes: Uint8Array) => Promise<PdfImportResult>;
   store?: (mime: string, base64: string) => Promise<string>;
@@ -123,7 +127,7 @@ export async function importPdfForEditor(bytes: Uint8Array, opts: ImportOptions)
   const store = opts.store ?? saveImage;
   const base = opts.baseUrl.replace(/\/+$/, "");
   const urls = new Map<string, string>();
-  await eachLimited(result.images, STORE_CONCURRENCY, async (img) => {
+  await eachLimited(result.images, STORE_CONCURRENCY, Date.now() + (opts.storeTimeoutMs ?? STORE_TIMEOUT_MS), async (img) => {
     try {
       const id = await store(img.mime, Buffer.from(img.data).toString("base64"));
       urls.set(img.key, `${base}/api/images/${id}`);
