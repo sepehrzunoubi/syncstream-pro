@@ -45,6 +45,8 @@ interface StartBody {
 }
 
 const MAX_CONTEXT_JSON = 400_000;
+/** What /api/sync/source sends back in one body (text, formatting and view), in bytes */
+const MAX_SOURCE_REPLY_BYTES = 4_000_000;
 const DOC_CHANGED = "This document changed in Google Docs. SyncStream reloaded it with your additions in place. Check them, then start again.";
 
 export const POST = withRoute(async (req: NextRequest) => {
@@ -196,6 +198,10 @@ export const POST = withRoute(async (req: NextRequest) => {
       context = { doc: c.doc, ranges: c.ranges as [number, number][] };
     }
   }
+  // The live page gets the text, its formatting and this view in one reply, which must stay under
+  // Vercel's 4.5 MB even unpacked (text in other alphabets takes 2 to 3 bytes a letter): past that,
+  // the sync runs without the view, as one too big to store does
+  if (context && Buffer.byteLength(JSON.stringify({ sourceText: text, format: parsedFormat.format, context })) > MAX_SOURCE_REPLY_BYTES) context = null;
   const now = Date.now();
   const id = createJobId();
   const { plan: syncPlan, job } = buildSyncRecords({

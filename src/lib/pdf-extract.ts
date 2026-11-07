@@ -11,7 +11,6 @@
 
 import path from "node:path";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import { docsFont, fontMetrics, naturalLineHeight, type DocsFont } from "./pdf-fonts";
 import { loadPdfJs } from "./pdfjs";
 
@@ -153,16 +152,21 @@ const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type PdfJs = any;
 
-/** pdf.js's own font and CMap data, so PDFs that only name a standard font (Helvetica) still measure right */
-function dataDirs(): { standardFontDataUrl?: string; cMapUrl?: string } {
-  try {
-    const req = createRequire(path.join(process.cwd(), "package.json"));
-    const root = path.dirname(req.resolve("pdfjs-dist/package.json"));
+/**
+ * pdf.js's own font and CMap data, so PDFs that only name a standard font (Helvetica) still measure
+ * right and CJK text in a font that isn't embedded is read at all. Found from the app's folder, the
+ * working directory of `next dev`, `next start`, the standalone server and Vercel's functions, where
+ * the build ships them (outputFileTracingIncludes). Not by resolving the package: the bundler can't
+ * follow a resolve worked out at run time, and a deployment ships no package.json to resolve.
+ */
+export function dataDirs(): { standardFontDataUrl?: string; cMapUrl?: string } {
+  // (from the working directory up: an app in a folder of a larger checkout has node_modules above it)
+  for (let dir = process.cwd(); ; dir = path.dirname(dir)) {
+    const root = path.join(dir, "node_modules", "pdfjs-dist");
     const fonts = path.join(root, "standard_fonts") + path.sep;
     const cmaps = path.join(root, "cmaps") + path.sep;
-    return { ...(fs.existsSync(fonts) ? { standardFontDataUrl: fonts } : {}), ...(fs.existsSync(cmaps) ? { cMapUrl: cmaps } : {}) };
-  } catch {
-    return {};
+    if (fs.existsSync(fonts) || fs.existsSync(cmaps)) return { ...(fs.existsSync(fonts) ? { standardFontDataUrl: fonts } : {}), ...(fs.existsSync(cmaps) ? { cMapUrl: cmaps } : {}) };
+    if (path.dirname(dir) === dir) return {};
   }
 }
 

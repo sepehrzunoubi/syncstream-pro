@@ -3,6 +3,7 @@ import { applyAuthCookies, resolveUser, unauthorized } from "@/lib/auth";
 import { getBaseUrl } from "@/lib/base-url";
 import { importPdfForEditor, MAX_PDF_BODY, readCapped, TOO_LARGE_MESSAGE } from "@/lib/pdf-route";
 import { withRoute } from "@/lib/route";
+import { jsonReply } from "@/lib/json-response";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
 
@@ -43,5 +44,6 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
   const { body } = reply;
   log.info("pdf.import", { uid, bytes: bytes.length, pages: body.pages, tagged: body.tagged, nodes: body.nodes.length, images: body.stats.images, warnings: body.warnings.length, ms: done() });
-  return applyAuthCookies(NextResponse.json(body, { headers: { "Cache-Control": "no-store" } }), user);
+  // (a long PDF's content runs past what Vercel sends as it is: gzipped, it fits)
+  return applyAuthCookies(jsonReply(req, body, { headers: { "Cache-Control": "no-store" } }), user);
 });

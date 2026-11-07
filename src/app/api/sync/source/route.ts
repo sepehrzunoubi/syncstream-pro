@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadOwnedJob, readJobId } from "@/lib/sync-api";
 import { applyAuthCookies } from "@/lib/auth";
 import { getStore } from "@/lib/sync-store";
+import { jsonReply } from "@/lib/json-response";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
-/** The original source text of a job, rebuilt from its plan. */
+/** The original source text of a job, rebuilt from its plan (gzipped when long). */
 export const GET = withRoute(async (req: NextRequest) => {
   const loaded = await loadOwnedJob(req, await readJobId(req));
   if (loaded instanceof NextResponse) return loaded;
@@ -23,5 +24,5 @@ export const GET = withRoute(async (req: NextRequest) => {
     if (action.kind !== "pause") sourceText += action.text;
   }
   const context = await getStore().getContext(job.id);
-  return applyAuthCookies(NextResponse.json({ sourceText, format: plan.format ?? null, context, breaks: plan.breaks, totalMs: plan.totalMs }), user);
+  return applyAuthCookies(jsonReply(req, { sourceText, format: plan.format ?? null, context, breaks: plan.breaks, totalMs: plan.totalMs }), user);
 });
