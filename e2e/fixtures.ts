@@ -46,6 +46,16 @@ export interface StartBody {
   startInMinutes?: number;
 }
 
+/** What `/api/sheets/start` received */
+export interface SheetStartBody {
+  workbook: { name: string; sheets: { id: number; name: string; cells: { r: number; c: number; v?: unknown; f?: string }[] }[] };
+  name?: string;
+  targetMinutes?: number | null;
+  seed?: number;
+  startInMinutes?: number;
+  timeZone?: string;
+}
+
 /** What `/api/sync/breaks` received */
 export interface BreaksBody {
   jobId: string;
@@ -123,6 +133,12 @@ export class FakeGoogle {
   edits: EditBody[] = [];
   renames: { documentId: string; name: string }[] = [];
   starts: StartBody[] = [];
+  /** What `/api/sheets/start` received; with `sheetStartFailure`, it answers with that instead */
+  sheetStarts: SheetStartBody[] = [];
+  sheetStartFailure: { status: number; error: string } | null = null;
+  /** The sync history `/api/history` lists, and the ids it was asked to forget ("*": all of it) */
+  history: Record<string, unknown>[] = [];
+  historyRemoved: string[] = [];
   breakEdits: BreaksBody[] = [];
   jobs: Record<string, unknown>[] = [];
   /** Images uploaded (their data URLs); with `imagesFail`, the upload route answers with an error */
@@ -315,6 +331,31 @@ export class FakeGoogle {
         case "/api/sync/dismiss":
           this.jobs = this.jobs.filter((j) => j.id !== body().jobId);
           return json(route, { ok: true });
+        case "/api/sheets/start": {
+          const b = body() as unknown as SheetStartBody;
+          this.sheetStarts.push(b);
+          if (this.sheetStartFailure) return json(route, { error: this.sheetStartFailure.error }, this.sheetStartFailure.status);
+          const now = Date.now();
+          const job = {
+            id: `sheet_${this.sheetStarts.length}`, userId: this.user.id, kind: "sheet", documentId: `spreadsheet-${this.sheetStarts.length}`, documentName: b.name ?? "Untitled spreadsheet",
+            status: b.startInMinutes ? "scheduled" : "running", createdAt: now, startAt: now + (b.startInMinutes ?? 0) * 60_000, startedAt: now,
+            currentAction: 0, totalActions: 100, charsSent: 0, totalChars: 1000, typoSubStep: 0, typoCharsInDoc: 0, generation: 0, failures: 0,
+            activity: "Naming the tab", etaTargetAt: now + 600_000, wpm: 0, baselineWordCount: 0, breaks: [], completedBreaks: [], lastUpdate: now,
+          };
+          this.jobs = [job, ...this.jobs];
+          return json(route, { job, totalMs: 600_000, seed: b.seed ?? 1, fitsTarget: true });
+        }
+        case "/api/sheets/source":
+          return json(route, { error: "This sync's spreadsheet is no longer stored." }, 404);
+        case "/api/history": {
+          if (method === "DELETE") {
+            const b = body() as { id?: string; all?: boolean };
+            this.historyRemoved.push(b.all ? "*" : String(b.id));
+            this.history = b.all ? [] : this.history.filter((e) => e.id !== b.id);
+            return json(route, { ok: true });
+          }
+          return json(route, { entries: this.history, now: Date.now() });
+        }
         default:
           this.unexpected.push(`${method} ${path}`);
           return json(route, { error: `e2e: no fake for ${method} ${path}` }, 404);

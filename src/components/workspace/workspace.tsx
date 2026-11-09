@@ -299,6 +299,8 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
     );
   }
 
+  // Spreadsheet syncs have their own page (Sheets); the history lists both kinds
+  const docJobs = jobs.filter((j) => j.kind !== "sheet");
   const rail = (
     <Sidebar
       tabs={focusedJob
@@ -308,7 +310,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       tabsDisabled={!!focusedJob || docContent?.status === "loading"}
       onSelectTab={(id) => { if (focusedJob) return; setComposing(true); if (id && id !== docContent?.tabId) setSelectedTabId(id); if (!wide) setRailOpen(false); }}
       editor={focusedJob ? null : editor}
-      jobs={jobs}
+      jobs={docJobs}
       focusedJobId={focusedJobId}
       composing={composing}
       onFocusJob={(id) => { setFocusedJobId(id); setComposing(false); if (!wide) setRailOpen(false); }}

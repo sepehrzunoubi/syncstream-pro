@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import type { Editor } from "@tiptap/react";
-import { Columns2 } from "lucide-react";
+import { Columns2, Table2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { DocTab } from "@/lib/doc-tabs";
 import type { PublicJob } from "@/lib/sync-store";
@@ -99,6 +99,10 @@ export function Sidebar(p: SidebarProps) {
         <Link href="/dashboard/compare" className="ss-doc-tab ss-new-doc" title="Bring a document up to date with another one">
           <span className="ss-doc-tab-icon"><Columns2 className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" /></span>
           <span className="ss-doc-tab-label">Compare &amp; Sync</span>
+        </Link>
+        <Link href="/dashboard/sheets" className="ss-doc-tab ss-new-doc" title="Sync an Excel workbook into a new Google Sheet">
+          <span className="ss-doc-tab-icon"><Table2 className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" /></span>
+          <span className="ss-doc-tab-label">Excel sheet</span>
         </Link>
 
         {active.length > 0 && <div className="ss-side-label">In progress</div>}

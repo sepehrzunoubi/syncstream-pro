@@ -116,8 +116,10 @@ export function useSyncJobs({ editor, viewer, refs, canvasRef, jobs, setJobs, se
       const res = await fetch("/api/sync/list");
       if (!res.ok) return undefined;
       const data = (await res.json()) as { jobs: PublicJob[] };
-      setJobs(data.jobs);
-      return data.jobs;
+      // (a spreadsheet sync is followed on the Sheets page, not in the document editor)
+      const jobs = data.jobs.filter((j) => j.kind !== "sheet");
+      setJobs(jobs);
+      return jobs;
     } catch {
       return undefined;
     }
