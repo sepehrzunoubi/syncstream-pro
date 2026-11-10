@@ -5,7 +5,7 @@ import { MotionConfig } from "framer-motion";
 import { ExternalLink, FileSpreadsheet, Upload } from "lucide-react";
 import type { PublicJob } from "@/lib/sync-store";
 import { cellName, typedText, workbookStats, type Workbook } from "@/lib/sheets/model";
-import { readXlsx, XlsxError } from "@/lib/sheets/xlsx";
+import { isOldExcel, readXlsx, XlsxError } from "@/lib/sheets/xlsx";
 import { buildSheetPlan, type SheetPlan } from "@/lib/sheets/plan";
 import { activeSheet, buildTimeline, finalView, viewAt, type Timeline } from "@/lib/sheets/timeline";
 import type { PlanSection } from "@/lib/sheets/order";
@@ -26,7 +26,20 @@ import { clearDraft, loadDraft, saveDraft } from "./draft";
 interface JobSource { workbook: Workbook; steps: Step[]; sections: PlanSection[]; delays: number[]; totalMs: number; timeline: Timeline }
 
 export const sheetUrl = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
-const ACCEPT = ".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const ACCEPT = ".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel";
+
+/**
+ * An old .xls workbook as the .xlsx Google Sheets makes of it (POST /api/sheets/import): Google
+ * converts the file in the person's own Drive, and the page reads what it became.
+ */
+async function convertOldExcel(bytes: Uint8Array, fileName: string): Promise<Uint8Array> {
+  const res = await fetch(`/api/sheets/import?name=${encodeURIComponent(fileName)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: bytes as BodyInit });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new XlsxError("oldExcel", data.error || "This older Excel file couldn't be converted just now. Try again, or save it as .xlsx and upload that.");
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
 /** The build preview plays the whole sync in about this long */
 const PLAY_MS = 40_000;
 const PLAY_TICK_MS = 80;
@@ -51,13 +64,22 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
   const [busy, setBusy] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [converting, setConverting] = useState(false);
 
   // ── The workbook ──
   const openFile = useCallback(async (file: File) => {
     setFileError(null);
     setReading(true);
     try {
-      const wb = await readXlsx(new Uint8Array(await file.arrayBuffer()), file.name);
+      let bytes: Uint8Array = new Uint8Array(await file.arrayBuffer());
+      let fileName = file.name;
+      // An .xls is converted by Google Sheets itself; what it makes of the file is what is shown and synced
+      if (isOldExcel(bytes) && /\.xl[st]$/i.test(fileName)) {
+        setConverting(true);
+        bytes = await convertOldExcel(bytes, fileName);
+        fileName = fileName.replace(/\.xl[st]$/i, ".xlsx");
+      }
+      const wb = await readXlsx(bytes, fileName);
       setWorkbook(wb);
       setName(wb.name);
       setTab(Math.max(0, wb.sheets.findIndex((s) => !s.hidden)));
@@ -71,6 +93,7 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
       setFileError(err instanceof XlsxError ? err.message : "This file couldn't be read as an Excel workbook.");
     } finally {
       setReading(false);
+      setConverting(false);
     }
   }, []);
   const pickFile = useCallback(() => fileInput.current?.click(), []);
@@ -251,6 +274,7 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
   const stats = workbook ? workbookStats(workbook) : null;
   const status = focusedJob
     ? statusLine(focusedJob).replace(/^Typing/, "Building").replace(/typed$/, "built")
+    : converting ? "Google Sheets is converting this .xls file"
     : reading ? "Reading the workbook"
     : workbook ? "A new Google Sheet is made for it when the sync starts"
     : "Upload an Excel workbook to sync it into a new Google Sheet";
@@ -334,10 +358,10 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
                 <div className="sx-upload" data-dragging={dragging || undefined}>
                   <span className="sx-upload-icon"><FileSpreadsheet className="h-8 w-8" strokeWidth={1.5} aria-hidden="true" /></span>
                   <h1 className="sx-upload-title">Sync an Excel workbook into Google Sheets</h1>
-                  <p className="sx-upload-text">Upload an .xlsx file. SyncStream shows it here exactly as it is, then builds it in a new Google Sheet the way a person would: labels, numbers and formulas in order, section by section, then the formatting.</p>
+                  <p className="sx-upload-text">Upload an Excel workbook (.xlsx, or an older .xls, which Google Sheets converts first). SyncStream shows it here exactly as it is, then builds it in a new Google Sheet the way a person would: labels, numbers and formulas in order, section by section, then the formatting.</p>
                   <button type="button" className="ss-btn ss-btn-filled" onClick={pickFile} disabled={reading}>
                     <Upload className="h-[18px] w-[18px]" aria-hidden="true" />
-                    {reading ? "Reading" : "Upload workbook"}
+                    {converting ? "Converting" : reading ? "Reading" : "Upload workbook"}
                   </button>
                   <p className="sx-upload-hint">or drop the file anywhere on this page</p>
                   {fileError && <p role="alert" className="sx-upload-error">{fileError}</p>}

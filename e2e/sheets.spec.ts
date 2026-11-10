@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect, type FakeGoogle } from "./fixtures";
@@ -15,6 +16,8 @@ async function openSheets(page: Page, api: FakeGoogle, query = ""): Promise<void
 
 /** A second one (scripts/make-xlsx-features-fixture.py): charts, a table, a filter, groups, rules */
 const FEATURES = path.join(__dirname, "..", "fixtures", "xlsx", "features.xlsx");
+/** Two real financial models, and Google's own conversion of each (see src/lib/sheets/models.test.ts) */
+const MODELS = path.join(__dirname, "..", "fixtures", "xlsx", "models");
 
 async function upload(page: Page, file = WORKBOOK): Promise<void> {
   await page.locator("[data-testid=sx-file]").setInputFiles(file);
@@ -241,6 +244,55 @@ test.describe("sheets", () => {
     await expect(page.locator("[data-testid=sx-job-title]")).toHaveText("Finished");
     await expect(page.locator("[data-testid=sx-refused]")).toContainText("Google Sheets refused 2 edits");
     await expect(page.locator("[data-testid=sx-refused]")).toContainText("Number format on C3");
+  });
+
+  test("a 16-tab financial model opens whole: every tab, its formulas across tabs, its notes and dropdowns", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await upload(page, path.join(MODELS, "fcff.xlsx"));
+    await expect(page.getByRole("tab")).toHaveCount(16);
+    await expect(page.locator("[data-testid=sx-stats]")).toContainText("16 sheets");
+    // A formula that reads another tab, as typed
+    await page.getByRole("tab", { name: "Input Summary" }).click();
+    await clickCell(page, "B2");
+    await expect(page.locator("[data-testid=sx-formula]")).toHaveText("='Valuation Model'!D23");
+    // The workbook's own red (an old Mac palette), and Google's font for one Sheets doesn't have
+    await page.getByRole("tab", { name: "Master Inputs Start here" }).click();
+    await expect(cell(page, "A1")).toHaveCSS("color", "rgb(221, 8, 6)");
+    // The build goes tab by tab; the list of sections names them
+    await expect(page.locator(".sx-section").first()).toContainText("Read me first");
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    const sent = api.sheetStarts[0].workbook as unknown as { sheets: { name: string; spans?: unknown[]; validations?: unknown[] }[] };
+    expect(sent.sheets.length).toBe(16);
+    expect(sent.sheets[1].validations?.length).toBeGreaterThan(0);
+    expect(sent.sheets[0].spans?.length).toBeGreaterThan(0);
+  });
+
+  test("an old .xls file is converted by Google Sheets, and what it becomes is shown and synced", async ({ app, page, api }) => {
+    void app;
+    api.sheetImport = fs.readFileSync(path.join(MODELS, "lbo.google-import.xlsx"));
+    await openSheets(page, api);
+    await upload(page, path.join(MODELS, "lbo.xls"));
+    expect(api.sheetImports).toEqual([{ name: "lbo.xls", bytes: fs.statSync(path.join(MODELS, "lbo.xls")).size }]);
+    await expect(page.getByRole("tab")).toHaveCount(10);
+    await expect(page.getByRole("tab").first()).toHaveText("Input");
+    await expect(page.locator("[data-testid=sx-stats]")).toContainText("10 sheets");
+    // The new Google Sheet is named for the file
+    await expect(page.locator(".sx-title-input")).toHaveValue("lbo");
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    const sent = api.sheetStarts[0].workbook as unknown as { sheets: unknown[]; names: unknown[] };
+    expect(sent.sheets.length).toBe(10);
+    expect(sent.names.length).toBe(82);
+  });
+
+  test("an .xls Google can't convert says so and nothing is shown", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await page.locator("[data-testid=sx-file]").setInputFiles(path.join(MODELS, "lbo.xls"));
+    await expect(page.locator(".sx-upload-error")).toContainText("Google Sheets couldn't open this file");
+    await expect(page.locator(".sx-grid")).toHaveCount(0);
   });
 
   test("a refused start says why and keeps the workbook", async ({ app, page, api }) => {

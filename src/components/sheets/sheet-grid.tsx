@@ -107,6 +107,16 @@ const Region = React.memo(function Region({ scene, r0, r1, c0, c1, selection }: 
     for (let r = r0; r <= r1; r++) if (rows.sizes[r]) fills.push(<div key={`h${r}`} className="sx-gridline" style={{ left: x0, top: rows.offsets[r + 1] - 1, width: x1 - x0, height: 1 }} />);
     for (let c = c0; c <= c1; c++) if (cols.sizes[c]) fills.push(<div key={`v${c}`} className="sx-gridline" style={{ left: cols.offsets[c + 1] - 1, top: y0, width: 1, height: y1 - y0 }} />);
   }
+  // Empty areas with a fill
+  view.fills.forEach((span, n) => {
+    const color = cssColor(wb, span.fill);
+    if (!color) return;
+    span.rects.forEach(([a0, b0, a1, b1], m) => {
+      const ra = Math.max(a0, r0), rb = Math.min(a1, r1), ca = Math.max(b0, c0), cb = Math.min(b1, c1);
+      if (ra > rb || ca > cb) return;
+      fills.push(<div key={`s${n}-${m}`} className="sx-fill" data-span={n} style={{ left: cols.offsets[ca], top: rows.offsets[ra], width: cols.offsets[cb + 1] - cols.offsets[ca], height: rows.offsets[rb + 1] - rows.offsets[ra], background: color }} />);
+    });
+  });
   // Alternating colours lie under the cells' own fills, and over the gridlines as a fill does
   view.banding.forEach((band, n) => {
     const [b0, bc0, b1, bc1] = band.rect;

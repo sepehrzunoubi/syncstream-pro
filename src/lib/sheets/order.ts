@@ -82,29 +82,8 @@ class RowIndex {
   }
 }
 
-/** The fewest rectangles (rows merged where their columns match) covering these cells, given row by row */
-export function coverRects(cells: readonly { r: number; c: number }[]): Rect[] {
-  const out: Rect[] = [];
-  const open = new Map<string, Rect>();
-  let i = 0;
-  while (i < cells.length) {
-    const r = cells[i].r;
-    const seen = new Set<string>();
-    while (i < cells.length && cells[i].r === r) {
-      const c0 = cells[i].c;
-      let c1 = c0;
-      while (i + 1 < cells.length && cells[i + 1].r === r && cells[i + 1].c === c1 + 1) { i++; c1++; }
-      i++;
-      const key = `${c0},${c1}`;
-      const rect = open.get(key);
-      if (rect && rect[2] === r - 1) rect[2] = r;
-      else { const made: Rect = [r, c0, r, c1]; open.set(key, made); out.push(made); }
-      seen.add(key);
-    }
-    for (const key of Array.from(open.keys())) if (!seen.has(key)) open.delete(key);
-  }
-  return out;
-}
+export { coverRects } from "./cover";
+import { coverRects } from "./cover";
 
 /** Runs of consecutive numbers in a sorted list */
 function runs(sorted: readonly number[]): [number, number][] {
@@ -295,6 +274,8 @@ export function planSteps(wb: Workbook): StepPlan {
     (wb.names ?? []).forEach((n, i) => { if (n.sheet === s) steps.push({ k: "name", i }); });
     for (const [from, to, v] of sheet.colStyles ?? []) steps.push({ k: "band", s, d: "c", from, to, v });
     for (const [from, to, v] of sheet.rowStyles ?? []) steps.push({ k: "band", s, d: "r", from, to, v });
+    // Whole columns, rows and empty areas get their look before anything is typed, as someone setting a sheet up does
+    (sheet.spans ?? []).forEach((_span, i) => steps.push({ k: "span", s, i }));
 
     // Sections: runs of rows with something typed in them
     const typedRows = new Set<number>();

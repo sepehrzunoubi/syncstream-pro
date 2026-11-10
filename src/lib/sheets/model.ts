@@ -30,6 +30,9 @@ export interface FontStyle {
 }
 
 /** How a cell looks. Every part is optional: an absent part is the spreadsheet's default */
+/** Ranges of blank cells with one look (a style of the workbook, by its place) */
+export interface StyleSpan { v: number; rects: Rect[] }
+
 /** The colours of rows, or of columns, that alternate over a range */
 export interface BandColors { header?: Color; first: Color; second: Color; footer?: Color }
 
@@ -167,6 +170,12 @@ export interface Sheet {
   hiddenCols?: [number, number][];
   merges: Rect[];
   /** Whole columns, then whole rows, that carry a style: [first, last, style] */
+  /**
+   * Blank cells that share a look: the ranges, and the style they have. A column or a row formatted
+   * as a whole ends up here (the cells with something of their own in them left out), as do the
+   * formatted empty cells a Google Sheet's export spells out one by one.
+   */
+  spans?: StyleSpan[];
   colStyles?: [number, number, number][];
   rowStyles?: [number, number, number][];
   /** Every cell with a value or a style, row by row */

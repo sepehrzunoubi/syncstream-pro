@@ -137,6 +137,9 @@ export class FakeGoogle {
   /** What `/api/sheets/start` received; with `sheetStartFailure`, it answers with that instead */
   sheetStarts: SheetStartBody[] = [];
   sheetStartFailure: { status: number; error: string } | null = null;
+  /** What `/api/sheets/import` hands back (Google's conversion of an .xls), and each file it was asked to convert */
+  sheetImport: Buffer | null = null;
+  sheetImports: { name: string; bytes: number }[] = [];
   /** The sync history `/api/history` lists, and the ids it was asked to forget ("*": all of it) */
   history: Record<string, unknown>[] = [];
   historyRemoved: string[] = [];
@@ -332,6 +335,12 @@ export class FakeGoogle {
         case "/api/sync/dismiss":
           this.jobs = this.jobs.filter((j) => j.id !== body().jobId);
           return json(route, { ok: true });
+        case "/api/sheets/import": {
+          // Google's conversion of an old workbook: the .xlsx a test gives for it
+          this.sheetImports.push({ name: url.searchParams.get("name") ?? "", bytes: route.request().postDataBuffer()?.length ?? 0 });
+          if (!this.sheetImport) return json(route, { error: "Google Sheets couldn't open this file. If it has a password, remove it in Excel and try again." }, 400);
+          return route.fulfill({ status: 200, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: this.sheetImport });
+        }
         case "/api/sheets/start": {
           const b = body() as unknown as SheetStartBody;
           this.sheetStarts.push(b);

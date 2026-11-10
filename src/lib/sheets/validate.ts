@@ -168,6 +168,17 @@ function sheet(v: unknown, styles: number, budget: { cells: number; grid: number
   const hc = spans(o.hiddenCols, colCount, "hidden columns"); if (hc) out.hiddenCols = hc;
   const cs = styleSpans(o.colStyles, colCount, styles, "column styles"); if (cs) out.colStyles = cs;
   const rs = styleSpans(o.rowStyles, rowCount, styles, "row styles"); if (rs) out.rowStyles = rs;
+  if (o.spans != null) {
+    let rects = 0;
+    const list = arr(o.spans, "spans", 20_000).map((sp) => {
+      const so = obj(sp, "span");
+      const rs2 = arr(so.rects, "span", 200_000).map((r) => rect(r, rowCount, colCount, "span"));
+      rects += rs2.length;
+      if (!rs2.length || rects > 400_000) bad("span");
+      return { v: int(so.v, 1, styles - 1, "span"), rects: rs2 };
+    });
+    if (list.length) out.spans = list;
+  }
 
   const raw = arr(o.cells, "cells", MAX_WORKBOOK_CELLS);
   budget.cells -= raw.length;

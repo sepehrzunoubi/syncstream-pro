@@ -23,6 +23,8 @@ export type Step =
   | { k: "base"; s: number; what: "size" | "rows" | "cols" }
   /** Whole columns or rows given a style */
   | { k: "band"; s: number; d: "c" | "r"; from: number; to: number; v: number }
+  /** A look given to ranges of blank cells (the sheet's i-th span) */
+  | { k: "span"; s: number; i: number }
   /** Type these cells (one, as a rule), each index into the sheet's cells */
   | { k: "type"; s: number; cells: number[] }
   /** Fill a formula from the cell before into these, or paste a block of values */
@@ -385,6 +387,12 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
       const range = step.d === "c" ? { sheetId: id, startColumnIndex: step.from, endColumnIndex: step.to + 1 } : { sheetId: id, startRowIndex: step.from, endRowIndex: step.to + 1 };
       return [{ repeatCell: { range, cell: { userEnteredFormat: format }, fields } }];
     }
+    case "span": {
+      const span = sheet.spans?.[step.i];
+      const { format, fields } = styleFormat((span && wb.styles[span.v]) ?? {});
+      if (!span || !fields) return [];
+      return span.rects.map((rect) => ({ repeatCell: { range: gridRange(id, rect), cell: { userEnteredFormat: format }, fields } }));
+    }
     case "type": case "fill": case "paste": {
       const withNote = step.cells.some((i) => sheet.cells[i]?.note);
       return cellRequests(sheet, step.cells, withNote ? "userEnteredValue,note" : "userEnteredValue", typedData);
@@ -466,6 +474,7 @@ export function stepLabel(wb: Workbook, step: Step): string {
     case "sheet": return step.s === 0 ? `Naming the tab "${sheet?.name}"` : `Adding the tab "${sheet?.name}"`;
     case "base": return step.what === "size" ? "Setting the font size" : step.what === "rows" ? "Setting the row height" : "Setting the column width";
     case "band": return `Formatting ${dims(step.d, step.from, step.to)}`;
+    case "span": return `Formatting ${ranges(sheet?.spans?.[step.i]?.rects ?? [])}`;
     case "type": { const c = sheet?.cells[step.cells[0]]; return c?.f != null ? `Writing the formula in ${span(step.cells)}` : `Typing ${span(step.cells)}`; }
     case "fill": return `Filling ${span(step.cells)}`;
     case "paste": return `Pasting ${span(step.cells)}`;

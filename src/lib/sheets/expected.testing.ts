@@ -40,9 +40,23 @@ export function differences(wb: Workbook, doc: StubSpreadsheet, limit = 20): str
       for (const [from, to, v] of sheet.rowStyles ?? []) if (r >= from && r <= to) merge(f, styleFormat(wb.styles[v]).format);
       return f;
     };
+    const spanned = new Map<string, Obj>();
+    for (const span of sheet.spans ?? []) {
+      const f = merge(structuredClone(base), styleFormat(wb.styles[span.v]).format);
+      for (const [r0, c0, r1, c1] of span.rects) for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+        if (spanned.has(`${r},${c}`)) say(`${sheet.name}!${r},${c} is in two spans`);
+        spanned.set(`${r},${c}`, f);
+      }
+    }
     const seen = new Set<string>();
+    for (const [key, f] of spanned) {
+      if (canon(got.cells.get(key)?.format ?? {}) !== canon(f)) say(`${sheet.name}!${key} format ${canon(got.cells.get(key)?.format ?? {})} instead of the span's ${canon(f)}`);
+      if (got.cells.get(key)?.value !== undefined) say(`${sheet.name}!${key} holds a value in a span`);
+      seen.add(key);
+    }
     for (const cell of sheet.cells) {
       const key = `${cell.r},${cell.c}`;
+      if (spanned.has(key)) say(`${sheet.name}!${key} is a cell and in a span`);
       seen.add(key);
       const g = got.cells.get(key) ?? {};
       const format = cell.s ? merge(under(cell.r, cell.c), styleFormat(wb.styles[cell.s]).format) : under(cell.r, cell.c);
