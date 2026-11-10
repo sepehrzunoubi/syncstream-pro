@@ -24,6 +24,7 @@ export function differences(wb: Workbook, doc: StubSpreadsheet, limit = 20): str
   const out: string[] = [];
   const say = (s: string) => { if (out.length < limit) out.push(s); };
   if (doc.sheets.size !== wb.sheets.length) say(`sheets: ${doc.sheets.size} instead of ${wb.sheets.length}`);
+  if (canon(doc.iterate ?? null) !== canon(wb.iterate ? { maxIterations: wb.iterate.max, convergenceThreshold: wb.iterate.threshold } : null)) say(`iterative calculation ${canon(doc.iterate ?? null)}`);
   wb.sheets.forEach((sheet, index) => {
     const got = doc.sheets.get(sheet.id);
     if (!got) { say(`sheet ${sheet.name} is missing`); return; }

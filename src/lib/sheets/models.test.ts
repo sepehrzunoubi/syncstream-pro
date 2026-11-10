@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { isOldExcel, readXlsx, XlsxError } from "./xlsx";
+import { emptyBranchIf, isOldExcel, readXlsx, XlsxError } from "./xlsx";
 import { parseWorkbook } from "./validate";
 import { planSteps } from "./order";
 import { buildSheetPlan } from "./plan";
@@ -68,6 +68,14 @@ test("a 16-tab valuation model reads exactly as Google Sheets imports it", async
   assert.equal(sheet("Read me first").defaultRowPx, 18);
   assert.deepEqual(sheet("Read me first").rowPx, []);
   assert.deepEqual(sheet("Valuation Model").rowPx, [[0, 72, 33]]);
+  // iterative calculation, which the file has on: carried over (Google's import drops it, and shows #REF!
+  // where a formula refers to itself; with it the Google Sheet works those out as Excel did)
+  assert.deepEqual(mine.iterate, { max: 100, threshold: 0.001 });
+  assert.deepEqual(planSteps(mine).steps.slice(0, 2).map((s) => s.k), ["theme", "calc"]);
+  // an IF with a branch left empty: nothing shown, as in Sheets (Excel shows 0)
+  const blank = sheet("Cost of capital worksheet").cells.find((c) => c.r === 5 && c.c === 9)!;
+  assert.deepEqual([blank.f, blank.v], ["IF(H6>0,H6/$H$18,)", undefined]);
+  assert.deepEqual(["IF(a,b,)", "IF(a,,b)", "IF(a,b,c)", "IF(a,b,)+1", "IF(a,\"x,\",)", "SUM(IF(a,b,))"].map(emptyBranchIf), [true, true, false, false, true, false]);
   // comments as notes, line ends as Sheets keeps them
   assert.ok(sheet("Master Inputs Start here").cells.some((c) => c.note?.startsWith("Aswath Damodaran:\n")));
 });

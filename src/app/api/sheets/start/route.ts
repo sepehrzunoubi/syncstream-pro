@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, withGoogleToken } from "@/lib/auth";
-import { createSpreadsheet, isSheetsApiDisabled } from "@/lib/google";
+import { createSpreadsheet, isSheetsApiDisabled, spreadsheetTabs } from "@/lib/google";
+import { compareSteps } from "@/lib/sheets/compare";
 import { enqueueProcess } from "@/lib/qstash";
 import { createJobId, getStore, hasRedis, MAX_STORED_JSON, storedSize, toPublicJob, type SyncJob, type SyncPlan } from "@/lib/sync-store";
 import { buildSheetPlan, MAX_SHEET_TARGET_MINUTES, MIN_SHEET_TARGET_MINUTES, parseSheetBreaks } from "@/lib/sheets/plan";
 import { planSteps } from "@/lib/sheets/order";
 import { parseWorkbook } from "@/lib/sheets/validate";
-import { workbookStats } from "@/lib/sheets/model";
+import { workbookStats, type Workbook } from "@/lib/sheets/model";
 import { withRoute } from "@/lib/route";
 import { rateLimited } from "@/lib/rate-limit";
 import { log, startTimer, uidTag } from "@/lib/log";
@@ -31,6 +32,12 @@ interface StartBody {
   timeZone?: unknown;
   /** Breaks placed by hand: [{ section, minutes }], each before that section of the build */
   breaks?: unknown;
+  /**
+   * Compare & Sync: the Google Sheet to bring up to the workbook (one SyncStream made), and what it
+   * holds now, as the page read it. Only what the spreadsheet is missing is then typed.
+   */
+  target?: unknown;
+  have?: unknown;
 }
 
 /**
@@ -75,22 +82,46 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
   const timeZone = typeof body.timeZone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){1,2}$/.test(body.timeZone) ? body.timeZone : null;
 
-  const breaks = parseSheetBreaks(body.breaks, planSteps(workbook).sections.length);
+  // Compare & Sync: the spreadsheet as it is, and its tabs as the Sheets API knows them
+  let compare: { have: Workbook; tabs: Set<string>; id: string; name: string } | null = null;
+  if (body.target != null) {
+    if (typeof body.target !== "string" || !/^[A-Za-z0-9_-]{10,200}$/.test(body.target)) return NextResponse.json({ error: "Invalid spreadsheet id" }, { status: 400 });
+    const had = parseWorkbook(body.have);
+    if (!had.ok) return NextResponse.json({ error: had.error }, { status: 400 });
+    let target: { name: string; tabs: { id: number; title: string }[] };
+    try {
+      target = await withGoogleToken(user, (t) => spreadsheetTabs(t, body.target as string));
+    } catch (err) {
+      const status = googleStatus(err);
+      if (status === 401) return unauthorized();
+      return NextResponse.json({ error: status === 404 ? "That spreadsheet could not be found." : "SyncStream can't write to that spreadsheet. It can bring up to date the ones it made itself.", code: "forbidden" }, { status: status === 404 ? 404 : 403 });
+    }
+    // Each sheet of the workbook takes the id of the tab with its name, or one no tab has
+    const byTitle = new Map(target.tabs.map((t) => [t.title.toLowerCase(), t.id]));
+    let free = Math.max(1000, ...target.tabs.map((t) => t.id)) + 1;
+    for (const sheet of workbook.sheets) sheet.id = byTitle.get(sheet.name.toLowerCase()) ?? free++;
+    workbook.idBase = (1 + Math.floor(Math.random() * 2000)) * 1_000_000;
+    compare = { have: had.workbook, tabs: new Set(byTitle.keys()), id: body.target, name: target.name };
+  }
+  const planOptions = compare ? { have: compare.have, tabs: compare.tabs } : {};
+  const sectionCount = compare ? compareSteps(compare.have, workbook, compare.tabs).sections.length : planSteps(workbook).sections.length;
+  const breaks = parseSheetBreaks(body.breaks, sectionCount);
   if (!breaks) return NextResponse.json({ error: "Those breaks don't fit this workbook. Place them again." }, { status: 400 });
-  const plan = buildSheetPlan(workbook, { targetMinutes, seed, breaks });
+  const plan = buildSheetPlan(workbook, { targetMinutes, seed, breaks, ...planOptions });
+  if (compare && !plan.steps.length) return NextResponse.json({ error: "The spreadsheet already holds everything the reference does." }, { status: 400 });
   if (!plan.steps.length) return NextResponse.json({ error: "This workbook has nothing to sync." }, { status: 400 });
   const now = Date.now();
   const id = createJobId();
   const syncPlan: SyncPlan = {
     id, userId: user.userId, documentId: "", actions: plan.actions, totalChars: plan.totalUnits, totalMs: plan.totalMs, breaks: [], seed: plan.seed, createdAt: now,
-    sheet: { workbook, steps: plan.steps, units: plan.units, sections: plan.sections },
+    sheet: { workbook, steps: plan.steps, units: plan.units, sections: plan.sections, ...(compare ? { baseline: true as const } : {}) },
   };
   // (checked before the spreadsheet is made: a plan that can't be stored leaves nothing behind)
   if (storedSize(syncPlan) > MAX_STORED_JSON) return NextResponse.json({ error: TOO_BIG, code: "too_large" }, { status: 413 });
 
   let sheet: { id: string; name: string };
   try {
-    sheet = await withGoogleToken(user, (t) => createSpreadsheet(t, workbook.name, timeZone));
+    sheet = compare ? { id: compare.id, name: compare.name } : await withGoogleToken(user, (t) => createSpreadsheet(t, workbook.name, timeZone));
   } catch (err) {
     const status = googleStatus(err);
     log.error("sheets.create_failed", { uid: uidTag(user.userId), status, err });

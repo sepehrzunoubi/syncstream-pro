@@ -510,6 +510,22 @@ export async function convertToGoogleSheet(accessToken: string, bytes: Uint8Arra
   }
 }
 
+/** A Google Sheet as the .xlsx Google exports of it (any spreadsheet the person can open) */
+export async function exportSpreadsheet(accessToken: string, fileId: string): Promise<Uint8Array> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const drive = google.drive({ version: "v3", auth: client, timeout: 45_000 });
+  const res = await withRetry(() => drive.files.export({ fileId, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, { responseType: "arraybuffer" }));
+  return new Uint8Array(res.data as ArrayBuffer);
+}
+
+/** A spreadsheet's name and its tabs, each with the id the Sheets API knows it by */
+export async function spreadsheetTabs(accessToken: string, spreadsheetId: string): Promise<{ name: string; tabs: { id: number; title: string }[] }> {
+  const sheets = sheetsClient(accessToken);
+  const res = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "properties.title,sheets.properties(sheetId,title)" }));
+  return { name: res.data.properties?.title ?? "Untitled spreadsheet", tabs: (res.data.sheets ?? []).map((s) => ({ id: s.properties?.sheetId ?? 0, title: s.properties?.title ?? "" })) };
+}
+
 /** One atomic spreadsheets.batchUpdate */
 export async function sheetsBatchUpdate(accessToken: string, spreadsheetId: string, requests: SheetsRequest[]): Promise<void> {
   if (!requests.length) return;

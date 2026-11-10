@@ -302,6 +302,7 @@ export function parseWorkbook(raw: unknown): { ok: true; workbook: Workbook } | 
       origin: oneOf(o.origin, ["google", "excel", "other"] as const, "origin"),
       defaultFont, styles, sheets, warnings: [],
     };
+    if (o.iterate != null) { const it = obj(o.iterate, "iterate"); workbook.iterate = { max: int(it.max, 1, 10_000, "iterate"), threshold: num(it.threshold, 0, 1, "iterate") }; }
     if (o.theme != null) {
       const t = obj(o.theme, "theme");
       const theme: Partial<Record<ThemeSlot, string>> = {};

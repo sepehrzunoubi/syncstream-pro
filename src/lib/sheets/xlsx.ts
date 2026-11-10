@@ -502,6 +502,23 @@ function noteText(text: string): string {
   return plain.replace(/^\[Threaded comment\]\n\n/, "[Threaded comment]\n ").replace(/\n\n(Comment|Reply):\n {4}/g, "\n$1:\n\t").replace(/\n*$/, "\n");
 }
 
+/** Whether a formula is, as a whole, an IF with its "then" or "else" left empty: IF(test,,x) or IF(test,x,) */
+export function emptyBranchIf(formula: string): boolean {
+  const f = formula.trim();
+  if (!/^IF\(/i.test(f) || !f.endsWith(")")) return false;
+  const args: string[] = [];
+  let depth = 0, quoted = false, from = 3;
+  for (let i = 3; i < f.length; i++) {
+    const ch = f[i];
+    if (ch === '"') quoted = !quoted;
+    if (quoted) continue;
+    if (ch === "(" || ch === "{") depth++;
+    else if (ch === ")" || ch === "}") { if (depth === 0) { if (i !== f.length - 1) return false; args.push(f.slice(from, i)); break; } depth--; }
+    else if (ch === "," && depth === 0) { args.push(f.slice(from, i)); from = i + 1; }
+  }
+  return args.length === 3 && (args[1].trim() === "" || args[2].trim() === "");
+}
+
 function pushRun(runs: SizeRun[], index: number, px: number) {
   const last = runs[runs.length - 1];
   if (last && last[1] === index - 1 && last[2] === px) last[1] = index;
@@ -656,6 +673,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
           delete cell.runs;
         }
       }
+      // IF with a branch left empty gives 0 in Excel and nothing in Sheets: the page shows what Sheets will
+      if (cell.f != null && cell.v === 0 && emptyBranchIf(cell.f)) delete cell.v;
       if (ctx.date1904 && typeof cell.v === "number" && cell.s) {
         const kind = book.styles[cell.s].numFmt ? numberFormatType(book.styles[cell.s].numFmt!) : "NUMBER";
         if (kind === "DATE" || kind === "DATE_TIME") cell.v += 1462;
@@ -986,6 +1005,9 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
 
     const warnings = new Set<string>();
     const date1904 = flag(child(wb, "workbookPr")?.attrs.date1904);
+    // Circular formulas that Excel settles by repeating: Google Sheets has the same setting, off unless set
+    const calc = child(wb, "calcPr");
+    const iterate = calc && flag(calc.attrs.iterate) ? { max: Math.min(10_000, Math.max(1, Math.round(Number(calc.attrs.iterateCount ?? 100)) || 100)), threshold: Math.min(1, Math.max(0, Number(calc.attrs.iterateDelta ?? 0.001))) || 0.001 } : null;
     const ctx: ReadContext = { zip, palette, book, shared, origin, warnings, budget: { cells: MAX_CELLS }, tables: [], tableText: [], drawings: [], date1904 };
     const sheetNodes = children(child(wb, "sheets"), "sheet");
     if (!sheetNodes.length) return fail("empty");
@@ -1059,7 +1081,7 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
     const theme: Workbook["theme"] = {};
     for (const [slot, i] of slots) theme[slot] = "#" + themeHex[i];
     const name = fileName.replace(/\.(xlsx|xlsm|xltx)$/i, "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 200) || "Untitled spreadsheet";
-    return { name, origin, defaultFont: book.defaultFont, theme, styles: book.styles, sheets, ...(names.length ? { names } : {}), warnings: Array.from(warnings) };
+    return { ...(iterate ? { iterate } : {}), name, origin, defaultFont: book.defaultFont, theme, styles: book.styles, sheets, ...(names.length ? { names } : {}), warnings: Array.from(warnings) };
   } catch (err) {
     if (err instanceof XlsxError) throw err;
     if (err instanceof ZipError) return fail("damaged");

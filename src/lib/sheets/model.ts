@@ -204,8 +204,18 @@ export interface Workbook {
   styles: CellStyle[];
   sheets: Sheet[];
   names?: NamedRange[];
+  /**
+   * Iterative calculation, when the workbook has it on (formulas that refer to themselves settle by
+   * repeating): how many rounds at most, and the change under which it stops
+   */
+  iterate?: { max: number; threshold: number };
   /** What the file has that isn't carried over, in plain words */
   warnings: string[];
+  /**
+   * Compare & Sync into a spreadsheet that exists: a number that keeps the ids of what this sync adds
+   * (named ranges, charts, alternating colours) apart from the ones the spreadsheet already has
+   */
+  idBase?: number;
 }
 
 // ── Addresses ──────────────────────────────────────────────────────────────

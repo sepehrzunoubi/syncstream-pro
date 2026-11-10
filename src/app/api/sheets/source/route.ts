@@ -17,6 +17,6 @@ export const GET = withRoute(async (req: NextRequest) => {
   if (limited) return limited;
   const plan = await getStore().getPlan(job.id);
   if (!plan?.sheet) return NextResponse.json({ error: "This sync's spreadsheet is no longer stored." }, { status: 404 });
-  const { workbook, steps, units, sections } = plan.sheet;
-  return applyAuthCookies(jsonReply(req, { workbook, steps, units, sections, delays: plan.actions.map((a) => a.delayMs), totalMs: plan.totalMs }), user);
+  const { workbook, steps, units, sections, baseline } = plan.sheet;
+  return applyAuthCookies(jsonReply(req, { workbook, steps, units, sections, ...(baseline ? { baseline } : {}), delays: plan.actions.map((a) => a.delayMs), totalMs: plan.totalMs }), user);
 });

@@ -52,7 +52,11 @@ export interface Timeline {
 
 const ASPECT_INDEX = new Map<Aspect, number>(ASPECTS.map((a, i) => [a, i]));
 
-export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
+/**
+ * `baseline`: the spreadsheet already holds everything no step sets (Compare & Sync): what the steps
+ * leave alone shows from the start, what they type and format shows once they have.
+ */
+export function buildTimeline(wb: Workbook, steps: readonly Step[], baseline = false): Timeline {
   const sheets: SheetTimeline[] = wb.sheets.map((s) => ({
     createdAt: Infinity, typedAt: new Float64Array(s.cells.length).fill(Infinity), runsAt: new Float64Array(s.cells.length).fill(Infinity),
     looks: new Array(s.cells.length), mergedAt: s.merges.map(() => Infinity), sizes: [], gridlinesAt: Infinity, freezeAt: Infinity, tabAt: Infinity, hiddenAt: Infinity, sizeAt: Infinity, filterAt: Infinity, groupsAt: Infinity, conditionalAt: Infinity, chartAt: (s.charts ?? []).map(() => Infinity), bandingAt: (s.banding ?? []).map(() => Infinity), spanAt: (s.spans ?? []).map(() => Infinity), focus: new Map(),
@@ -81,7 +85,7 @@ export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
 
   steps.forEach((step, k) => {
     if (step.k === "theme") { themeAt = Math.min(themeAt, k); return; }
-    if (step.k === "pause" || step.k === "name") return;
+    if (step.k === "pause" || step.k === "name" || step.k === "calc") return;
     const t = sheets[step.s];
     const sheet = wb.sheets[step.s];
     if (!t || !sheet) return;
@@ -126,6 +130,31 @@ export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
       default: break;
     }
   });
+  if (baseline) {
+    const was = (v: number) => (v === Infinity ? -1 : v);
+    if (themeAt === Infinity) themeAt = -1;
+    wb.sheets.forEach((sheet, s) => {
+      const t = sheets[s];
+      t.createdAt = was(t.createdAt); t.gridlinesAt = was(t.gridlinesAt); t.freezeAt = was(t.freezeAt); t.tabAt = was(t.tabAt); t.hiddenAt = was(t.hiddenAt);
+      t.sizeAt = was(t.sizeAt); t.filterAt = was(t.filterAt); t.groupsAt = was(t.groupsAt); t.conditionalAt = was(t.conditionalAt);
+      for (let i = 0; i < t.typedAt.length; i++) { t.typedAt[i] = was(t.typedAt[i]); t.runsAt[i] = was(t.runsAt[i]); }
+      t.mergedAt = t.mergedAt.map(was); t.chartAt = t.chartAt.map(was); t.bandingAt = t.bandingAt.map(was); t.spanAt = t.spanAt.map(was);
+      // Every part of a cell's look is there from the start; a step that sets one shows its value from then on
+      sheet.cells.forEach((cell, i) => {
+        if (!cell.s || !wb.styles[cell.s]) return;
+        const first: number[] = [];
+        ASPECTS.forEach((a, n) => { if (hasAspect(wb.styles[cell.s!], a)) first.push(-1, n, cell.s!); });
+        if (first.length) t.looks[i] = [...first, ...(t.looks[i] ?? [])];
+      });
+      // Sizes: the sheet's own first, then what the steps set
+      const own: typeof t.sizes = [[-1, "r", 0, sheet.rowCount - 1, sheet.defaultRowPx], [-1, "c", 0, sheet.colCount - 1, sheet.defaultColPx]];
+      for (const [from, to, px] of sheet.rowPx) own.push([-1, "r", from, to, px]);
+      for (const [from, to, px] of sheet.colPx) own.push([-1, "c", from, to, px]);
+      for (const [from, to] of sheet.hiddenRows ?? []) own.push([-1, "r", from, to, 0]);
+      for (const [from, to] of sheet.hiddenCols ?? []) own.push([-1, "c", from, to, 0]);
+      t.sizes = [...own, ...t.sizes];
+    });
+  }
   return { steps: steps.length, themeAt, sheets, sheetOf };
 }
 

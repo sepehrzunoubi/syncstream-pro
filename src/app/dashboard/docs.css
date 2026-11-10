@@ -1034,6 +1034,12 @@ tr.ss-page-gap { display: table-row; }
    Everything below is this section's own; it builds on the tokens above.
    ════════════════════════════════════════════════════════════════════════ */
 
+/* Compare & Sync's own switch: documents or spreadsheets */
+.ss-kinds { display: inline-flex; flex: none; margin-left: 10px; padding: 2px; border-radius: 9999px; background: var(--ss-soft); }
+.ss-kind { height: 22px; padding: 0 10px; border-radius: 9999px; font-size: 12px; font-weight: 500; line-height: 22px; letter-spacing: 0.1px; color: var(--ss-text-2); }
+.ss-kind:hover:not([aria-current]) { background: var(--ss-hover); }
+.ss-kind[aria-current="page"] { background: var(--ss-tonal); color: var(--ss-on-tonal); }
+
 /* The header's switch between Sync and Compare & Sync */
 .ss-tabs { display: flex; flex: none; gap: 2px; padding: 3px; border-radius: 9999px; background: var(--ss-soft); }
 .ss-tab {

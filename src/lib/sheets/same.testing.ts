@@ -11,7 +11,7 @@ import { cellName, type Sheet, type Workbook } from "./model";
 const canon = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
 
 /** Each kind of difference with how often it occurs and one example; empty when the two match */
-export function workbookDifferences(a: Workbook, b: Workbook, max = 10): string[] {
+export function workbookDifferences(a: Workbook, b: Workbook, max = 10, opts: { results?: boolean } = {}): string[] {
   const hex = (w: Workbook, c: unknown) => { const v = typeof c === "string" && c.startsWith("theme:") ? ((w.theme as Record<string, string | undefined> | undefined)?.[c.slice(6)] ?? c) : c; return typeof v === "string" ? v.toLowerCase() : v; };
   const flat = (w: Workbook, st: Workbook["styles"][number] | undefined) => {
     const o: Record<string, unknown> = { "font.family": w.defaultFont.family.toLowerCase(), "font.size": w.defaultFont.size, "font.color": "#000000" };
@@ -47,6 +47,7 @@ export function workbookDifferences(a: Workbook, b: Workbook, max = 10): string[
     const la = looks(sa), lb = looks(sb);
     const kinds = new Map<string, { n: number; eg: string }>();
     const note = (kind: string, eg: string) => { const k = kinds.get(kind); if (k) k.n++; else kinds.set(kind, { n: 1, eg }); };
+    const close = (x: unknown, y: unknown) => (typeof x === "number" && typeof y === "number" ? Math.abs(x - y) <= 1e-7 * Math.max(1, Math.abs(x), Math.abs(y)) : canon(x ?? null) === canon(y ?? null));
     const same = (x: unknown, y: unknown) => (typeof x === "number" && typeof y === "number" ? Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(x), Math.abs(y)) * 10 : canon(x ?? null) === canon(y ?? null));
     for (const k of [...new Set<number>([...la.keys(), ...lb.keys()])].sort((x, y) => x - y)) {
       if (covered.has(k)) continue;
@@ -54,6 +55,8 @@ export function workbookDifferences(a: Workbook, b: Workbook, max = 10): string[
       const name = cellName(Math.floor(k / 16384), k % 16384);
       if ((ca2?.f ?? null) !== (cb2?.f ?? null)) note("formula", `${name}: ${ca2?.f} | ${cb2?.f}`);
       else if (ca2?.f == null && !same(ca2?.v, cb2?.v)) note("value", `${name}: ${canon(ca2?.v)} | ${canon(cb2?.v)}`);
+      // What a formula worked out to (both sides saved by the same spreadsheet program), when asked
+      else if (opts.results && ca2?.f != null && !/\b(TODAY|NOW|RAND|RANDBETWEEN|RANDARRAY)\(/i.test(ca2.f) && !close(ca2?.v, cb2?.v)) note("formula result", `${name}: ${ca2.f.slice(0, 60)} = ${canon(ca2?.v)} | ${canon(cb2?.v)}`);
       if ((ca2?.e ?? null) !== (cb2?.e ?? null)) note("error", `${name}: ${ca2?.e} | ${cb2?.e}`);
       for (const extra of ["note", "link"] as const) if (canon(ca2?.[extra]) !== canon(cb2?.[extra])) note(extra, `${name}: ${canon(ca2?.[extra])?.slice(0, 120)} | ${canon(cb2?.[extra])?.slice(0, 120)}`);
       const fa2 = flat(a, a.styles[la.get(k) ?? 0]), fb2 = flat(b, b.styles[lb.get(k) ?? 0]);

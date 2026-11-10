@@ -35,6 +35,8 @@
 .sx-cells { position: absolute; top: 0; }
 .sx-gridline { position: absolute; background: var(--sx-line); pointer-events: none; }
 .sx-fill { position: absolute; pointer-events: none; }
+/* Compare & Sync: a cell the sync will type into */
+.sx-pending { position: absolute; pointer-events: none; background: rgba(26, 115, 232, 0.1); box-shadow: inset 0 0 0 1px rgba(26, 115, 232, 0.4); }
 .sx-clip { position: absolute; overflow: hidden; pointer-events: none; }
 .sx-text { position: absolute; top: 0; display: flex; box-sizing: border-box; padding: 0 3px 2px; color: #000; line-height: normal; font-kerning: normal; user-select: none; }
 .sx-border { position: absolute; width: 0; height: 0; pointer-events: none; z-index: 2; }

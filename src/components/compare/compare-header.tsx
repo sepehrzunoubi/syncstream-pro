@@ -6,6 +6,7 @@
  */
 
 import React from "react";
+import { CompareKind } from "./kind-switch";
 import * as MB from "@radix-ui/react-menubar";
 import { AccountMenu, docsUrl, type HeaderUser } from "../workspace/header";
 import { MenubarItem as Item, MenubarMenu as TopMenu, MenubarSeparator as Sep, MenubarSub as Sub } from "../workspace/menubar";
@@ -45,6 +46,7 @@ export function CompareHeader({ user, status, onReauth, onSignOut, menus: m }: C
       <div className="ss-header-main">
         <div className="ss-title-row">
           <h1 className="ss-title ss-title-static"><span className="truncate">Compare &amp; Sync</span></h1>
+          <CompareKind active="docs" />
           {status && <span className="ss-status-text ss-cmp-status" data-ss-status-text aria-live="polite">{status}</span>}
         </div>
         <div className="ss-menubar-row">

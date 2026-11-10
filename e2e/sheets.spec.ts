@@ -325,6 +325,55 @@ test.describe("sheets", () => {
   });
 });
 
+test.describe("compare & sync, sheets", () => {
+  test("a Google Sheet is brought up to a reference workbook: only what it is missing is marked, planned and sent", async ({ app, page, api }) => {
+    void app;
+    const now = Date.now();
+    api.history = [
+      { id: "sheet_a", kind: "sheet", documentId: "spreadsheet-older-0001", documentName: "Sales model", status: "done", createdAt: now - 86_400_000, startAt: now - 86_400_000, finishedAt: now - 86_000_000, totalChars: 100, charsSent: 100 },
+      { id: "sync_b", kind: "doc", documentId: "doc-1", documentName: "An essay", status: "done", createdAt: now, startAt: now, finishedAt: now, totalChars: 10, charsSent: 10 },
+    ];
+    api.sheetExport = fs.readFileSync(path.join(__dirname, "..", "fixtures", "xlsx", "features-older.xlsx"));
+    await page.context().addCookies([{ name: "google_access_token", value: "e2e-token", domain: "localhost", path: "/" }]);
+    await api.install(page);
+    // The switch on Compare & Sync goes between documents and spreadsheets
+    await page.goto("/dashboard/compare");
+    await page.getByRole("navigation", { name: "What to compare" }).getByRole("link", { name: "Sheets" }).click();
+    await expect(page).toHaveURL(/\/dashboard\/compare\/sheets$/);
+    await expect(page.getByRole("heading", { name: "Compare & Sync" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "What to compare" }).getByRole("link", { name: "Sheets" })).toHaveAttribute("aria-current", "page");
+
+    // The reference, then the spreadsheet to update: only ones SyncStream made are offered
+    await page.locator("[data-testid=sx-file]").setInputFiles(FEATURES);
+    await expect(page.locator(".sx-grid")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start sync" })).toBeDisabled();
+    const target = page.getByLabel("Your spreadsheet");
+    expect(await target.locator("option").allTextContents()).toEqual(["Choose a Google Sheet", "Sales model"]);
+    await target.selectOption("spreadsheet-older-0001");
+    expect(api.sheetExports).toEqual(["spreadsheet-older-0001"]);
+    const summary = page.locator("[data-testid=sx-compare-summary]");
+    await expect(summary).toContainText("1 new tab (Rules)");
+    await expect(summary).toContainText("to type");
+    // The cell that will be typed is marked: the one number that differs on the tab it has
+    const marked = await page.locator(".sx-pending").evaluateAll((els) => els.map((e) => e.getAttribute("data-pending")));
+    expect(marked).toEqual(["B3"]);
+    // What it already holds shows from the first step; the marked cell fills in when its step comes
+    await page.locator("[data-testid=sx-scrub]").fill("0");
+    await expect(cell(page, "A2")).not.toHaveText("");
+    await expect(cell(page, "B3")).toHaveCount(0);
+    const slider = page.locator("[data-testid=sx-scrub]");
+    await slider.fill((await slider.getAttribute("max"))!);
+    await expect(cell(page, "B3")).toHaveText("80");
+
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    const sent = api.sheetStarts[0];
+    expect(sent.target).toBe("spreadsheet-older-0001");
+    expect(sent.have?.sheets.map((s) => s.name)).toEqual(["Sales"]);
+    expect(sent.workbook.sheets.map((s) => s.name)).toEqual(["Sales", "Rules"]);
+  });
+});
+
 test.describe("sync history", () => {
   const entries = () => {
     const now = Date.now();

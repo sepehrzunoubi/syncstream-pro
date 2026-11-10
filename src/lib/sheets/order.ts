@@ -259,6 +259,8 @@ export function planSteps(wb: Workbook): StepPlan {
   };
 
   steps.push({ k: "theme" });
+  // (before any formula: one that refers to itself is worked out as it is written)
+  if (wb.iterate) steps.push({ k: "calc" });
   /** Charts that draw from a later sheet, by the sheet they wait for */
   const chartsAfter = new Map<number, Step[]>();
 
