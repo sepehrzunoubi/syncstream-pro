@@ -30,6 +30,24 @@ export interface FontStyle {
 }
 
 /** How a cell looks. Every part is optional: an absent part is the spreadsheet's default */
+/** The colours of rows, or of columns, that alternate over a range */
+export interface BandColors { header?: Color; first: Color; second: Color; footer?: Color }
+
+/** Alternating colours on a range (Format > Alternating colours), by row, by column or both */
+export interface Banding { rect: Rect; rows?: BandColors; cols?: BandColors }
+
+/** The colour banding gives the cell at (r, c), if any: its row's, else its column's */
+export function bandColor(b: Banding, r: number, c: number): Color | undefined {
+  const [r0, c0, r1, c1] = b.rect;
+  if (r < r0 || r > r1 || c < c0 || c > c1) return undefined;
+  const pick = (p: BandColors, at: number, lo: number, hi: number): Color => {
+    if (p.header && at === lo) return p.header;
+    if (p.footer && at === hi) return p.footer;
+    return (at - lo - (p.header ? 1 : 0)) % 2 === 0 ? p.first : p.second;
+  };
+  return b.rows ? pick(b.rows, r, r0, r1) : b.cols ? pick(b.cols, c, c0, c1) : undefined;
+}
+
 export interface CellStyle {
   font?: FontStyle;
   fill?: Color;
@@ -157,6 +175,8 @@ export interface Sheet {
   conditional?: ConditionalRule[];
   /** The range with filter buttons on its first row */
   filter?: Rect;
+  /** Ranges with alternating colours: what an Excel table's style becomes in Google Sheets */
+  banding?: Banding[];
   groups?: DimensionGroup[];
   charts?: Chart[];
 }

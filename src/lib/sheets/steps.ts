@@ -40,6 +40,8 @@ export type Step =
   | { k: "dv"; s: number; i: number }
   /** Filter buttons on the sheet's filter range */
   | { k: "filter"; s: number }
+  /** Alternating colours on one of the sheet's banded ranges */
+  | { k: "banding"; s: number; i: number }
   /** The sheet's row and column groups, all of them */
   | { k: "groups"; s: number }
   /** Insert the sheet's chart number `i` */
@@ -291,7 +293,7 @@ function conditionalRequests(wb: Workbook, sheet: Sheet): SheetsRequest[] {
 }
 
 /** Steps that would write twice if sent twice: the runner reads what is there before sending one */
-export const needsCheck = (step: Step): boolean => step.k === "sheet" || step.k === "name" || step.k === "cf" || step.k === "groups" || step.k === "chart";
+export const needsCheck = (step: Step): boolean => step.k === "sheet" || step.k === "name" || step.k === "cf" || step.k === "groups" || step.k === "chart" || step.k === "banding";
 
 /** What the spreadsheet already has, as far as those steps care */
 export interface Existing {
@@ -302,7 +304,11 @@ export interface Existing {
   /** Row and column groups on each sheet, by sheet id */
   groups?: ReadonlyMap<number, number>;
   chartIds?: ReadonlySet<number>;
+  bandIds?: ReadonlySet<number>;
 }
+
+/** The id a sheet's i-th banded range is made with, so a step sent twice is seen to be there already */
+export const bandId = (sheetIndex: number, i: number): number => 800_000 + sheetIndex * 1000 + i;
 
 /** The id a chart gets in the Google Sheet: the same on every try, so a retry can tell it is there */
 export const chartId = (sheetIndex: number, i: number): number => 900_000 + sheetIndex * 1000 + i;
@@ -425,6 +431,15 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
       const folds = groups.filter((g) => g.collapsed).map((g) => ({ updateDimensionGroup: { dimensionGroup: { range: range(g), depth: g.depth, collapsed: true }, fields: "collapsed" } }));
       return [...adds, ...folds];
     }
+    case "banding": {
+      const b = sheet.banding?.[step.i];
+      if (!b || existing?.bandIds?.has(bandId(step.s, step.i))) return [];
+      const props = (p: NonNullable<typeof b.rows>) => ({
+        ...(p.header ? { headerColorStyle: colorStyle(p.header) } : {}), firstBandColorStyle: colorStyle(p.first), secondBandColorStyle: colorStyle(p.second),
+        ...(p.footer ? { footerColorStyle: colorStyle(p.footer) } : {}),
+      });
+      return [{ addBanding: { bandedRange: { bandedRangeId: bandId(step.s, step.i), range: gridRange(id, b.rect), ...(b.rows ? { rowProperties: props(b.rows) } : {}), ...(b.cols ? { columnProperties: props(b.cols) } : {}) } } }];
+    }
     case "chart": {
       const chart = sheet.charts?.[step.i];
       if (!chart || existing?.chartIds?.has(chartId(step.s, step.i))) return [];
@@ -462,6 +477,7 @@ export function stepLabel(wb: Workbook, step: Step): string {
     case "prop": return step.p === "gridlines" ? "Hiding the gridlines" : step.p === "freeze" ? "Freezing panes" : step.p === "tab" ? "Colouring the tab" : "Hiding the tab";
     case "dv": { const v = sheet?.validations?.[step.i]; return v && !v.values && !v.source ? "Adding a validation rule" : "Adding a dropdown"; }
     case "filter": return "Turning on the filter";
+    case "banding": return `Alternating colours on ${sheet?.banding?.[step.i] ? rectName(sheet.banding[step.i].rect) : "a table"}`;
     case "groups": return "Grouping rows and columns";
     case "chart": return `Inserting a chart${sheet?.charts?.[step.i]?.title ? ` (${sheet.charts[step.i].title})` : ""}`;
     case "cf": return "Adding conditional formatting";

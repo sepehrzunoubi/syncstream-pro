@@ -4,7 +4,7 @@
  * anything that isn't exactly what the model allows refuses the whole thing.
  */
 
-import { BORDER_STYLES, CHART_TYPES, THEME_SLOTS, type Border, type Cell, type CellStyle, type Chart, type ChartSource, type Color, type ConditionalRule, type DimensionGroup, type FontStyle, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Validation, type Workbook } from "./model";
+import { type Banding, type BandColors, BORDER_STYLES, CHART_TYPES, THEME_SLOTS, type Border, type Cell, type CellStyle, type Chart, type ChartSource, type Color, type ConditionalRule, type DimensionGroup, type FontStyle, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Validation, type Workbook } from "./model";
 
 export const MAX_WORKBOOK_CELLS = 150_000;
 const MAX_SHEETS = 60;
@@ -217,6 +217,21 @@ function sheet(v: unknown, styles: number, budget: { cells: number; grid: number
     if (list.length) out.validations = list;
   }
   if (o.filter != null) out.filter = rect(o.filter, rowCount, colCount, "filter");
+  if (o.banding != null) {
+    const colors = (v: unknown): BandColors => {
+      const p = obj(v, "banding");
+      return { ...(p.header != null ? { header: color(p.header, "banding") } : {}), first: color(p.first, "banding"), second: color(p.second, "banding"), ...(p.footer != null ? { footer: color(p.footer, "banding") } : {}) };
+    };
+    const list: Banding[] = arr(o.banding, "banding", 200).map((b) => {
+      const bo = obj(b, "banding");
+      const band: Banding = { rect: rect(bo.rect, rowCount, colCount, "banding") };
+      if (bo.rows != null) band.rows = colors(bo.rows);
+      if (bo.cols != null) band.cols = colors(bo.cols);
+      if (!band.rows && !band.cols) bad("banding");
+      return band;
+    });
+    if (list.length) out.banding = list;
+  }
   if (o.groups != null) {
     const list: DimensionGroup[] = arr(o.groups, "groups", 2000).map((g) => {
       const go = obj(g, "group");

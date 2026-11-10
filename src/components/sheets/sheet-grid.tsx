@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { cellKey, cellName, colName, type Border, type Cell, type CellStyle, type FontStyle, type Rect, type Workbook } from "@/lib/sheets/model";
+import { bandColor, cellKey, cellName, colName, type Border, type Cell, type CellStyle, type FontStyle, type Rect, type Workbook } from "@/lib/sheets/model";
 import type { SheetView } from "@/lib/sheets/timeline";
 import { conditionalLooks, type ConditionalLook } from "@/lib/sheets/conditional";
 import { CELL_PADDING, INDENT_PX } from "@/lib/sheets/steps";
@@ -107,6 +107,21 @@ const Region = React.memo(function Region({ scene, r0, r1, c0, c1, selection }: 
     for (let r = r0; r <= r1; r++) if (rows.sizes[r]) fills.push(<div key={`h${r}`} className="sx-gridline" style={{ left: x0, top: rows.offsets[r + 1] - 1, width: x1 - x0, height: 1 }} />);
     for (let c = c0; c <= c1; c++) if (cols.sizes[c]) fills.push(<div key={`v${c}`} className="sx-gridline" style={{ left: cols.offsets[c + 1] - 1, top: y0, width: 1, height: y1 - y0 }} />);
   }
+  // Alternating colours lie under the cells' own fills, and over the gridlines as a fill does
+  view.banding.forEach((band, n) => {
+    const [b0, bc0, b1, bc1] = band.rect;
+    const ca = Math.max(bc0, c0), cb = Math.min(bc1, c1);
+    if (b1 < r0 || b0 > r1 || ca > cb) return;
+    for (let r = Math.max(b0, r0); r <= Math.min(b1, r1); r++) {
+      if (!rows.sizes[r]) continue;
+      // A row is one strip; with column colours only, one strip a column
+      for (let c = ca; c <= cb; c = band.rows ? cb + 1 : c + 1) {
+        const color = cssColor(wb, bandColor(band, r, c));
+        const right = band.rows ? cb : c;
+        if (color) fills.push(<div key={`b${n}-${r}-${c}`} className="sx-fill" data-band={n} style={{ left: cols.offsets[c], top: rows.offsets[r], width: cols.offsets[right + 1] - cols.offsets[c], height: rows.offsets[r + 1] - rows.offsets[r], background: color }} />);
+      }
+    }
+  });
   // Merged areas hide the gridlines inside them
   for (const rect of view.merges) {
     if (rect[2] < r0 || rect[0] > r1) continue;

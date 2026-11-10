@@ -159,6 +159,11 @@ test.describe("sheets", () => {
     await expect(page.getByRole("img", { name: "Chart: Units and price" }).locator("polyline")).toHaveCount(2);
     // The table's header row carries filter buttons
     await expect(page.locator(".sx-filter-btn")).toHaveCount(4);
+    // The table's style is alternating colours, as Google Sheets imports it: a blue header with white words, every other row pale blue
+    const bands = page.locator(".sx-cells .sx-fill[data-band]");
+    await expect(bands).toHaveCount(7);
+    expect(await bands.evaluateAll((els) => els.slice(0, 3).map((e) => getComputedStyle(e).backgroundColor))).toEqual(["rgb(79, 129, 189)", "rgb(219, 229, 241)", "rgb(255, 255, 255)"]);
+    await expect(cell(page, "A1")).toHaveCSS("color", "rgb(255, 255, 255)");
     // A formula that named the table's columns reads cell ranges
     await clickCell(page, "A2");
     for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");

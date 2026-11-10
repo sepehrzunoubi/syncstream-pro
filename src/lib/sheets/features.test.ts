@@ -299,3 +299,59 @@ test("refusals past a share of the sync stop it instead of building a hollow she
   assert.ok(job.refused!.count > 40);
   assert.equal(cellName(0, 0), "A1");
 });
+
+// ── Tables' colours ────────────────────────────────────────────────────────
+
+const tableStyles = () => readXlsx(new Uint8Array(readFileSync("fixtures/xlsx/table-styles.xlsx")), "table-styles.xlsx");
+
+test("every built-in table style becomes the alternating colours Google's own import gives it", async () => {
+  // All sixty styles, and the stripe, column and totals options, as Google Sheets imported the same file
+  const wb = await tableStyles();
+  const want = JSON.parse(readFileSync("fixtures/xlsx/table-styles.google-import.json", "utf8")) as Record<string, { rect: number[]; rows?: Record<string, string>; cols?: Record<string, string> }[]>;
+  const hex = (c?: string) => (c == null ? undefined : (c.startsWith("theme:") ? (wb.theme as Record<string, string | undefined> | undefined)?.[c.slice(6)] ?? c : c).toLowerCase());
+  const flat = (p?: { header?: string; first?: string; second?: string; footer?: string }) => (p ? { header: hex(p.header), first: hex(p.first), second: hex(p.second), footer: hex(p.footer) } : undefined);
+  for (const sheet of wb.sheets) {
+    const got = [...(sheet.banding ?? [])].sort((a, b) => a.rect[1] - b.rect[1]).map((b) => ({ rect: b.rect, rows: flat(b.rows), cols: flat(b.cols) }));
+    assert.deepEqual(got, want[sheet.name].map((b) => ({ rect: b.rect, rows: flat(b.rows), cols: flat(b.cols) })), sheet.name);
+  }
+  assert.equal(wb.sheets[0].banding!.length, 60);
+  // The untinted colours are the theme's own, as the import keeps them
+  assert.deepEqual(wb.sheets[0].banding![22].rows, { header: "theme:ACCENT1", first: "#dbe5f1", second: "theme:BACKGROUND" });
+  // White text where the style's header is dark, on every cell of the dark styles, and never without the colour under it
+  const white = (sheet: number, ref: string) => { const c = at(wb, sheet, ref); return (c.s ? wb.styles[c.s]?.font?.color : undefined) === "#ffffff"; };
+  assert.deepEqual([white(0, "A1"), white(0, "CK1"), white(0, "CK2"), white(0, "GS1"), white(0, "GS3"), white(1, "E1"), white(1, "A1")], [false, true, false, true, true, false, true]);
+  assert.ok(!wb.warnings.some((w) => /colour/.test(w)), wb.warnings.join(" | "));
+});
+
+test("a table's colours are one step each, before its cells' own looks, and are made once", async () => {
+  const parsed = parseWorkbook(JSON.parse(JSON.stringify(await tableStyles())));
+  assert.ok(parsed.ok);
+  if (!parsed.ok) return;
+  const wb = parsed.workbook;
+  const { steps } = planSteps(wb);
+  const order = steps.map((s) => s.k);
+  assert.equal(order.filter((k) => k === "banding").length, 66);
+  // On each sheet: after its cells are typed, before the first look (white header text needs its colour)
+  for (const s of [0, 1]) {
+    const mine = steps.map((st, k) => ({ st, k })).filter((x) => "s" in x.st && x.st.s === s);
+    const first = (kind: string) => mine.find((x) => x.st.k === kind)!.k;
+    assert.ok(first("banding") > first("type") && first("banding") < first("fmt"), `sheet ${s}`);
+  }
+  const doc = new StubSpreadsheet();
+  for (const step of steps) for (let attempt = 0; attempt < 2; attempt++) {
+    const requests = stepRequests(wb, step, needsCheck(step) ? doc.existing() : undefined);
+    if (requests.length) doc.batchUpdate(requests);
+  }
+  assert.deepEqual(differences(wb, doc), []);
+  assert.equal(doc.sheets.get(wb.sheets[0].id)!.banding.size, 60);
+  // The page shows them from their step on
+  const timeline = buildTimeline(wb, steps);
+  const k = steps.findIndex((st) => st.k === "banding");
+  assert.equal(viewAt(wb, timeline, k, 0).banding.length, 0);
+  assert.equal(viewAt(wb, timeline, k + 1, 0).banding.length, 1);
+  assert.equal(finalView(wb, 0).banding.length, 60);
+  // A banded range with only one colour, or outside the sheet, is refused from a request
+  const raw = JSON.parse(JSON.stringify(wb));
+  raw.sheets[0].banding[0].rows = { first: "#ffffff" };
+  assert.ok(!parseWorkbook(raw).ok);
+});

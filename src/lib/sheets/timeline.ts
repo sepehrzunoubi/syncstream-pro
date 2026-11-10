@@ -5,7 +5,7 @@
  * for a running sync.
  */
 
-import { layout, type CellStyle, type Chart, type Rect, type Sheet, type Workbook } from "./model";
+import { type Banding, layout, type CellStyle, type Chart, type Rect, type Sheet, type Workbook } from "./model";
 import { ASPECTS, hasAspect, type Aspect, type Step } from "./steps";
 
 /** Google Sheets' own defaults, before a sync has changed them */
@@ -36,6 +36,7 @@ interface SheetTimeline {
   conditionalAt: number;
   /** Per chart: the step that inserts it */
   chartAt: number[];
+  bandingAt: number[];
   /** What each step touches here, to show where the sync is */
   focus: Map<number, Rect[]>;
 }
@@ -53,7 +54,7 @@ const ASPECT_INDEX = new Map<Aspect, number>(ASPECTS.map((a, i) => [a, i]));
 export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
   const sheets: SheetTimeline[] = wb.sheets.map((s) => ({
     createdAt: Infinity, typedAt: new Float64Array(s.cells.length).fill(Infinity), runsAt: new Float64Array(s.cells.length).fill(Infinity),
-    looks: new Array(s.cells.length), mergedAt: s.merges.map(() => Infinity), sizes: [], gridlinesAt: Infinity, freezeAt: Infinity, tabAt: Infinity, hiddenAt: Infinity, sizeAt: Infinity, filterAt: Infinity, groupsAt: Infinity, conditionalAt: Infinity, chartAt: (s.charts ?? []).map(() => Infinity), focus: new Map(),
+    looks: new Array(s.cells.length), mergedAt: s.merges.map(() => Infinity), sizes: [], gridlinesAt: Infinity, freezeAt: Infinity, tabAt: Infinity, hiddenAt: Infinity, sizeAt: Infinity, filterAt: Infinity, groupsAt: Infinity, conditionalAt: Infinity, chartAt: (s.charts ?? []).map(() => Infinity), bandingAt: (s.banding ?? []).map(() => Infinity), focus: new Map(),
   }));
   // Cells by row, to find the ones a formatted range covers
   const rowsOf = wb.sheets.map((s) => {
@@ -119,6 +120,7 @@ export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
       case "groups": t.groupsAt = Math.min(t.groupsAt, k); break;
       case "cf": t.conditionalAt = Math.min(t.conditionalAt, k); break;
       case "chart": if (step.i < t.chartAt.length) t.chartAt[step.i] = Math.min(t.chartAt[step.i], k); break;
+      case "banding": if (step.i < t.bandingAt.length) t.bandingAt[step.i] = Math.min(t.bandingAt[step.i], k); break;
       default: break;
     }
   });
@@ -152,6 +154,8 @@ export interface SheetView {
   charts: Chart[];
   filter?: Rect;
   conditional: boolean;
+  /** The ranges with alternating colours so far */
+  banding: Banding[];
 }
 
 /**
@@ -215,7 +219,7 @@ export function finalView(wb: Workbook, s: number): SheetView {
     defaultFont: wb.defaultFont, merges: sheet.merges,
     typed: () => true, rich: () => true,
     styleOf: (i) => { const c = sheet.cells[i]; return c?.s ? wb.styles[c.s] : undefined; },
-    focus: [], charts: sheet.charts ?? [], filter: sheet.filter, conditional: !!sheet.conditional?.length,
+    focus: [], charts: sheet.charts ?? [], filter: sheet.filter, conditional: !!sheet.conditional?.length, banding: sheet.banding ?? [],
   };
 }
 
@@ -258,7 +262,7 @@ export function viewAt(wb: Workbook, timeline: Timeline, done: number, s: number
       return style;
     },
     focus: last >= 0 && timeline.sheetOf[last] === s ? t.focus.get(last) ?? [] : [],
-    charts: (sheet.charts ?? []).filter((_c, i) => t.chartAt[i] < done), filter: t.filterAt < done ? sheet.filter : undefined, conditional: t.conditionalAt < done,
+    charts: (sheet.charts ?? []).filter((_c, i) => t.chartAt[i] < done), filter: t.filterAt < done ? sheet.filter : undefined, conditional: t.conditionalAt < done, banding: (sheet.banding ?? []).filter((_b, i) => t.bandingAt[i] < done),
   };
 }
 

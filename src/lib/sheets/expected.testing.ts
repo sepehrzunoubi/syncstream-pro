@@ -79,6 +79,9 @@ export function differences(wb: Workbook, doc: StubSpreadsheet, limit = 20): str
     if (got.groups.length !== (sheet.groups?.length ?? 0)) say(`sheet ${sheet.name} has ${got.groups.length} groups, not ${sheet.groups?.length ?? 0}`);
     if (got.collapsed.length !== (sheet.groups ?? []).filter((g) => g.collapsed).length) say(`sheet ${sheet.name} folded groups`);
     if (got.charts.size !== (sheet.charts?.length ?? 0)) say(`sheet ${sheet.name} has ${got.charts.size} charts, not ${sheet.charts?.length ?? 0}`);
+    const bands = Array.from(got.banding.values()).map((b) => b.rect.join()).sort().join(";");
+    const wanted = (sheet.banding ?? []).map((b) => b.rect.join()).sort().join(";");
+    if (bands !== wanted) say(`sheet ${sheet.name} alternating colours on ${bands || "nothing"}, not ${wanted || "nothing"}`);
   });
   if (doc.namedRanges.size !== (wb.names?.length ?? 0)) say("named ranges");
   return out;

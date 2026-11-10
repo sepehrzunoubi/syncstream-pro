@@ -40,6 +40,7 @@ export interface StubSheet {
   groups: string[];
   collapsed: string[];
   charts: Map<number, Record<string, unknown>>;
+  banding: Map<number, { rect: Rect; rows?: Record<string, unknown>; cols?: Record<string, unknown> }>;
 }
 
 type Obj = Record<string, unknown>;
@@ -92,7 +93,7 @@ export class StubSpreadsheet {
     const grid = (props.gridProperties ?? {}) as Obj;
     const sheet: StubSheet = {
       id, title, index: Number(props.index ?? this.sheets.size), rowCount: Number(grid.rowCount ?? 1000), colCount: Number(grid.columnCount ?? 26),
-      frozenRows: 0, frozenCols: 0, cells: new Map(), merges: [], rowPx: new Map(), colPx: new Map(), hiddenRows: new Set(), hiddenCols: new Set(), validations: [], conditional: [], groups: [], collapsed: [], charts: new Map(),
+      frozenRows: 0, frozenCols: 0, cells: new Map(), merges: [], rowPx: new Map(), colPx: new Map(), hiddenRows: new Set(), hiddenCols: new Set(), validations: [], conditional: [], groups: [], collapsed: [], charts: new Map(), banding: new Map(),
       ...(props.rightToLeft ? { rightToLeft: true } : {}),
     };
     this.sheets.set(id, sheet);
@@ -262,6 +263,16 @@ export class StubSpreadsheet {
           if (group.collapsed && !sheet.collapsed.includes(key)) sheet.collapsed.push(key);
           break;
         }
+        case "addBanding": {
+          const band = body.bandedRange as Obj;
+          const range = band.range as Obj;
+          const sheet = this.sheet(range.sheetId);
+          const bid = Number(band.bandedRangeId);
+          for (const s of this.sheets.values()) if (s.banding.has(bid)) throw Object.assign(new Error("Invalid requests: a banded range with that id already exists"), { code: 400 });
+          for (const p of [band.rowProperties, band.columnProperties]) if (p && (!(p as Obj).firstBandColorStyle || !(p as Obj).secondBandColorStyle)) throw Object.assign(new Error("Invalid requests: banding needs both band colours"), { code: 400 });
+          sheet.banding.set(bid, { rect: this.rect(sheet, range), rows: band.rowProperties as Obj | undefined, cols: band.columnProperties as Obj | undefined });
+          break;
+        }
         case "addChart": {
           const chart = body.chart as Obj;
           const anchor = (((chart.position as Obj).overlayPosition as Obj).anchorCell as Obj);
@@ -284,6 +295,7 @@ export class StubSpreadsheet {
       conditionalRules: new Map(Array.from(this.sheets.values()).map((s) => [s.id, s.conditional.length])),
       groups: new Map(Array.from(this.sheets.values()).map((s) => [s.id, s.groups.length])),
       chartIds: new Set(Array.from(this.sheets.values()).flatMap((s) => Array.from(s.charts.keys()))),
+      bandIds: new Set(Array.from(this.sheets.values()).flatMap((s) => Array.from(s.banding.keys()))),
     };
   }
 }

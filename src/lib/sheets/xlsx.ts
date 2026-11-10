@@ -16,7 +16,7 @@ import { resolveTableRefs, type TableInfo } from "./table-refs";
 import { readCharts } from "./xlsx-charts";
 import { readRels } from "./xlsx-parts";
 import { numberFormatType } from "./steps";
-import {
+import { type Banding,
   cellName, hasContent, parseCellName, parseRange, rectName,
   type Border, type BorderStyle, type Cell, type CellStyle, type Color, type ConditionalRule, type DimensionGroup, type FontStyle, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Validation, type Workbook,
 } from "./model";
@@ -139,6 +139,43 @@ export function applyTint(hex: string, tint: number): string {
   // Cut, not rounded: what Google's import of a tinted colour gives (4F81BD at 0.4 is 95B3D7, C0504D at 0.6 is E5B9B7)
   const hex2 = (v: number) => Math.max(0, Math.min(255, Math.floor(v * 255 + 1e-9))).toString(16).padStart(2, "0");
   return hex2(R) + hex2(G) + hex2(B);
+}
+
+/**
+ * One of Excel's built-in table styles as Google Sheets' own import of a table gives it: the colours
+ * of the header row and of the two alternating rows, and whether the text is white (the header's on
+ * a dark header, all of it in the dark styles). Each family of seven is a grey one and the six
+ * accents; measured against Google's import of all sixty (fixtures/xlsx/table-styles.xlsx).
+ * `color(theme index, tint)` resolves a theme colour.
+ */
+export function tableLook(name: string, color: (theme: number, tint?: number) => Color): { header: Color; first: Color; second: Color; footer?: Color; text?: "header" | "all" } | null {
+  const m = /^TableStyle(Light|Medium|Dark)(\d+)$/.exec(name);
+  if (!m) return null;
+  const n = Number(m[2]);
+  const white = color(0), dark = color(1);
+  // Excel's own tints: "80% lighter" is a hair under 0.8, which is what lands a shade where Google's does
+  const L80 = 0.79998168889431442, L60 = 0.59999389629810485, D25 = -0.249977111117893;
+  const k = (n - 1) % 7; // 0: the grey one; 1 to 6: the accents
+  const accent = (t?: number) => color(3 + k, t);
+  const light = k ? accent(L80) : color(1, 0.85), mid = k ? accent(L60) : color(1, 0.65), head = k ? accent() : dark;
+  if (m[1] === "Light" && n <= 21) {
+    if (n >= 8 && n <= 14) return { header: head, first: white, second: white, text: "header" };
+    return { header: white, first: light, second: white };
+  }
+  if (m[1] === "Medium" && n <= 28) {
+    if (n <= 7) return { header: head, first: light, second: white, footer: white, text: "header" };
+    if (n <= 14) return { header: head, first: mid, second: light, text: "header" };
+    if (n <= 21) return { header: head, first: color(1, 0.85), second: white, text: "header" };
+    return { header: light, first: mid, second: light };
+  }
+  if (m[1] === "Dark" && n <= 11) {
+    if (n <= 7) return { header: dark, first: k ? accent(D25) : color(1, 0.25), second: k ? accent() : color(1, 0.45), text: "all" };
+    if (n === 8) return { header: dark, first: color(1, 0.65), second: color(1, 0.85), text: "header" };
+    // The last three pair two accents: the header in one, the rows in the one before it
+    const base = 4 + (n - 9) * 2;
+    return { header: color(base + 1), first: color(base, L60), second: color(base, L80), text: "header" };
+  }
+  return null;
 }
 
 class Palette {
@@ -366,6 +403,8 @@ interface ReadContext {
   budget: { cells: number };
   /** Every table of the workbook, for the formulas that name them */
   tables: TableInfo[];
+  /** Cells a table's style draws in white: its header row, or all of it */
+  tableText: { sheet: number; rect: Rect }[];
   /** Drawing parts still to read for charts, once every sheet is known */
   drawings: { sheet: number; part: string }[];
   /** Dates count from 1904 (old Mac workbooks): four years and a day later than everyone else's */
@@ -729,7 +768,23 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
     const columns = children(child(table, "tableColumns"), "tableColumn").map((c) => c.attrs.name ?? "");
     for (const tableName of new Set([table.attrs.displayName, table.attrs.name].filter((x): x is string => !!x))) ctx.tables.push({ name: tableName, sheet: name, rect: ref, headerRows, totalsRows, columns });
     if (child(table, "autoFilter") && headerRows) tableFilter = [ref[0], ref[1], ref[2] - totalsRows, ref[3]];
-    if (child(table, "tableStyleInfo")?.attrs.name) ctx.warnings.add("A table's own colour banding isn't copied: its cells, formulas and filter buttons are.");
+    const info = child(table, "tableStyleInfo");
+    if (info?.attrs.name) {
+      const look = tableLook(info.attrs.name, (idx, tint) => ctx.palette.resolve({ name: "color", attrs: { theme: String(idx), ...(tint ? { tint: String(tint) } : {}) }, children: [] } as unknown as XmlNode) ?? "#ffffff");
+      if (!look) ctx.warnings.add("A table with a style of the workbook's own keeps its cells, formulas and filter buttons, not the style's colours.");
+      else {
+        const white = look.first.toLowerCase() === "theme:background" ? look.first : "#ffffff";
+        const banding: Banding = { rect: ref };
+        const rowStripes = flag(info.attrs.showRowStripes), colStripes = flag(info.attrs.showColumnStripes);
+        // As Google's import of the same table: rows alternate (both the same colour when the stripes are off),
+        // the header row and totals row have their own; column stripes alone leave the header to the cells
+        if (rowStripes || !colStripes) banding.rows = { ...(headerRows ? { header: look.header } : {}), first: rowStripes ? look.first : white, second: rowStripes ? look.second : white, ...(totalsRows && look.footer ? { footer: look.footer } : {}) };
+        if (colStripes) banding.cols = { first: look.first, second: look.second };
+        (sheet.banding ??= []).push(banding);
+        // White text only where the colour under it is there: the header's needs the header row's colour
+        if (look.text && (look.text === "all" ? !!banding.rows : !!banding.rows?.header)) ctx.tableText.push({ sheet: index, rect: look.text === "all" ? ref : [ref[0], ref[1], ref[0], ref[3]] });
+      }
+    }
   }
   // Sheets has one filter a sheet: the sheet's own, or its only table's
   const filter = parseRange(child(ws, "autoFilter")?.attrs.ref ?? "") ?? (tableCount === 1 ? tableFilter : null);
@@ -808,7 +863,7 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
 
     const warnings = new Set<string>();
     const date1904 = flag(child(wb, "workbookPr")?.attrs.date1904);
-    const ctx: ReadContext = { zip, palette, book, shared, origin, warnings, budget: { cells: MAX_CELLS }, tables: [], drawings: [], date1904 };
+    const ctx: ReadContext = { zip, palette, book, shared, origin, warnings, budget: { cells: MAX_CELLS }, tables: [], tableText: [], drawings: [], date1904 };
     const sheetNodes = children(child(wb, "sheets"), "sheet");
     if (!sheetNodes.length) return fail("empty");
     if (sheetNodes.length > MAX_SHEETS) return fail("tooLarge");
@@ -832,6 +887,20 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
         if (cell.s && book.general.has(cell.s) && typeof cell.v === "number") whole.set(cell.s, (whole.get(cell.s) ?? true) && Number.isInteger(cell.v));
       }
       for (const [idx, raw] of book.general) if (whole.get(idx)) book.styles[idx].numFmt = sheetsNumberFormat(raw, "0");
+    }
+    // A table style with a dark header (or dark all over) draws its text white
+    for (const t of ctx.tableText) {
+      const known = new Map(book.styles.map((st, i) => [JSON.stringify(st), i]));
+      for (const cell of sheets[t.sheet]?.cells ?? []) {
+        if (cell.r < t.rect[0] || cell.r > t.rect[2] || cell.c < t.rect[1] || cell.c > t.rect[3]) continue;
+        const own = cell.s ? book.styles[cell.s] : undefined;
+        if (own?.font?.color) continue;
+        const style: CellStyle = { ...(own ?? {}), font: { ...(own?.font ?? {}), color: "#ffffff" } };
+        const key = JSON.stringify(style);
+        let idx = known.get(key);
+        if (idx == null) { idx = book.styles.length; book.styles.push(style); known.set(key, idx); }
+        cell.s = idx;
+      }
     }
     // Formulas that name a table's columns read cell ranges in Sheets
     if (ctx.tables.length) {

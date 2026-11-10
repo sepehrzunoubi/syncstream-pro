@@ -324,6 +324,8 @@ export function planSteps(wb: Workbook): StepPlan {
     }
 
     let colsSized = false;
+
+    const banded = new Set<number>();
     bands.forEach(([r0, r1], b) => {
       const at = steps.length;
       // The cells typed in this section, and the runs of columns they sit in
@@ -373,6 +375,8 @@ export function planSteps(wb: Workbook): StepPlan {
         colsSized = true;
         for (const [c0, c1, px] of sheet.colPx) steps.push({ k: "size", s, d: "c", from: c0, to: c1, px });
       }
+      // A table's alternating colours go on before its cells' own looks (white header text on no colour would vanish)
+      (sheet.banding ?? []).forEach((bd, i) => { if (!banded.has(i) && bd.rect[0] >= from && bd.rect[0] <= to) { banded.add(i); steps.push({ k: "banding", s, i }); } });
       const inBand: Cell[] = [];
       const rich: number[] = [];
       const last = Math.min(to, rows.maxRow);
@@ -414,6 +418,7 @@ export function planSteps(wb: Workbook): StepPlan {
       }
     }
 
+    (sheet.banding ?? []).forEach((_bd, i) => { if (!banded.has(i)) steps.push({ k: "banding", s, i }); });
     // Charts go in once the cells they draw from are there (on this sheet, or a later one)
     (sheet.charts ?? []).forEach((chart, i) => {
       const last = Math.max(s, ...chart.series.map((x) => x.src.sheet), chart.domain?.sheet ?? 0);
