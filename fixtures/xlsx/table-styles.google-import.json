@@ -1,0 +1,868 @@
+{
+"Styles": [
+{
+"rect": [
+0,
+0,
+4,
+2
+],
+"rows": {
+"header": "#ffffff",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+4,
+4,
+6
+],
+"rows": {
+"header": "#ffffff",
+"first": "#dbe5f1",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+8,
+4,
+10
+],
+"rows": {
+"header": "#ffffff",
+"first": "#f2dbdb",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+12,
+4,
+14
+],
+"rows": {
+"header": "#ffffff",
+"first": "#eaf1dd",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+16,
+4,
+18
+],
+"rows": {
+"header": "#ffffff",
+"first": "#e5dfec",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+20,
+4,
+22
+],
+"rows": {
+"header": "#ffffff",
+"first": "#daeef3",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+24,
+4,
+26
+],
+"rows": {
+"header": "#ffffff",
+"first": "#fde9d9",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+28,
+4,
+30
+],
+"rows": {
+"header": "#000000",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+32,
+4,
+34
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+36,
+4,
+38
+],
+"rows": {
+"header": "#c0504d",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+40,
+4,
+42
+],
+"rows": {
+"header": "#9bbb59",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+44,
+4,
+46
+],
+"rows": {
+"header": "#8064a2",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+48,
+4,
+50
+],
+"rows": {
+"header": "#4bacc6",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+52,
+4,
+54
+],
+"rows": {
+"header": "#f79646",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+56,
+4,
+58
+],
+"rows": {
+"header": "#ffffff",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+60,
+4,
+62
+],
+"rows": {
+"header": "#ffffff",
+"first": "#dbe5f1",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+64,
+4,
+66
+],
+"rows": {
+"header": "#ffffff",
+"first": "#f2dbdb",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+68,
+4,
+70
+],
+"rows": {
+"header": "#ffffff",
+"first": "#eaf1dd",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+72,
+4,
+74
+],
+"rows": {
+"header": "#ffffff",
+"first": "#e5dfec",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+76,
+4,
+78
+],
+"rows": {
+"header": "#ffffff",
+"first": "#daeef3",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+80,
+4,
+82
+],
+"rows": {
+"header": "#ffffff",
+"first": "#fde9d9",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+84,
+4,
+86
+],
+"rows": {
+"header": "#000000",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+88,
+4,
+90
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#dbe5f1",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+92,
+4,
+94
+],
+"rows": {
+"header": "#c0504d",
+"first": "#f2dbdb",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+96,
+4,
+98
+],
+"rows": {
+"header": "#9bbb59",
+"first": "#eaf1dd",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+100,
+4,
+102
+],
+"rows": {
+"header": "#8064a2",
+"first": "#e5dfec",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+104,
+4,
+106
+],
+"rows": {
+"header": "#4bacc6",
+"first": "#daeef3",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+108,
+4,
+110
+],
+"rows": {
+"header": "#f79646",
+"first": "#fde9d9",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+112,
+4,
+114
+],
+"rows": {
+"header": "#000000",
+"first": "#a5a5a5",
+"second": "#d8d8d8"
+}
+},
+{
+"rect": [
+0,
+116,
+4,
+118
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#b8cce4",
+"second": "#dbe5f1"
+}
+},
+{
+"rect": [
+0,
+120,
+4,
+122
+],
+"rows": {
+"header": "#c0504d",
+"first": "#e5b8b7",
+"second": "#f2dbdb"
+}
+},
+{
+"rect": [
+0,
+124,
+4,
+126
+],
+"rows": {
+"header": "#9bbb59",
+"first": "#d6e3bc",
+"second": "#eaf1dd"
+}
+},
+{
+"rect": [
+0,
+128,
+4,
+130
+],
+"rows": {
+"header": "#8064a2",
+"first": "#ccc0d9",
+"second": "#e5dfec"
+}
+},
+{
+"rect": [
+0,
+132,
+4,
+134
+],
+"rows": {
+"header": "#4bacc6",
+"first": "#b6dde8",
+"second": "#daeef3"
+}
+},
+{
+"rect": [
+0,
+136,
+4,
+138
+],
+"rows": {
+"header": "#f79646",
+"first": "#fbd4b4",
+"second": "#fde9d9"
+}
+},
+{
+"rect": [
+0,
+140,
+4,
+142
+],
+"rows": {
+"header": "#000000",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+144,
+4,
+146
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+148,
+4,
+150
+],
+"rows": {
+"header": "#c0504d",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+152,
+4,
+154
+],
+"rows": {
+"header": "#9bbb59",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+156,
+4,
+158
+],
+"rows": {
+"header": "#8064a2",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+160,
+4,
+162
+],
+"rows": {
+"header": "#4bacc6",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+164,
+4,
+166
+],
+"rows": {
+"header": "#f79646",
+"first": "#d8d8d8",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+168,
+4,
+170
+],
+"rows": {
+"header": "#d8d8d8",
+"first": "#a5a5a5",
+"second": "#d8d8d8"
+}
+},
+{
+"rect": [
+0,
+172,
+4,
+174
+],
+"rows": {
+"header": "#dbe5f1",
+"first": "#b8cce4",
+"second": "#dbe5f1"
+}
+},
+{
+"rect": [
+0,
+176,
+4,
+178
+],
+"rows": {
+"header": "#f2dbdb",
+"first": "#e5b8b7",
+"second": "#f2dbdb"
+}
+},
+{
+"rect": [
+0,
+180,
+4,
+182
+],
+"rows": {
+"header": "#eaf1dd",
+"first": "#d6e3bc",
+"second": "#eaf1dd"
+}
+},
+{
+"rect": [
+0,
+184,
+4,
+186
+],
+"rows": {
+"header": "#e5dfec",
+"first": "#ccc0d9",
+"second": "#e5dfec"
+}
+},
+{
+"rect": [
+0,
+188,
+4,
+190
+],
+"rows": {
+"header": "#daeef3",
+"first": "#b6dde8",
+"second": "#daeef3"
+}
+},
+{
+"rect": [
+0,
+192,
+4,
+194
+],
+"rows": {
+"header": "#fde9d9",
+"first": "#fbd4b4",
+"second": "#fde9d9"
+}
+},
+{
+"rect": [
+0,
+196,
+4,
+198
+],
+"rows": {
+"header": "#000000",
+"first": "#3f3f3f",
+"second": "#727272"
+}
+},
+{
+"rect": [
+0,
+200,
+4,
+202
+],
+"rows": {
+"header": "#000000",
+"first": "#366092",
+"second": "#4f81bd"
+}
+},
+{
+"rect": [
+0,
+204,
+4,
+206
+],
+"rows": {
+"header": "#000000",
+"first": "#953734",
+"second": "#c0504d"
+}
+},
+{
+"rect": [
+0,
+208,
+4,
+210
+],
+"rows": {
+"header": "#000000",
+"first": "#76923c",
+"second": "#9bbb59"
+}
+},
+{
+"rect": [
+0,
+212,
+4,
+214
+],
+"rows": {
+"header": "#000000",
+"first": "#5f497a",
+"second": "#8064a2"
+}
+},
+{
+"rect": [
+0,
+216,
+4,
+218
+],
+"rows": {
+"header": "#000000",
+"first": "#31859b",
+"second": "#4bacc6"
+}
+},
+{
+"rect": [
+0,
+220,
+4,
+222
+],
+"rows": {
+"header": "#000000",
+"first": "#e36c09",
+"second": "#f79646"
+}
+},
+{
+"rect": [
+0,
+224,
+4,
+226
+],
+"rows": {
+"header": "#000000",
+"first": "#a5a5a5",
+"second": "#d8d8d8"
+}
+},
+{
+"rect": [
+0,
+228,
+4,
+230
+],
+"rows": {
+"header": "#c0504d",
+"first": "#b8cce4",
+"second": "#dbe5f1"
+}
+},
+{
+"rect": [
+0,
+232,
+4,
+234
+],
+"rows": {
+"header": "#8064a2",
+"first": "#d6e3bc",
+"second": "#eaf1dd"
+}
+},
+{
+"rect": [
+0,
+236,
+4,
+238
+],
+"rows": {
+"header": "#f79646",
+"first": "#b6dde8",
+"second": "#daeef3"
+}
+}
+],
+"Options": [
+{
+"rect": [
+0,
+0,
+5,
+2
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#dbe5f1",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+4,
+5,
+6
+],
+"cols": {
+"first": "#dbe5f1",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+8,
+5,
+10
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+12,
+5,
+14
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#b8cce4",
+"second": "#dbe5f1"
+}
+},
+{
+"rect": [
+0,
+16,
+5,
+18
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#ffffff",
+"second": "#ffffff"
+},
+"cols": {
+"first": "#ffffff",
+"second": "#ffffff"
+}
+},
+{
+"rect": [
+0,
+20,
+5,
+22
+],
+"rows": {
+"header": "#4f81bd",
+"first": "#dbe5f1",
+"second": "#ffffff",
+"footer": "#ffffff"
+}
+}
+]
+}

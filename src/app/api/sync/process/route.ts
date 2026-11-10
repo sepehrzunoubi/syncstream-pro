@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDocSnapshot, batchUpdate, deleteRange, refreshAccessToken } from "@/lib/google";
+import { getDocSnapshot, batchUpdate, deleteRange, refreshAccessToken, sheetsBatchUpdate, sheetsExisting } from "@/lib/google";
 import { getStore } from "@/lib/sync-store";
 import { getQStashReceiver, enqueueProcess } from "@/lib/qstash";
 import { runJobWindow } from "@/lib/sync-runner";
@@ -51,6 +51,7 @@ export const POST = withRoute(async (req: NextRequest) => {
   const result = await runJobWindow(jobId, generation, {
     store: getStore(),
     docs: { snapshot: getDocSnapshot, batch: batchUpdate, deleteRange },
+    sheets: { batch: sheetsBatchUpdate, existing: sheetsExisting },
     refresh: (refreshToken) => refreshAccessToken(refreshToken),
     enqueue: (id, gen, delaySec, t) => enqueueProcess(id, gen, delaySec, t),
     tick,

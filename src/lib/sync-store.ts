@@ -5,6 +5,9 @@ import { seal, unseal } from "./secret";
 import type { DripAction, StreamEvent } from "./drip-engine";
 import type { DocListState, RichFormat } from "./rich-text";
 import type { BreakEdit } from "./breaks";
+import type { Workbook } from "./sheets/model";
+import type { PlanSection } from "./sheets/order";
+import type { Step } from "./sheets/steps";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +31,18 @@ export interface SyncPlan {
    * back to back, each typed at its own spot, top to bottom.
    */
   segments?: PlanSegment[];
+  /**
+   * A spreadsheet sync: the workbook being built in the Google Sheet and its steps, one per action
+   * (an action's text is empty; what a step counts for in the progress is in `units`).
+   */
+  sheet?: SheetPlanData;
+}
+
+export interface SheetPlanData {
+  workbook: Workbook;
+  steps: Step[];
+  units: number[];
+  sections: PlanSection[];
 }
 
 export interface PlanSegment {
@@ -63,6 +78,8 @@ export interface SyncJob {
   userId: string;
   documentId: string;
   documentName: string;
+  /** "sheet": a spreadsheet built in a Google Sheet (`documentId` is the spreadsheet's). Absent: text typed into a Google Doc */
+  kind?: "sheet";
   /** The tab typed into, and its name (absent: a document read without its tabs, or an older job) */
   tabId?: string;
   tabTitle?: string;
@@ -131,6 +148,11 @@ export interface SyncJob {
   nextBreakAt?: number;
   lastUpdate: number;
   error?: string;
+  /**
+   * A spreadsheet sync: edits Google Sheets refused (a number format it doesn't take, say). Each was
+   * left out and the sync went on; `notes` says what the first few were.
+   */
+  refused?: { count: number; notes: string[] };
 }
 
 /** What the dashboard sees: a job without credentials. */
@@ -198,6 +220,41 @@ export function jobToEvent(job: SyncJob | PublicJob): StreamEvent {
   };
 }
 
+/** One line of the sync history: a sync as it was last heard of, kept after the sync itself is gone */
+export interface HistoryEntry {
+  id: string;
+  kind: "doc" | "sheet";
+  documentId: string;
+  documentName: string;
+  tabId?: string;
+  tabTitle?: string;
+  status: JobStatus;
+  createdAt: number;
+  startAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  totalChars: number;
+  charsSent: number;
+  /** Words in the document when it started and when last counted (documents only) */
+  words?: number;
+  error?: string;
+}
+
+export function historyOf(job: SyncJob | PublicJob): HistoryEntry {
+  const words = job.liveWordCount != null ? Math.max(0, job.liveWordCount - job.baselineWordCount) : undefined;
+  return {
+    id: job.id, kind: job.kind === "sheet" ? "sheet" : "doc", documentId: job.documentId, documentName: job.documentName,
+    ...(job.tabId ? { tabId: job.tabId } : {}), ...(job.tabTitle ? { tabTitle: job.tabTitle } : {}),
+    status: job.status, createdAt: job.createdAt, startAt: job.startAt,
+    ...(job.startedAt != null ? { startedAt: job.startedAt } : {}), ...(job.finishedAt != null ? { finishedAt: job.finishedAt } : {}),
+    totalChars: job.totalChars, charsSent: job.charsSent,
+    ...(words != null && job.kind !== "sheet" ? { words } : {}), ...(job.error ? { error: job.error.slice(0, 300) } : {}),
+  };
+}
+
+/** Syncs the history keeps for one person; the oldest go first */
+export const MAX_HISTORY = 500;
+
 export const TERMINAL: ReadonlySet<JobStatus> = new Set<JobStatus>(["done", "error", "cancelled"]);
 export function isTerminal(status: JobStatus): boolean {
   return TERMINAL.has(status);
@@ -216,6 +273,7 @@ const LOCK_PREFIX = "synclock:";
 const KICK_PREFIX = "synckick:";
 const CONTROL_PREFIX = "syncctl:";
 const BREAKS_PREFIX = "syncbrk:";
+const HISTORY_PREFIX = "synchistory:";
 
 export type ControlCommand = "pause" | "cancel";
 const ACTIVE_JOBS_KEY = "syncjobs:active";
@@ -250,6 +308,11 @@ export interface SyncStore {
   setBreakEdit(id: string, edit: BreakEdit): Promise<void>;
   getBreakEdit(id: string): Promise<BreakEdit | null>;
   clearBreakEdit(id: string): Promise<void>;
+  /** The sync history: kept for good (no expiry), one entry per sync */
+  putHistory(userId: string, entry: HistoryEntry): Promise<void>;
+  listHistory(userId: string): Promise<HistoryEntry[]>;
+  /** Forget these syncs (all of them when no ids are given) */
+  removeHistory(userId: string, ids?: string[]): Promise<void>;
 }
 
 /**
@@ -356,6 +419,17 @@ function createRedisStore(redis: Redis): SyncStore {
     async clearBreakEdit(id) {
       await redis.del(BREAKS_PREFIX + id);
     },
+    async putHistory(userId, entry) {
+      await redis.hset(HISTORY_PREFIX + userId, { [entry.id]: entry });
+    },
+    async listHistory(userId) {
+      const all = (await redis.hgetall<Record<string, HistoryEntry>>(HISTORY_PREFIX + userId)) ?? {};
+      return Object.values(all).filter((e): e is HistoryEntry => !!e && typeof e === "object" && typeof e.id === "string");
+    },
+    async removeHistory(userId, ids) {
+      if (!ids) await redis.del(HISTORY_PREFIX + userId);
+      else if (ids.length) await redis.hdel(HISTORY_PREFIX + userId, ...ids);
+    },
   };
 }
 
@@ -370,6 +444,7 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
   const expiring = new Map<string, number>(); // key → expiry ms
   const controls = new Map<string, ControlCommand>();
   const breakEdits = new Map<string, BreakEdit>();
+  const history = new Map<string, Map<string, HistoryEntry>>();
   const live = (key: string) => {
     const exp = expiring.get(key);
     if (exp != null && exp <= now()) expiring.delete(key);
@@ -418,6 +493,28 @@ export function createMemoryStore(now: () => number = Date.now): SyncStore {
     async setBreakEdit(id, edit) { breakEdits.set(id, structuredClone(edit)); },
     async getBreakEdit(id) { return structuredClone(breakEdits.get(id) ?? null); },
     async clearBreakEdit(id) { breakEdits.delete(id); },
+    async putHistory(userId, entry) { (history.get(userId) ?? history.set(userId, new Map()).get(userId)!).set(entry.id, structuredClone(entry)); },
+    async listHistory(userId) { return Array.from(history.get(userId)?.values() ?? []).map((e) => structuredClone(e)); },
+    async removeHistory(userId, ids) { if (!ids) history.delete(userId); else for (const id of ids) history.get(userId)?.delete(id); },
+  };
+}
+
+/** Whether a job, as it is being written, is worth a line in the history: a start, a pause, or its end */
+export function recordsHistory(job: SyncJob): boolean {
+  return isTerminal(job.status) || job.status === "paused" || ((job.status === "pending" || job.status === "scheduled") && job.currentAction === 0);
+}
+
+/**
+ * The store, keeping the sync history as jobs are written: a line when a sync starts and when it
+ * pauses or ends. A history that can't be written never fails the sync.
+ */
+export function withHistory(store: SyncStore): SyncStore {
+  return {
+    ...store,
+    async setJob(job) {
+      await store.setJob(job);
+      if (recordsHistory(job)) { try { await store.putHistory(job.userId, historyOf(job)); } catch { /* the job itself is saved */ } }
+    },
   };
 }
 
@@ -428,7 +525,7 @@ export function getStore(): SyncStore {
   if (_store) return _store;
   const url = process.env.UPSTASH_REDIS_REST_URL?.trim();
   const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
-  _store = url && token ? createRedisStore(new Redis({ url, token })) : createMemoryStore();
+  _store = withHistory(url && token ? createRedisStore(new Redis({ url, token })) : createMemoryStore());
   return _store;
 }
 

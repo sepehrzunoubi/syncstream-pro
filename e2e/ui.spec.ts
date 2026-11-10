@@ -313,4 +313,36 @@ test.describe("starting a sync", () => {
     await expect.poll(() => api.jobs[0].status).toBe("paused");
     await expect(panel.getByRole("button", { name: /Resume/ })).toBeVisible();
   });
+  test("the header's buttons never cover the menus: captions give way first, then the menu row scrolls", async ({ app, page }) => {
+    await app.open();
+    const edges = () => page.evaluate(() => {
+      const right = (sel: string) => Math.max(...Array.from(document.querySelectorAll(sel)).map((e) => e.getBoundingClientRect().right));
+      const row = document.querySelector(".ss-menubar-row")!;
+      return { menus: right(".ss-menubar-trigger"), row: row.getBoundingClientRect().right, scrolls: row.scrollWidth > row.clientWidth, actions: document.querySelector(".ss-header-actions")!.getBoundingClientRect().left, page: document.documentElement.scrollWidth };
+    });
+    // A laptop's width and a narrow window: every menu is in the clear
+    for (const width of [1280, 1100, 900]) {
+      await page.setViewportSize({ width, height: 800 });
+      const e = await edges();
+      expect(e.menus, `menus at ${width}px`).toBeLessThanOrEqual(e.actions);
+      expect(e.page).toBe(width);
+    }
+    await expect(page.getByRole("button", { name: "Start sync" })).toContainText("Start sync");
+    // A tablet upright and a phone: the row ends where the buttons start, and scrolls to its last menu
+    for (const width of [700, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      const e = await edges();
+      expect(e.row, `menu row at ${width}px`).toBeLessThanOrEqual(e.actions);
+      expect(e.scrolls).toBe(true);
+      expect(e.page).toBe(width);
+    }
+    // On a phone the two buttons are their icons, each a 40px circle, named for screen readers
+    for (const name of ["New Google Doc", "Start sync"]) {
+      const box = (await page.locator("header").getByRole("button", { name }).boundingBox())!;
+      expect(Math.round(box.width)).toBe(40);
+    }
+    await page.locator(".ss-menubar-row").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    await page.locator(".ss-menubar-trigger", { hasText: "History" }).click();
+    await expect(page.getByRole("menu")).toBeVisible();
+  });
 });

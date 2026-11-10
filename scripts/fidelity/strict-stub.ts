@@ -34,6 +34,24 @@ export interface StrictOptions {
   join?: boolean;
   bulletStyle?: boolean;
   soloTabs?: boolean;
+  /**
+   * A text style whose range ends at a paragraph's newline styles that newline too, the body's last
+   * one included; the newline before the range is left alone. Read back from Google Docs: "Big " made
+   * bold in "Big \n" leaves the whole paragraph one bold run, and so does styling only its last word.
+   */
+  ownNewline?: boolean;
+  /**
+   * A paragraph given bullets, or one that loses them, loses its spacing mode (read back from Google
+   * Docs: NEVER_COLLAPSE set before createParagraphBullets is gone after it, set after it stays and is
+   * copied to the paragraphs typed from it)
+   */
+  dropsMode?: boolean;
+  /**
+   * Paragraphs that join the list of the item before them land at that item's level plus their tabs,
+   * and their tabs go even when there is only one of them (read back from Google Docs: a paragraph
+   * bulleted right after a nested item is nested with it)
+   */
+  joinLevel?: boolean;
   namedStyles?: docs_v1.Schema$NamedStyle[];
 }
 
@@ -56,7 +74,9 @@ export class StrictStubDocument extends StubDocument {
     // The list to add to: the preceding paragraph's, when it has the same preset
     let listId = `kix.strict${++this.seq}`;
     const prev = this.items[paragraphs[0].start - 1] as NL | undefined;
-    if (this.opts.join && prev?.k === "nl" && prev.bullet && this.listPreset[prev.bullet.listId] === preset) listId = prev.bullet.listId;
+    const joins = !!this.opts.join && prev?.k === "nl" && !!prev.bullet && this.listPreset[prev.bullet.listId] === preset;
+    const under = joins && this.opts.joinLevel ? prev!.bullet!.nestingLevel ?? 0 : 0;
+    if (joins) listId = prev!.bullet!.listId;
     else {
       this.lists[listId] = listForPreset(preset);
       this.listPreset[listId] = preset;
@@ -68,21 +88,32 @@ export class StrictStubDocument extends StubDocument {
     };
     const fresh = paragraphs.filter((p) => !(this.items[p.nl] as NL).bullet);
     const baseline = fresh.length ? Math.min(...fresh.map(tabsOf)) : 0;
-    const solo = this.opts.soloTabs && paragraphs.length === 1 && fresh.length === 1;
+    const solo = this.opts.soloTabs && paragraphs.length === 1 && fresh.length === 1 && !(joins && this.opts.joinLevel);
     for (const p of [...paragraphs].reverse()) {
       const tabs = tabsOf(p);
       const removed = solo ? 0 : tabs;
       this.items.splice(p.start, removed);
       const nl = this.items[p.nl - removed] as NL;
       const leftover = nl.bullet ? 0 : Math.max(0, Math.round((nl.ps.indentStart?.magnitude ?? 0) / 36) - 1);
-      const level = nl.bullet ? nl.bullet.nestingLevel ?? 0 : Math.min(8, (solo ? 0 : tabs - baseline) + leftover);
+      const level = nl.bullet ? nl.bullet.nestingLevel ?? 0 : Math.min(8, (solo ? 0 : tabs - baseline) + leftover + under);
+      if (this.opts.dropsMode && !nl.bullet) delete (nl.ps as Record<string, unknown>).spacingMode;
       nl.bullet = { listId, nestingLevel: level, ts: this.opts.bulletStyle ? {} : undefined };
       nl.ps.indentFirstLine = { magnitude: 18 + 36 * level, unit: "PT" };
       nl.ps.indentStart = { magnitude: 36 * (level + 1), unit: "PT" };
     }
   }
 
+  override deleteParagraphBullets(start: number, end: number): void {
+    if (this.opts.dropsMode) for (const p of this.paras(start, end)) {
+      const nl = this.items[p.nl] as NL;
+      if (nl.bullet) delete (nl.ps as Record<string, unknown>).spacingMode;
+    }
+    super.deleteParagraphBullets(start, end);
+  }
+
   override updateTextStyle(start: number, end: number, textStyle: TextStyle, fields: string): void {
+    // "The range may be extended to include adjacent newlines": the one its last text's paragraph ends with
+    if (this.opts.ownNewline && this.items[end]?.k === "nl" && this.items[end - 1] && this.items[end - 1].k !== "nl") end += 1;
     // "When setting a link, the text foreground color will be updated to the default link color and the
     // text will be underlined. If these fields are modified in the same request, those values will be
     // used instead of the link defaults." (TextStyle.link)

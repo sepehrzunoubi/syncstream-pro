@@ -402,13 +402,28 @@
 button.ss-title:hover, button.ss-title[data-state="open"] { border-color: var(--ss-outline); }
 .ss-title-arrow { flex: none; margin-right: -4px; color: var(--ss-text-2); }
 .ss-header-tab { display: flex; min-width: 0; align-items: center; font-size: 14px; color: var(--ss-text-2); }
-.ss-badges { display: flex; flex: none; align-items: center; gap: 4px; min-width: 0; margin-left: 2px; }
+/* The words beside the title give way before the title does: a long message ends in an ellipsis
+   (it is whole in its tooltip) and the document's name stays readable */
+.ss-badges { display: flex; flex: 0 100 auto; align-items: center; gap: 4px; min-width: 28px; margin-left: 2px; }
 .ss-badge { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 9999px; color: var(--ss-text-2); }
 a.ss-badge:hover { background: var(--ss-hover); }
 .ss-status { display: inline-flex; min-width: 0; align-items: center; }
 .ss-status-text { overflow: hidden; font-size: 13px; letter-spacing: 0.1px; color: var(--ss-text-2); white-space: nowrap; text-overflow: ellipsis; }
-.ss-menubar-row { display: flex; height: 25px; }
+/* The menus keep to the room the header's buttons leave them: on a narrow window the row scrolls
+   sideways under the finger instead of running on beneath the buttons, where its last menus couldn't
+   be reached */
+.ss-menubar-row { display: flex; height: 25px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.ss-menubar-row::-webkit-scrollbar { display: none; }
+.ss-menubar-row > * { flex: none; }
 .ss-header-actions { display: flex; flex: none; align-items: center; gap: 8px; height: 60px; padding: 0 12px 0 16px; }
+/* Header buttons give up their caption for their icon as the window narrows, the least needed first,
+   so the menus stay whole down to a tablet's width. (Set here, after the buttons' own padding.) */
+@media (max-width: 1055px) { .ss-btn.ss-shrink-lg { width: 40px; padding: 0; } .ss-shrink-lg > .ss-shrink-label { display: none; } }
+@media (max-width: 767px) { .ss-btn.ss-shrink-md { width: 40px; padding: 0; } .ss-shrink-md > .ss-shrink-label { display: none; } }
+@media (max-width: 639px) {
+  .ss-btn.ss-shrink-sm { width: 40px; padding: 0; } .ss-shrink-sm > .ss-shrink-label { display: none; }
+  .ss-header-actions { gap: 6px; padding: 0 8px 0 8px; }
+}
 .ss-page {
   width: 8.5in;
   min-height: 11in;
@@ -1029,6 +1044,8 @@ tr.ss-page-gap { display: table-row; }
 .ss-tab:hover:not([aria-current]) { background: var(--ss-hover); }
 .ss-tab[aria-current="page"] { background: var(--ss-tonal); color: var(--ss-on-tonal); }
 @media (max-width: 1023px) { .ss-tab { padding: 0 10px; } .ss-tab-label { display: none; } }
+/* Beside the document's own buttons the switch is icons sooner: its captions would cover the menus */
+@media (max-width: 1279px) { .ss-header-busy .ss-tab { padding: 0 10px; } .ss-header-busy .ss-tab-label { display: none; } }
 @media (max-width: 639px) { .ss-tabs[data-phone="off"] { display: none; } }
 
 .ss-cmp-status { margin-left: 6px; }
@@ -1445,3 +1462,18 @@ button.ss-cmp-tab:hover:not([aria-current="page"]) { background: var(--ss-hover)
   .ss-pdf-choice-icon { width: 32px; height: 32px; }
 }
 /* ═══ end of Import PDF ═══ */
+
+/* Sync history: its button in the header, and the dialog's list */
+.ss-history-btn { width: 36px; height: 36px; flex: none; border-radius: 9999px; }
+.ss-history-list { max-height: min(56vh, 520px); margin: 0 -8px; padding: 0 8px; overflow-y: auto; }
+.ss-history-list ul { margin: 0; padding: 0; list-style: none; }
+.ss-history-day { margin: 12px 0 4px; font-size: 12px; font-weight: 500; line-height: 16px; letter-spacing: 0.1px; color: var(--ss-text-3); }
+.ss-history-row { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 6px 4px 6px 8px; border-radius: 12px; }
+.ss-history-row:hover { background: var(--ss-hover); }
+.ss-history-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 9999px; background: #e8f0fe; color: #0b57d0; }
+.ss-history-icon[data-kind="sheet"] { background: #e6f4ea; color: #137333; }
+.ss-history-name { display: block; overflow: hidden; font-size: 14px; line-height: 20px; color: var(--ss-text); white-space: nowrap; text-overflow: ellipsis; }
+.ss-history-line { display: block; overflow: hidden; font-size: 12px; line-height: 16px; color: var(--ss-text-2); white-space: nowrap; text-overflow: ellipsis; }
+.ss-history-status { font-weight: 500; }
+.ss-history-empty { padding: 28px 0; font-size: 14px; color: var(--ss-text-2); text-align: center; }
+@media (max-width: 639px) { .ss-history-btn { display: none; } }

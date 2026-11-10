@@ -4,6 +4,8 @@ A utility for **human-cadence text synchronization into Google Docs**. The dashb
 
 Two more ways to start: **Compare & Sync** brings one document up to date from another (everything the reference has that yours lacks, typed into the exact places, tab by tab), and **Import PDF** rebuilds a PDF on the page so it can be synced into a Doc.
 
+**Sheets** does the same for spreadsheets: upload an Excel workbook (.xlsx), see it exactly as Google Sheets will show it, and sync it into a new Google Sheet the way a person builds one: labels, numbers and formulas in order, section by section, then the formatting. **Sync history** (the clock in the header, or History in the menu bar) lists every sync started from the account, on any device.
+
 Sign in with any Google account and start syncing. There is no license key or allow-list.
 
 ## Tech Stack
@@ -14,7 +16,8 @@ Sign in with any Google account and start syncing. There is no license key or al
 - **Animations:** Framer Motion, tsParticles on the landing page
 - **Icons:** Material Symbols (subset loaded in the dashboard layout), Lucide on the landing page
 - **Backend:** Next.js API Routes
-- **Google APIs:** `googleapis` (OAuth2, Docs, Drive)
+- **Google APIs:** `googleapis` (OAuth2, Docs, Drive, Sheets)
+- **Spreadsheets:** an .xlsx reader of its own (`src/lib/sheets`), `numfmt` for number formats
 - **Job state:** Upstash Redis (in-memory fallback for local dev)
 - **Background delivery:** Upstash QStash (direct HTTP fallback for local dev)
 
@@ -30,7 +33,7 @@ npm install
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a project (or use existing)
-3. Enable **Google Docs API** and **Google Drive API**
+3. Enable **Google Docs API**, **Google Drive API** and **Google Sheets API** (Sheets is needed for spreadsheet syncs; no new sign-in scope is: a spreadsheet SyncStream creates is covered by `drive.file`)
 4. Create **OAuth 2.0 Client ID** (Web application)
 5. Add `http://localhost:3000/api/auth/callback` as an authorized redirect URI
 6. On the OAuth consent screen, publish the app (or add each tester's Gmail address while it is in "Testing" mode). While the consent screen is in Testing, Google only lets listed test users sign in.
@@ -107,10 +110,12 @@ src/
 │   │   ├── cron/        # sync-watchdog (daily safety net for lost queue messages)
 │   │   ├── docs/        # List, create, read (content), edit, rename, revision (change polling), pages (Google's page breaks from the PDF export)
 │   │   ├── health/      # Live check of every configured service (signed-in users)
+│   │   ├── history/     # The sync history: every sync of the account, kept after the sync itself is gone
+│   │   ├── sheets/      # start (a workbook, planned and queued into a new Google Sheet) and source (what a running one is building)
 │   │   ├── images/      # Upload pasted images and serve them so Google Docs can fetch them
 │   │   ├── pdf/         # import: a PDF rebuilt as editor content
 │   │   └── sync/        # start / list / status / pause / resume / cancel / dismiss / source / process
-│   ├── dashboard/       # Authenticated workspace (layout loads fonts, docs.css holds the Docs styles); compare/ is Compare & Sync
+│   ├── dashboard/       # Authenticated workspace (layout loads fonts, docs.css holds the Docs styles); compare/ is Compare & Sync, sheets/ is Sheets
 │   ├── privacy/, tos/   # Legal pages
 │   └── page.tsx         # Landing page with Google sign-in
 ├── components/
@@ -137,6 +142,8 @@ src/
 │   │   ├── job-panel.tsx        # Status and controls of a running sync
 │   │   └── sync-rail.tsx        # List of syncs
 │   ├── compare/                 # Compare & Sync: document pickers, the two pages, tabs, changes and settings
+│   ├── sheets/                  # Sheets: the grid (a Google Sheets look-alike), formula bar, sheet tabs, settings, the build preview
+│   ├── history/                 # Sync history: the header button and its dialog
 │   ├── dashboard/login-screen.tsx  # Landing page
 │   └── ui/                      # Button, particles
 ├── lib/
@@ -149,6 +156,8 @@ src/
 │   ├── compare.ts, compare-text.ts  # Compare & Sync engine: tab matching, paragraph and word alignment, the merged tabs
 │   ├── compare-server.ts  # Reads both documents, sets up tabs/tables/footnotes, builds the multi-tab sync
 │   ├── pdf-import.ts, pdf-*.ts  # A PDF rebuilt as editor content: structure tree or layout, fonts, lists, tables, images
+│   ├── sheets/          # Spreadsheets: xlsx.ts reads a workbook, order.ts decides the order it is built in, steps.ts turns each
+│   │                    #   step into Sheets requests, plan.ts times them, timeline.ts is the sheet at any step, validate.ts checks what the page sends
 │   ├── page-setup.ts    # Paper sizes, margins, orientation; the Docs documentStyle requests
 │   ├── page-text.ts, page-offsets.ts  # Google's page breaks: text per PDF page, matched back to the document
 │   ├── list-labels.ts   # Bullet and numbering glyphs per preset and level
@@ -199,9 +208,17 @@ The dashboard is laid out like Google Docs: a File, Edit, View, Insert and Forma
 - **Breaks.** Automatic picks a few based on text length, None turns them off, and Manual puts each break exactly where you want it: type a length (33m, 1h 5m), press Place on page, and click a word of the new text; the break starts right after it. Manual types at a natural pace plus your breaks. While a sync runs, the breaks show on its live page, and the ones still ahead can be added, changed or removed, and the break it is on ended or lengthened.
 - **Typos.** From rare to frequent. Each typo types a plausible slip, waits briefly, deletes it and types the correct words.
 - **Start.** Now, or in 5 minutes to 12 hours. Scheduled syncs run on the server.
-- **Several at once.** Start as many syncs as you like, each to its own document. The list on the left lets you switch between them.
+- **Several at once.** Start as many syncs as you like, each to its own document (spreadsheet syncs are listed on the Sheets page). The list on the left lets you switch between them.
 
 - **Compare & Sync.** Pick your document and a reference (recent documents, search, a pasted link, or a new blank document). SyncStream finds everything the reference has that yours doesn't, in every tab, and shows your document as it will be beside the reference: what will be typed glows on yours and is highlighted on the reference. Tabs are matched by title, then content; a blank Tab 1 takes the reference's title; missing tabs are made, nested as they are there; tabs only you have are kept. Words, sentences, paragraphs, list items, tables (whole, rows, cell text), images, page breaks and footnotes go exactly where the reference has them, in its formatting. Text you both have takes the reference's look too: bold, italic, underline, colour, highlight, font, size and links, and its paragraph's heading, alignment, spacing, indents and list. That is written when the sync starts and goes with the change next to it (a heading restyles with the text added under it), or is a Formatting change of its own; restyled text is underlined on your page. Nothing of yours is deleted or moved, and words only you have keep their look: text you have elsewhere, words spelled a little differently and spacing differences are left as they are and listed. Each change can be left out, each reference tab sent elsewhere, and breaks placed like anywhere else. The sync types it all top to bottom, tab by tab; what can't be typed (tabs, table structure, footnotes, headers) is set up when it starts. If either document changes before you start, the comparison is shown again.
+- **Sheets.** Upload an .xlsx (or drop it on the page). It is read in the browser and shown as Google Sheets will show it: values through their number formats, fonts, colours, fills, borders, merged cells, column widths and row heights, every sheet as a tab; pick a cell and the formula bar shows what it holds, a formula as typed. Start sync makes a new Google Sheet and builds the workbook in it step by step, one Sheets edit per step, so File > Version history in Google Sheets shows it being built.
+  - *The order.* A sheet goes top to bottom in sections (runs of rows with something in them) and, inside a section, left to right in blocks. A block gets its labels first, then the numbers typed by hand, then its formulas. A formula is never written before every cell it reads holds its value: one that reads cells further down, to the right or on a later tab waits, and is written, going back to it, as soon as the last of them is in (a "fully diluted shares" cell that adds up the totals row is written right after the totals). A formula repeated down a column or along a row is typed once and filled. A block of 300 or more hand-typed values is pasted, 25 rows at a time. When a section's cells are in it is formatted the way a toolbar is used: merges, row heights, then each part of the look on the ranges that share it (bold on these, a fill on those, a number format, borders). What most of a sheet shares (font, size, text colour) is set once, on the whole area, before any typing. Hiding gridlines, freezing panes, dropdowns, conditional formatting and hidden rows come last.
+  - *How it will be built.* The panel lists the sections with the time each starts; the slider shows the sheet as it stands after any step, and Play runs the whole build in about 40 seconds. A running sync shows the same page live, the cell it just wrote outlined.
+  - *Time.* Natural pace takes the time the typing and the thinking take (about 40 minutes for a 400-cell model). A total time is met exactly: shorter squeezes the thinking, down to one edit a second (Google's limit); longer adds time away from the sheet between sections. Breaks can be placed by hand before any section (the cup beside it in the list): the sync stops there for as long as the break says, and a total time counts them in.
+  - *What is carried over.* Values, formulas (shared and array formulas, Excel-only spellings such as `_xlfn.` rewritten, references to a table's columns such as `Sales[Revenue]` or `[@Units]` turned into the ranges they are), error values, fonts, sizes, bold, italic, underline, strikethrough, text and fill colours (theme colours and tints), borders, number formats, alignment, indents, wrapping, rotation, merged cells, column widths, row heights, hidden rows and columns, grouped rows and columns (folded ones folded), frozen panes, gridlines, tab colours, hidden sheets, notes, links, rich text inside a cell, named ranges, the filter (a sheet's own, or its one table's), data validation (dropdowns, whole numbers, decimals, dates, times, text lengths, custom formulas, with their messages and whether they reject), conditional formatting (cell rules, colour scales, and top/bottom, above/below average, duplicate, unique, error and date rules written as the formulas that mean the same), charts (column, bar, line, area, scatter, pie and doughnut, and combinations, with titles, axis titles, legend, stacking, and their place and size), and Excel tables' styles: each of the sixty built-in styles becomes alternating colours on the table's range, in the exact colours Google's own import gives it, with white header text where the style has it. Excel's terms land on what Google's own import of the same file gives (measured against it). The page shows all of it as Google Sheets will: frozen rows and columns stay put, conditional formatting is worked out from the saved values, charts are drawn.
+  - *What isn't.* Images and shapes (the Sheets API has no way to place a picture over the grid), data bars and icon sets (Google Sheets has neither), pivot tables (their values are copied), a table style of the workbook's own making (its cells are), a second filter on a sheet (Sheets has one), macros. The page says which of these a workbook has. Old .xls files and password-protected workbooks are refused with what to do. At most 150,000 cells with a value or a look, and a workbook whose plan fits one stored record (about 4 MB as sent).
+  - *Limits.* The new spreadsheet's locale is en_US so formulas and formats mean what the file says. A new Google Sheet's default font size can't be set through the API, so the sync's first step sets every cell to the workbook's size (as "select all, size 11" does). Text at an angle is sent as the API documents it. An edit Google refuses (a number format or formula it doesn't know, say) doesn't stop the sync: that one edit is left out, the rest is built, and the finished sync lists what was refused; only a tab that is gone, or refusals past a fifth of the steps, end it.
+- **Sync history.** The clock button in every header, and History in the editor's menu bar, open the list of every sync started with the Google account, newest first, by day: what it wrote into, how it ended, when and how long it took. It is kept on the server with no expiry (the 500 most recent), so it is the same on every device and outlives the sync list, whose entries expire a week after their last change. A sync that is still stored opens with View; each line opens its Google Doc or Sheet; a line can be removed, or the whole history cleared.
 - **Import PDF.** Under the sync settings (offered up front on an empty page, such as a new Google Doc, and in a line once the page has text), or File > Import PDF, rebuilds a PDF on the page: paragraphs, headings, nested lists, tables, images, links, fonts, sizes, colours, spacing, page size and margins. It then glows like any new text: edit it, place breaks, and sync it. On a document that already has content, you choose: a new Google Doc for the PDF (recommended), add it after what's there, or replace what's there. Tagged PDFs (Google Docs' own) come back exactly; others are rebuilt from their layout. Scanned PDFs have no text to import.
 
 ## Operations
@@ -243,6 +260,9 @@ Budgets are per minute, keyed by the signed-in user (a hashed id) or, before sig
 | `POST /api/sync/start`, `POST /api/compare/start` | user | 10 | Plans a job and publishes to QStash |
 | `GET /api/compare/load` | user | 30 | Reads two whole documents |
 | `POST /api/pdf/import` | user | 10 | Rebuilds a PDF (up to 4 MB) |
+| `POST /api/sheets/start` | user | 10 | Shares the start budget: plans a workbook, creates the Google Sheet, publishes to QStash |
+| `GET /api/sheets/source` | user | 240 | Shares the read budget; what a spreadsheet sync is building |
+| `GET /api/history`, `DELETE /api/history` | user | 60 / 30 | The sync history |
 | `GET /api/sync/list`, `GET /api/sync/status`, `GET /api/sync/source` | user | 240 | Polled while a sync runs |
 | `POST /api/sync/pause`, `resume`, `cancel`, `dismiss` | user | 60 | |
 | `GET /api/health` | IP | 30 | |
@@ -265,6 +285,8 @@ Budgets are per minute, keyed by the signed-in user (a hashed id) or, before sig
 - *B. Direct edits.* The document is imported, changed as a user would in the editor (split a heading, remove the bullet from one item, change words mid-sentence, delete the last paragraph, insert a 2×2 table) and saved with `directEdits()`, including the editor's read-back after a table structure change. The document must match the editor's target, saving must converge, and the editor's idea of the saved document must match Google's.
 - *C. Collaborator mid-sync.* While the runner is between two batches, another writer inserts a paragraph at the top of the document. The sync must still land its text at the right place (the runner finds its spot again from the text before it).
 
+**What Google Docs was asked directly.** The fidelity tests (`scripts/fidelity`) type each scenario into a strict stub of Google Docs. Its answers to the questions that matter (which newline a text style reaches, what bullets do to a paragraph's spacing mode, the level a paragraph lands at when it joins a list) were read back from a real Google Doc, every scenario replayed into a tab of its own and compared with the editor; `scripts/fidelity/live-recipes.ts` holds each question as a recipe (Q1 to Q16) so it can be asked again with `--keep`.
+
 **Cost and scope.** A run makes a few hundred Docs API requests (one `documents.get` and one `batchUpdate` per typed chunk, plus the deletes and re-inserts of typos), spaced about 700 ms apart to stay inside the Docs API's 60-writes-per-minute quota, so it takes two to four minutes. It never touches any document other than the one it creates. `npm run e2e:live -- --dry-run` runs the same scenarios against an in-memory Docs stub (`scripts/e2e-live/stub-docs.ts`) without Google, and `npm test` does that too, so a failing live run points at Google's behaviour, not at the harness. `.github/workflows/e2e-live.yml` runs it on demand (and weekly) when the three secrets are set, and skips with a notice otherwise.
 
 ## Development
@@ -282,11 +304,13 @@ npm run e2e:live            # the live end-to-end test against Google Docs (see 
 
 | Command | What it checks |
 | --- | --- |
-| `npm test` | Unit tests (node:test): planner, runner, document model, import, formatting requests, pagination, page setup, secrets |
+| `npm test` | Unit tests (node:test): planner, runner, document model, import, formatting requests, pagination, page setup, secrets, spreadsheets (reader, build order, Sheets requests, timing, a whole sync into an in-memory sheet) |
 | `npm run typecheck` | `tsc --noEmit` over the app, scripts and browser tests |
 | `npm run lint` | ESLint (Next.js rules) over `src`, `e2e` and `scripts` |
 | `npm run e2e` | Browser tests (Playwright, Chromium) against a production build: `npm run build` first, then `npm run e2e`. Every `/api/*` route is stubbed in the browser, so no Google account or environment variables are needed. `npm run e2e:ui` opens the Playwright UI |
 
 The browser tests live in `e2e/`. `e2e/fixtures.ts` fakes Google behind the API routes and records every Docs `batchUpdate` the editor sends, so tests assert the exact requests (indices, fields) a user action produces. The document they open is built in `e2e/fixtures/google-doc.ts` as a `documents.get` body and run through the app's own importer. Chromium comes from `npx playwright install chromium`; on a machine where the browsers live in `/opt/pw-browsers`, the config finds them there.
+
+Spreadsheet tests read `fixtures/xlsx/kitchen-sink.xlsx`, a workbook with every kind of formatting, made by `scripts/make-xlsx-fixture.py` (Python with openpyxl; only needed to change the fixture); `features.xlsx` (charts, a table, a filter, groups, validation and conditional rules) and `table-styles.xlsx` (a table in each of Excel's sixty built-in styles, with `table-styles.google-import.json` holding the alternating colours Google Sheets' own import gave each) have scripts of their own beside it. What the reader is expected to give for it is what Google's own import of that file gave. `src/lib/sheets/stub.testing.ts` is a Google Sheet in memory: tests run every step of a sync into it, each one twice, and compare the result with the workbook.
 
 CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and on every pull request: lint, typecheck and unit tests in one job, the production build in another, the browser tests against that build, and an informational `npm audit` of the production dependencies.

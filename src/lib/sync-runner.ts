@@ -22,6 +22,7 @@ import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, t
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
 import { reportError } from "./monitor";
+import { needsCheck, stepLabel, stepRequests, type Existing, type SheetsRequest } from "./sheets/steps";
 
 /**
  * The document's Docs calls, each in the tab being typed into (`tabId`: none for a document without
@@ -44,9 +45,27 @@ export function errorStatus(err: unknown): number | undefined {
 /** Google refused a batch because the document changed since it was read */
 export const isStaleRevision = (err: unknown) => errorStatus(err) === 400 && /revision/i.test(err instanceof Error ? err.message : String(err));
 
+/** The spreadsheet's Sheets calls, for a job that builds a Google Sheet */
+export interface SheetsApi {
+  /** One atomic batchUpdate */
+  batch(accessToken: string, spreadsheetId: string, requests: SheetsRequest[]): Promise<unknown>;
+  /** The tabs, named ranges and conditional formatting the spreadsheet has, for steps that add one */
+  existing(accessToken: string, spreadsheetId: string): Promise<Existing>;
+}
+
+/** A refusal that means the sync has nowhere to write (its tab is gone), not that one edit was unwelcome */
+const isLostSheet = (err: unknown): boolean => /No grid with id|Unable to parse range|sheet[^.]*(not found|deleted)|Invalid sheet/i.test(err instanceof Error ? err.message : String(err));
+/** Refused edits a spreadsheet sync leaves out before it gives up: a few are a quirk of the file, many are a broken sync */
+const maxRefused = (totalActions: number): number => Math.max(40, Math.round(totalActions * 0.2));
+
+/** What a job writes into, in words */
+const productOf = (job: { kind?: string } | null | undefined) => (job?.kind === "sheet" ? "Google Sheets" : "Google Docs");
+
 export interface RunnerDeps {
   store: SyncStore;
   docs: DocsApi;
+  /** Needed by spreadsheet jobs only */
+  sheets?: SheetsApi;
   refresh(refreshToken: string): Promise<{ access_token: string } | null>;
   enqueue(jobId: string, generation: number, delaySec: number, tick?: number): Promise<void>;
   /** The hand-off this delivery was made for; an older one than the job's is a duplicate */
@@ -252,7 +271,7 @@ export async function runJobWindow(
       ctx.job.typoSubStep = 0;
       ctx.job.typoCharsInDoc = 0;
       ctx.job.failures = 0;
-      ctx.job.activity = "Typing";
+      ctx.job.activity = plan.sheet ? "Working" : "Typing";
       ctx.refreshEstimates();
       await ctx.persist();
 
@@ -307,7 +326,7 @@ export async function runJobWindow(
       merged.status = "error";
       // The tab it was typing into when the tab went: one of several, or the job's
       const title = readPlan ? currentTab(readPlan, merged)?.title : merged.tabTitle;
-      merged.error = /tab of the document is gone/.test(message) ? `The tab ${title ? `"${title}" ` : ""}this sync types into was deleted.` : "The document was deleted or is no longer shared with you.";
+      merged.error = merged.kind === "sheet" ? "The spreadsheet was deleted or is no longer shared with you." : /tab of the document is gone/.test(message) ? `The tab ${title ? `"${title}" ` : ""}this sync types into was deleted.` : "The document was deleted or is no longer shared with you.";
       merged.activity = "Error";
       merged.finishedAt = now();
       merged.accessToken = "";
@@ -322,7 +341,7 @@ export async function runJobWindow(
       merged.quotaWaits = (merged.quotaWaits ?? 0) + 1;
       if (merged.quotaWaits <= MAX_QUOTA_WAITS) {
         const delaySec = 60 * Math.min(merged.quotaWaits, 5);
-        merged.activity = "Waiting for Google Docs quota";
+        merged.activity = `Waiting for ${productOf(merged)} quota`;
         log.warn("sync.quota_wait", { ...tag, action: merged.currentAction, waits: merged.quotaWaits, maxWaits: MAX_QUOTA_WAITS, delaySec });
         await store.setJob(merged);
         handedOff = true;
@@ -334,7 +353,7 @@ export async function runJobWindow(
     merged.failures = (merged.failures ?? 0) + 1;
     if (merged.failures <= MAX_FAILURES) {
       const delaySec = 15 * merged.failures;
-      merged.activity = `Retrying after a Google Docs error (attempt ${merged.failures} of ${MAX_FAILURES})`;
+      merged.activity = `Retrying after a ${productOf(merged)} error (attempt ${merged.failures} of ${MAX_FAILURES})`;
       merged.nextActionAt = undefined;
       log.warn("sync.retry", { ...tag, action: merged.currentAction, failures: merged.failures, maxFailures: MAX_FAILURES, delaySec, status, kind });
       await store.setJob(merged);
@@ -344,7 +363,7 @@ export async function runJobWindow(
       return { outcome: "retry", job: toPublicJob(merged) };
     }
     merged.status = "error";
-    merged.error = status === 429 ? "Google Docs kept refusing because of its usage quota. Resume the sync later." : status === 400 ? "Google Docs rejected an edit. Resume to try again from where it stopped." : message;
+    merged.error = status === 429 ? `${productOf(merged)} kept refusing because of its usage quota. Resume the sync later.` : status === 400 ? (merged.kind === "sheet" ? "Google Sheets rejected an edit: a tab this sync writes into may have been deleted or renamed. Resume to try again from where it stopped." : "Google Docs rejected an edit. Resume to try again from where it stopped.") : message;
     merged.activity = "Error";
     merged.finishedAt = now();
     merged.accessToken = "";
@@ -481,6 +500,10 @@ class Context {
       }
       return;
     }
+    if (this.plan.sheet) {
+      await this.sheetStep();
+      return;
+    }
     if (action.kind === "insert") {
       await this.write(action.text, 0, true);
       return;
@@ -507,6 +530,55 @@ class Context {
     if (this.job.typoSubStep === 2) {
       await this.write(action.text, 2, true);
     }
+  }
+
+  /**
+   * One step of a spreadsheet sync: its requests, in one batch. A step sets cells, looks and sizes
+   * to fixed values, so sending it again after a lost reply changes nothing; the few that add
+   * something (a tab, a named range, conditional formatting) are checked against the spreadsheet first.
+   */
+  private async sheetStep(): Promise<void> {
+    const sheets = this.deps.sheets;
+    const data = this.plan.sheet!;
+    if (!sheets) throw new Error("This server can't run spreadsheet syncs");
+    const index = this.job.currentAction;
+    const step = data.steps[index];
+    if (!step) return;
+    const existing = needsCheck(step) ? await this.withToken((t) => sheets.existing(t, this.job.documentId)) : undefined;
+    const requests = stepRequests(data.workbook, step, existing);
+    if (requests.length) {
+      const timer = startTimer(this.now);
+      try {
+        await this.withToken((t) => sheets.batch(t, this.job.documentId, requests));
+      } catch (err) {
+        // Google refused the batch as written (400). One bad edit shouldn't end the sync: each is sent
+        // on its own, the refused ones are left out and noted, and the rest of the step lands.
+        if (errorStatus(err) !== 400 || isLostSheet(err)) throw err;
+        let refused = 0;
+        let reason = err;
+        if (requests.length === 1) refused = 1;
+        else {
+          for (const request of requests) {
+            try { await this.withToken((t) => sheets.batch(t, this.job.documentId, [request])); }
+            catch (one) {
+              if (errorStatus(one) !== 400 || isLostSheet(one)) throw one;
+              refused++;
+              reason = one;
+            }
+          }
+        }
+        if (refused) {
+          const before = this.job.refused ?? { count: 0, notes: [] };
+          const why = (reason instanceof Error ? reason.message : String(reason)).replace(/\s+/g, " ").slice(0, 160);
+          const note = `${stepLabel(data.workbook, step)}: ${why}`;
+          this.job.refused = { count: before.count + refused, notes: before.notes.length < 5 ? [...before.notes, note] : before.notes };
+          log.warn("sync.sheet_refused", { ...this.tag, action: index, kind: step.k, refused, of: requests.length, why });
+          if (this.job.refused.count > maxRefused(data.steps.length)) throw err;
+        }
+      }
+      log.info("sync.sheet_step", { ...this.tag, action: index, kind: step.k, requests: requests.length, sheetsMs: timer(), totalActions: data.steps.length });
+    }
+    this.job.charsSent = Math.min(this.job.totalChars, this.job.charsSent + (data.units[index] ?? 0));
   }
 
   /** Text this job has already committed to the doc, for tail checks. */

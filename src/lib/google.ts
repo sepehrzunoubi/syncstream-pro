@@ -1,4 +1,5 @@
-import { google, type docs_v1 } from "googleapis";
+import { google, type docs_v1, type sheets_v4 } from "googleapis";
+import type { Existing, SheetsRequest } from "./sheets/steps";
 import { indexedText } from "./doc-import";
 import { log } from "./log";
 import { flattenTabs, inTab, openTab, type OpenTab } from "./doc-tabs";
@@ -456,4 +457,56 @@ export async function getUserInfo(accessToken: string) {
     email: res.data.email || "",
     picture: res.data.picture || "",
   };
+}
+
+// ── Google Sheets ──────────────────────────────────────────────────────────
+
+/** A Sheets client whose calls give up after a while, like the Docs one */
+function sheetsClient(accessToken: string) {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  return google.sheets({ version: "v4", auth: client, timeout: 25_000 });
+}
+
+/** Google's own words when the Sheets API is switched off for the project the app signs in with */
+export const isSheetsApiDisabled = (err: unknown): boolean => /sheets\.googleapis\.com|Google Sheets API has not been used|SERVICE_DISABLED/i.test(err instanceof Error ? err.message : String(err));
+
+/**
+ * A new, empty Google Sheet with one tab (id 0). Its locale is en_US whatever the account's is:
+ * formulas and number formats are written the way an .xlsx file stores them.
+ */
+export async function createSpreadsheet(accessToken: string, title: string, timeZone?: string | null): Promise<{ id: string; name: string }> {
+  // Never retried: a create that timed out may still have made the spreadsheet
+  const res = await sheetsClient(accessToken).spreadsheets.create({
+    requestBody: { properties: { title, locale: "en_US", ...(timeZone ? { timeZone } : {}) }, sheets: [{ properties: { sheetId: 0, title: "Sheet1" } }] },
+    fields: "spreadsheetId,properties.title",
+  });
+  return { id: res.data.spreadsheetId!, name: res.data.properties?.title || title };
+}
+
+/** One atomic spreadsheets.batchUpdate */
+export async function sheetsBatchUpdate(accessToken: string, spreadsheetId: string, requests: SheetsRequest[]): Promise<void> {
+  if (!requests.length) return;
+  const sheets = sheetsClient(accessToken);
+  await withRetry(() => sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: requests as sheets_v4.Schema$Request[] } }));
+}
+
+/** The tabs, named ranges and conditional formatting a spreadsheet has (see sheets/steps.ts) */
+export async function sheetsExisting(accessToken: string, spreadsheetId: string): Promise<Existing> {
+  const sheets = sheetsClient(accessToken);
+  const res = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties.sheetId,conditionalFormats.ranges.sheetId,rowGroups.depth,columnGroups.depth,charts.chartId,bandedRanges.bandedRangeId),namedRanges.namedRangeId" }));
+  const sheetIds = new Set<number>();
+  const conditionalRules = new Map<number, number>();
+  const groups = new Map<number, number>();
+  const chartIds = new Set<number>();
+  const bandIds = new Set<number>();
+  for (const s of res.data.sheets ?? []) {
+    for (const b of s.bandedRanges ?? []) if (b.bandedRangeId != null) bandIds.add(b.bandedRangeId);
+    const id = s.properties?.sheetId ?? 0;
+    sheetIds.add(id);
+    conditionalRules.set(id, s.conditionalFormats?.length ?? 0);
+    groups.set(id, (s.rowGroups?.length ?? 0) + (s.columnGroups?.length ?? 0));
+    for (const c of s.charts ?? []) if (c.chartId != null) chartIds.add(c.chartId);
+  }
+  return { sheetIds, conditionalRules, groups, chartIds, bandIds, namedRangeIds: new Set((res.data.namedRanges ?? []).map((n) => n.namedRangeId ?? "")) };
 }

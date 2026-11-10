@@ -51,6 +51,35 @@ test("indenting an item of a Docs list with a tabbed answer between items keeps 
   assert.deepEqual(labelsOf(after), ["1.", "2.", "a."], "the document");
 });
 
+test("an item moved out to the margin after a nested one lands there (Docs would nest it with the item before it)", async () => {
+  const { target, after } = await save([
+    { insertText: { location: { index: 1 }, text: "One\n\tTwo\n\tThree\nEnd" } },
+    { createParagraphBullets: { range: { startIndex: 1, endIndex: 17 }, bulletPreset: NUMBERED } },
+  ], (base) => {
+    // Shift+Tab on "Three"
+    const three = base[2];
+    return [base[0], base[1], { ...three, attrs: { ...three.attrs, level: 0, glyph: null, box: null } }, base[3]];
+  });
+  assert.deepEqual(labelsOf(target), ["1.", "a.", "2."], "the editor");
+  assert.deepEqual(text(after), ["One", "Two", "Three", "End"]);
+  assert.deepEqual(labelsOf(after), ["1.", "a.", "2."], "the document");
+});
+
+test("a list item that stops being one keeps the space its paragraph had (Docs drops the spacing mode with the bullets)", async () => {
+  const { after } = await save([
+    { insertText: { location: { index: 1 }, text: "One\nTwo\nEnd" } },
+    { createParagraphBullets: { range: { startIndex: 1, endIndex: 9 }, bulletPreset: NUMBERED } },
+    { updateParagraphStyle: { range: { startIndex: 1, endIndex: 9 }, paragraphStyle: { spacingMode: "NEVER_COLLAPSE", spaceBelow: { magnitude: 12, unit: "PT" } }, fields: "spacingMode,spaceBelow" } },
+  ], (base) => {
+    // The numbered-list button on "Two", then Tab on nothing: it is a plain paragraph again
+    const two = base[1];
+    return [base[0], { ...two, attrs: { ...two.attrs, list: null, level: null, preset: null, listId: null, glyph: null, glyphStyle: null, box: null } }, base[2]];
+  });
+  assert.equal(after[0].attrs?.spacingMode, "NEVER_COLLAPSE", "the item that stays");
+  assert.equal(after[1].attrs?.list ?? null, null);
+  assert.equal(after[1].attrs?.spacingMode, "NEVER_COLLAPSE", "the paragraph that left the list");
+});
+
 test("a new numbered item after a Docs list's answer starts a list of its own, as the editor numbers it", async () => {
   const { target, after } = await save([
     { insertText: { location: { index: 1 }, text: "Q1\nans\nQ2\nEnd" } },

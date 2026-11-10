@@ -336,6 +336,11 @@ export function DocsMenubar(p: DocsMenubarProps) {
         <Item shortcut={`${mod}/`} onSelect={afterMenu(p.onShortcuts)}>Keyboard shortcuts</Item>
         <Item onSelect={() => window.open("https://support.google.com/docs", "_blank", "noopener")}>Docs Help</Item>
       </TopMenu>
+
+      {/* Every sync started from this account, on any device (history/sync-history.tsx listens) */}
+      <TopMenu label="History">
+        <Item onSelect={afterMenu(() => window.dispatchEvent(new Event("ss-open-history")))}>Sync history</Item>
+      </TopMenu>
     </MB.Root>
   );
 }
