@@ -124,7 +124,7 @@ export interface SyncOptions {
 }
 
 /** The stub as SyncStream's fidelity is held to: every documented and observed Docs behaviour on */
-export const STRICT: StrictOptions = { join: true, bulletStyle: true, soloTabs: true };
+export const STRICT: StrictOptions = { join: true, bulletStyle: true, soloTabs: true, ownNewline: true, dropsMode: true, joinLevel: true };
 
 export async function syncInto(c: SyncCase, opts: SyncOptions = {}) {
   const docs = createStrictStubDocs({ ...(opts.stub ?? STRICT), namedStyles: c.namedStyles });

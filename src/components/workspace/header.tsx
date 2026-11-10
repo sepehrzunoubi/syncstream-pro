@@ -135,26 +135,26 @@ export function Header(props: HeaderProps) {
             )}
           </div>
         </div>
-        <div className="ss-menubar-row max-sm:hidden">{props.menubar}</div>
+        <div className="ss-menubar-row">{props.menubar}</div>
       </div>
 
-      <div className="ss-header-actions">
+      <div className="ss-header-actions ss-header-busy">
         {props.tabs}
         {mode === "draft" && (
-          <button className="ss-btn ss-btn-outlined max-md:w-10 max-md:px-0" onClick={props.onNewDoc} disabled={props.isCreatingDoc} title="Create a Google Doc and open it here" aria-label="New Google Doc">
+          <button className="ss-btn ss-btn-outlined ss-shrink-lg" onClick={props.onNewDoc} disabled={props.isCreatingDoc} title="Create a Google Doc and open it here" aria-label="New Google Doc">
             <Icon name="add" />
-            <span className="max-md:hidden">{props.isCreatingDoc ? "Creating" : "New Google Doc"}</span>
+            <span className="ss-shrink-label">{props.isCreatingDoc ? "Creating" : "New Google Doc"}</span>
           </button>
         )}
         <button
-          className={`ss-btn ${primary.kind === "start" ? "ss-btn-tonal" : "ss-btn-outlined"} max-sm:w-10 max-sm:px-0`}
+          className={`ss-btn ${primary.kind === "start" ? "ss-btn-tonal" : "ss-btn-outlined"} ss-shrink-sm`}
           onClick={primary.onClick}
           disabled={primary.disabled}
           title={primary.title ?? primary.label}
           aria-label={primary.label}
         >
           <Icon name={primary.kind === "start" ? "play_arrow" : "arrow_back"} />
-          <span className="max-sm:hidden">{primary.label}</span>
+          <span className="ss-shrink-label">{primary.label}</span>
         </button>
         <AccountMenu user={user} onReauth={props.onReauth} onSignOut={props.onSignOut} />
       </div>

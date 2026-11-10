@@ -36,7 +36,7 @@ const timeOf = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "nume
 
 /** "Started 2:14 PM · took 43 min · 1,204 words" */
 function detail(e: Entry): string {
-  const parts = [`${e.status === "scheduled" ? "Starts" : "Started"} ${timeOf(e.startedAt ?? e.startAt)}`];
+  const parts = [`${e.status === "scheduled" ? "Starts" : "Started"} ${timeOf(e.startedAt ?? e.startAt ?? e.createdAt)}`];
   if (e.startedAt && e.finishedAt && e.finishedAt > e.startedAt) parts.push(`took ${formatSpan((e.finishedAt - e.startedAt) / 60_000)}`);
   if (e.kind === "doc" && e.words) parts.push(`${e.words.toLocaleString()} ${e.words === 1 ? "word" : "words"}`);
   if (e.status !== "done" && e.totalChars > 0 && e.charsSent > 0) parts.push(`${Math.min(100, Math.round((e.charsSent / e.totalChars) * 100))}% done`);

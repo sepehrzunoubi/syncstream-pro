@@ -238,7 +238,7 @@ export function Workspace({ user, onSignOut, onReauth }: { user: HeaderUser | nu
       : docContent?.status === "loading"
         ? { text: "Opening the document", icon: "cloud_sync" }
         : docContent?.status === "failed"
-          ? { text: `Couldn't open this document (${docContent.error}). Your new text will be added at its end. Try File > Open > Refresh list.`, icon: "cloud_off", visible: true }
+          ? { text: `${openFailure(docContent.error)} Your new text will be added at its end. Try File > Open > Refresh list.`, icon: "cloud_off", visible: true }
         : docBusy
           ? { text: "A sync is typing into this document. You can edit it when it finishes.", icon: "lock", visible: true }
           : saveState === "saving"
@@ -585,4 +585,10 @@ function readFlag(key: string, fallback: boolean): boolean {
 }
 function writeFlag(key: string, on: boolean) {
   try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* storage blocked */ }
+}
+
+/** Why a document didn't open, said once: the server's reason when it has one of its own */
+function openFailure(error: string | undefined): string {
+  const why = (error ?? "").trim().replace(/\.$/, "");
+  return !why || /^couldn't (load|open) this document$/i.test(why) ? "Couldn't open this document." : `Couldn't open this document: ${why.charAt(0).toLowerCase()}${why.slice(1)}.`;
 }

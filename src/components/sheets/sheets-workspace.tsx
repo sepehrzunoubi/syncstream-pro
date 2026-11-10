@@ -285,9 +285,9 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
           <div className="ss-header-actions">
             <SectionSwitch active="sheets" />
             {!focusedJob && workbook && (
-              <button className="ss-btn ss-btn-outlined max-md:w-10 max-md:px-0" onClick={pickFile} disabled={reading} title="Upload another workbook" aria-label="Upload another workbook">
+              <button className="ss-btn ss-btn-outlined ss-shrink-md" onClick={pickFile} disabled={reading} title="Upload another workbook" aria-label="Upload another workbook">
                 <Upload className="h-[18px] w-[18px]" aria-hidden="true" />
-                <span className="max-md:hidden">Replace file</span>
+                <span className="ss-shrink-label">Replace file</span>
               </button>
             )}
             {focusedJob ? (

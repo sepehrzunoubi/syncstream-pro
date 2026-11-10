@@ -137,6 +137,32 @@ const RECIPES: { id: string; q: string; batches: object[][] }[] = [
     batches: [[ins(1, "Plain\n\t\tSolo\nH\n")], [create(7, 16)], [delText(12, 14)]],
   },
   {
+    id: "Q14",
+    q: "A text style up to a paragraph's newline: is the newline styled too? (a) all of \"Big \" in \"Big \\n\"; (b) only the last word; (c) text right after a newline: is the newline before it left alone? Answered: (a) yes, (b) yes, the body's last newline included, (c) yes.",
+    batches: [
+      [ins(1, "\n"), ins(1, "Big bold "), textStyle(5, 10, { bold: true }, "bold")],
+      [ins(11, "Next\n"), textStyle(11, 15, { italic: true }, "italic")],
+    ],
+  },
+  {
+    id: "Q15",
+    q: "Spacing mode and bullets: does createParagraphBullets keep a paragraph's NEVER_COLLAPSE? does deleteParagraphBullets? is one set after the bullets copied to the next item typed? Answered: dropped by both, kept and copied when set after.",
+    batches: [
+      [ins(1, "Item\nNext\n"), paraStyle(1, 5, { spacingMode: "NEVER_COLLAPSE" }, "spacingMode"), create(1, 5, NUM)],
+      [paraStyle(1, 5, { spacingMode: "NEVER_COLLAPSE" }, "spacingMode"), ins(5, "\nItem two")],
+      [del(1, 5)],
+    ],
+  },
+  {
+    id: "Q16",
+    q: "Joining a list after a nested item: at which level do paragraphs bulleted right after it land? (a) one with no tab; (b) one with a tab; (c) two, the second with a tab, after a top-level item. Answered: at the level of the item before plus their tabs counted from the least of them: (a) nested with it, (b) the same, its tab gone, (c) top level and one deeper.",
+    batches: [
+      [ins(1, "One\n\tTwo\nThree\nFour\n"), create(1, 10, NUM)],
+      [create(9, 15, NUM)],
+      [ins(15, "\t"), create(15, 21, NUM)],
+    ],
+  },
+  {
     id: "Q12",
     q: "documentFormat: does updateDocumentStyle accept documentMode PAGELESS (and flipPageOrientation)?",
     batches: [

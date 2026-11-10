@@ -255,6 +255,12 @@ export interface RichFormat {
   base?: ParagraphFormat;
   runs: RunFormat[];
   images?: ImageRef[];
+  /**
+   * Text typed in front of a newline that then ends an empty paragraph (the text ends with a line
+   * break): that newline's look. Docs gives a newline the style of text styled right before it, so
+   * once the text is in, the newline is put back to its own.
+   */
+  close?: RunStyle;
 }
 
 export const DEFAULT_PARAGRAPH: ParagraphFormat = { style: "normal", align: "left", indent: 0, firstLine: false, spacing: 115 };
@@ -614,6 +620,12 @@ export function richFromEditorJSON(doc: EditorNode | null | undefined): { text: 
 
   const format: RichFormat = { v: 1, paragraphs: lines.map((l) => l.para), runs };
   if (images.length) format.images = images;
+  // The text ends with an empty paragraph: its newline is the one the text is typed in front of
+  const lastLine = lines[lines.length - 1];
+  if (lines.length > 1 && !lastLine.pieces.length) {
+    format.close = { ...(lastLine.nl ?? {}) };
+    delete format.close.link;
+  }
   return { text, format };
 }
 
@@ -692,6 +704,8 @@ export function parseFormat(text: string, raw: unknown): { ok: true; format: Ric
   }
   const format: RichFormat = { v: 1, paragraphs, runs };
   if (images.length) format.images = images;
+  const rawClose = (raw as { close?: RunStyle }).close;
+  if (rawClose && typeof rawClose === "object") format.close = cleanStyle(rawClose);
   const rawBase = (raw as { base?: ParagraphFormat }).base;
   if (rawBase && typeof rawBase === "object") {
     format.base = paragraphFromAttrs({ styleName: rawBase.style, textAlign: rawBase.align, indent: rawBase.indent, firstLine: rawBase.firstLine, lineSpacing: rawBase.spacing, list: rawBase.list, level: rawBase.level, preset: rawBase.preset, glyph: rawBase.glyph, indentEnd: rawBase.end, exact: rawBase.exact, space: rawBase.space, keep: rawBase.keep, borders: rawBase.borders, shading: rawBase.shading, spacingMode: rawBase.spacingMode, dir: rawBase.dir, listCont: rawBase.cont });
@@ -721,11 +735,19 @@ const bulletsOf = (s: DocListState): DocListState => (s?.cont ? null : s);
  * Docs keeps them) and gets its own indents back
  */
 export function contRequests(range: { startIndex: number; endIndex: number }, para: ParagraphFormat): DocsRequest[] {
+  return [{ deleteParagraphBullets: { range } }, unbulleted(range, para)];
+}
+
+/**
+ * What a paragraph needs once its bullets are gone: its own indents (Docs keeps the ones the bullets
+ * gave it) and its spacing mode (Docs drops that with the bullets)
+ */
+export function unbulleted(range: { startIndex: number; endIndex: number }, para: ParagraphFormat): DocsRequest {
   const ind = effectiveIndent(para);
-  return [
-    { deleteParagraphBullets: { range } },
-    { updateParagraphStyle: { range, paragraphStyle: { indentStart: { magnitude: ind.start, unit: "PT" }, indentFirstLine: { magnitude: ind.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } },
-  ];
+  const paragraphStyle: Record<string, unknown> = { indentStart: { magnitude: ind.start, unit: "PT" }, indentFirstLine: { magnitude: ind.first, unit: "PT" } };
+  const fields = ["indentStart", "indentFirstLine"];
+  if (para.spacingMode) { paragraphStyle.spacingMode = para.spacingMode; fields.push("spacingMode"); }
+  return { updateParagraphStyle: { range, paragraphStyle, fields: fields.join(",") } };
 }
 
 /**
@@ -733,7 +755,7 @@ export function contRequests(range: { startIndex: number; endIndex: number }, pa
  * item's next line between items, which the run is bulleted across and which loses its bullet again.
  * `tabs` is how many tabs a line starts with.
  */
-export interface BulletParagraph { start: number; end: number; level: number; indent?: { start: number; first: number }; line?: ParagraphFormat; tabs?: number }
+export interface BulletParagraph { start: number; end: number; level: number; indent?: { start: number; first: number }; line?: ParagraphFormat; tabs?: number; mode?: SpacingMode }
 
 /** What a line's tabs are put behind while the bullets are made, so Docs doesn't take them for nesting */
 const TAB_GUARD = "​";
@@ -785,9 +807,24 @@ export function bulletRequests(paragraphs: BulletParagraph[], preset: string): D
     const indent = p.indent ?? (p.level > 0 && top > 0 ? levelIndent(p.level) : undefined);
     if (indent) requests.push({ updateParagraphStyle: { range: { startIndex: p.start, endIndex: p.end }, paragraphStyle: { indentStart: { magnitude: indent.start, unit: "PT" }, indentFirstLine: { magnitude: indent.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
   }
+  // Docs drops a paragraph's spacing mode when it gives it bullets, so each item gets its own back:
+  // without it a list spaced between its items comes out tight
+  for (let i = 0; i < items.length; ) {
+    let j = i;
+    while (j + 1 < items.length && items[j + 1].mode === items[i].mode && items[j + 1].start === items[j].end) j++;
+    if (items[i].mode) requests.push({ updateParagraphStyle: { range: { startIndex: items[i].start, endIndex: items[j].end }, paragraphStyle: { spacingMode: items[i].mode }, fields: "spacingMode" } });
+    i = j + 1;
+  }
   for (const p of paragraphs) if (p.line) requests.push(...contRequests({ startIndex: p.start, endIndex: p.end }, p.line));
   return requests;
 }
+/**
+ * Whether paragraphs bulleted right after this one land at their own levels. Docs adds them to its
+ * list at its level plus their tabs, so only after a top-level item: after a nested one a top-level
+ * item would come out nested with it ("3." as "b."), and the list is made again from its first item.
+ */
+const joinable = (before: ParagraphFormat | undefined): boolean => !!before?.list && !(before.level ?? 0);
+
 /** Where Docs' list styles put an item of a level: its text 36pt a level in, its glyph 18pt before it */
 const levelIndent = (level: number) => ({ start: INDENT_PT * (level + 1), first: INDENT_PT * (level + 1) - 18 });
 // A list the document already had (start < 0) is known by type and level only: its preset is kept
@@ -890,7 +927,7 @@ export class FormatIndex {
             const qs = this.paraStarts[q];
             const qe = q === p ? segEnd : (this.paraStarts[q + 1] ?? this.text.length);
             const fq = this.format.paragraphs[q] ?? DEFAULT_PARAGRAPH;
-            run.push(fq.list ? { start: at(qs), end: at(qe), level: fq.level ?? 0, indent: fq.exact } : { start: at(qs), end: at(qe), level: 0, line: fq, tabs: leadingTabs(this.text, qs) });
+            run.push(fq.list ? { start: at(qs), end: at(qe), level: fq.level ?? 0, indent: fq.exact, mode: fq.spacingMode } : { start: at(qs), end: at(qe), level: 0, line: fq, tabs: leadingTabs(this.text, qs) });
           }
           // Paragraphs already bulleted keep their level whatever their tabs: remove the bullets first
           if (run.length > 1) requests.push({ deleteParagraphBullets: { range: { startIndex: run[0].start, endIndex: run[run.length - 1].end } } });
@@ -901,6 +938,9 @@ export class FormatIndex {
     }
 
     requests.push(...this.textRequests(start, end, docIndex));
+    // The document's last newline now ends the text's closing empty paragraph, and Docs gave it the
+    // look of text styled right before it along the way: put its own back
+    if (closesSource && this.format.close) requests.push(textRequest(resolveTextStyle(this.format.close), at(end), at(end) + 1));
 
     // The paragraph the next write appends to: created by this write (it
     // inherited the old state), or the last paragraph this write styled.
@@ -965,7 +1005,7 @@ export class FormatIndex {
   private joinFrom(p: number, listFirst: number): number {
     let q = p;
     while (q - 1 > listFirst && !this.format.paragraphs[q - 1]?.list && this.format.paragraphs[q - 1]?.cont) q--;
-    return q < p && this.format.paragraphs[q - 1]?.list ? q : listFirst;
+    return q < p && joinable(this.format.paragraphs[q - 1]) ? q : listFirst;
   }
 
   /** The list a list item's next line (p) is in: the item before it, across other such lines */
@@ -1157,13 +1197,13 @@ export class SegmentFormat {
           const listFirst = lastLE(this.lineStarts, cur!.start);
           let firstLine = l;
           while (firstLine - 1 > listFirst && !this.format.paragraphs[firstLine - 1]?.list && this.format.paragraphs[firstLine - 1]?.cont) firstLine--;
-          if (!(firstLine < l && this.format.paragraphs[firstLine - 1]?.list)) firstLine = listFirst;
+          if (!(firstLine < l && joinable(this.format.paragraphs[firstLine - 1]))) firstLine = listFirst;
           const run: BulletParagraph[] = [];
           for (let q = firstLine; q <= l; q++) {
             const qs = this.lineStarts[q] ?? this.text.length;
             const qe = q === l ? to : (this.lineStarts[q + 1] ?? this.text.length);
             const fq = this.format.paragraphs[q] ?? DEFAULT_PARAGRAPH;
-            run.push(fq.list ? { start: at(qs), end: at(qe), level: fq.level ?? 0, indent: fq.exact } : { start: at(qs), end: at(qe), level: 0, line: fq, tabs: leadingTabs(this.text, qs) });
+            run.push(fq.list ? { start: at(qs), end: at(qe), level: fq.level ?? 0, indent: fq.exact, mode: fq.spacingMode } : { start: at(qs), end: at(qe), level: 0, line: fq, tabs: leadingTabs(this.text, qs) });
           }
           requests.push({ deleteParagraphBullets: { range: { startIndex: run[0].start, endIndex: range.endIndex } } });
           requests.push(...bulletRequests(run, presetOf(para)));
@@ -1172,15 +1212,12 @@ export class SegmentFormat {
           continue;
         }
         if (docState) requests.push({ deleteParagraphBullets: { range } });
-        if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0, indent: para.exact }], presetOf(para)));
+        if (want) requests.push(...bulletRequests([{ start: range.startIndex, end: range.endIndex, level: para.level ?? 0, indent: para.exact, mode: para.spacingMode }], presetOf(para)));
         if (want) glyphs.add(l);
         // A list item's next line: the list this sync started goes on after it
         cur = want ? { type: want, start: lineStart, level: para.level ?? 0, preset: presetOf(para) } : para.cont && cur && cur.start >= 0 ? { ...cur, cont: true } : null;
-        if (!want) {
-          // Indents Docs kept from the bullets
-          const ind = effectiveIndent(para);
-          requests.push({ updateParagraphStyle: { range, paragraphStyle: { indentStart: { magnitude: ind.start, unit: "PT" }, indentFirstLine: { magnitude: ind.first, unit: "PT" } }, fields: "indentStart,indentFirstLine" } });
-        }
+        // Indents Docs kept from the bullets, and the spacing mode it dropped with them
+        if (!want) requests.push(unbulleted(range, para));
       } else if (fresh) {
         // A list item's next line, already as wanted (an earlier write, or this one, gave it no bullet):
         // the list this sync started still goes on after it
@@ -1203,6 +1240,10 @@ export class SegmentFormat {
       if (lineStart < start) requests.push(...this.index.textRequests(lineStart, Math.min(lineEnd + 1, start), at(lineStart)));
     }
     requests.push(...this.index.textRequests(start, end, docIndex));
+    // The newline this text was typed in front of now ends an empty paragraph, and Docs gave it the
+    // look of text styled right before it along the way: put its own back, so the empty line is as
+    // tall as the page shows it
+    if (closes && end === this.text.length && this.text[end - 1] === "\n" && this.format.close) requests.push(textRequest(resolveTextStyle(this.format.close), at(end), at(end) + 1));
     return { requests, docList: cur };
   }
 }

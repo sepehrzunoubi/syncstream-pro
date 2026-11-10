@@ -47,7 +47,7 @@ export function CompareHeader({ user, status, onReauth, onSignOut, menus: m }: C
           <h1 className="ss-title ss-title-static"><span className="truncate">Compare &amp; Sync</span></h1>
           {status && <span className="ss-status-text ss-cmp-status" data-ss-status-text aria-live="polite">{status}</span>}
         </div>
-        <div className="ss-menubar-row max-sm:hidden">
+        <div className="ss-menubar-row">
           <MB.Root className="ss-menubar" aria-label="Menu">
             <TopMenu label="File">
               <Item onSelect={m.onNew}>New comparison</Item>

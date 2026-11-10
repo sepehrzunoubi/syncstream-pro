@@ -1081,7 +1081,11 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     const moved = !!pb.list && typeof docsList === "string" && memberOf.get(p) !== docsList;
     const listChanged = moved || (pa.list ?? null) !== (pb.list ?? null) || (pb.list && ((pa.level ?? 0) !== (pb.level ?? 0) || presetOf(pa) !== presetOf(pb)));
     if (listChanged) {
-      if (pa.list && !pb.list) listRequests.push({ deleteParagraphBullets: { range } });
+      // (Docs drops a paragraph's spacing mode with its bullets: one it keeps is set again)
+      if (pa.list && !pb.list) {
+        listRequests.push({ deleteParagraphBullets: { range } });
+        if (pb.spacingMode) listRequests.push({ updateParagraphStyle: { range, paragraphStyle: { spacingMode: pb.spacingMode }, fields: "spacingMode" } });
+      }
       if (pb.list) changedLists.add(p);
     }
     const d = paragraphDelta(pa, pb);
@@ -1127,6 +1131,15 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
     const same = (k: number) => kindAt(k) === type && memberOf.get(k) === list;
     for (let k = nlBefore(s); k >= 0 && (same(k) || (!kindAt(k) && cont(k))); k = nlBefore(k)) if (same(k)) s = k;
     for (let k = nlAfter(e); k >= 0 && (same(k) || (!kindAt(k) && cont(k))); k = nlAfter(k)) if (same(k)) e = k;
+    // Docs adds a run to the list of the item right before it, at that item's level plus the run's
+    // tabs. After a nested item of the same kind the run would come out nested with it (an item moved
+    // out to the margin would stay where it was), so that item's list is made again with the run:
+    // Docs counts them as one list either way, and every item lands at its own level
+    const levelAt = (q: number) => { const t = saved[q]; return t.k === "nl" ? paragraphFromAttrs(t.attrs).level ?? 0 : 0; };
+    for (let prev = nlBefore(s); prev >= 0 && kindAt(prev) === type && levelAt(prev) > 0; prev = nlBefore(s)) {
+      const other = memberOf.get(prev);
+      for (let k = prev; k >= 0 && ((kindAt(k) === type && memberOf.get(k) === other) || (!kindAt(k) && cont(k))); k = nlBefore(k)) if (kindAt(k) === type) s = k;
+    }
     return [s, e];
   };
   const runs: [number, number][] = [];
@@ -1153,7 +1166,7 @@ function edits(baseDoc: EditorNode, targetDoc: EditorNode, firstIndex: number): 
       }
       preset = presetOf(pb);
       if (tabs) tabbed.push(range.start);
-      run.push({ ...range, level: pb.level ?? 0 });
+      run.push({ ...range, level: pb.level ?? 0, mode: pb.spacingMode });
     }
     if (!preset) continue;
     listRequests.push({ deleteParagraphBullets: { range: { startIndex: run[0].start, endIndex: run[run.length - 1].end } } });
@@ -1243,6 +1256,13 @@ export function additions(baseDoc: EditorNode, targetDoc: EditorNode): { segment
     const seg = segmentText(target, r.ts, te);
     // The paragraph the text is typed into (or copied for a new one) as the document has it
     seg.format.base = paragraphFromAttrs(nextNl(base, r.bs)?.attrs);
+    // Typed in front of a newline that ends up an empty paragraph's: that newline's own look
+    const closing = mode === "before" ? target[r.te - 1] : target[r.te];
+    if (seg.text.endsWith("\n") && closing?.k === "nl") {
+      const own = Array.isArray(closing.attrs?.nl) ? styleFromMarks(closing.attrs.nl as EditorNode["marks"]) : {};
+      delete own.link;
+      seg.format.close = own;
+    }
     segments.push({ at: index[r.bs], mode, text: seg.text, format: seg.format, tokens: [r.ts, te] });
   }
   let text = "";
