@@ -519,6 +519,26 @@ export function emptyBranchIf(formula: string): boolean {
   return args.length === 3 && (args[1].trim() === "" || args[2].trim() === "");
 }
 
+/** A number rule as Google's export spells it for the cell `me`, back as its kind and bounds; null when it isn't one */
+function exportedNumberRule(formula: string, me: string): { type: string; values: string[] } | null {
+  const head = `AND(ISNUMBER(${me}),`;
+  if (!formula.startsWith(head) || !formula.endsWith(")")) return null;
+  const inner = formula.slice(head.length, -1);
+  const pair = (open: string, first: string, joint: string): string[] | null => {
+    if (!inner.startsWith(`${open}(${me}${first}`) || !inner.endsWith(")")) return null;
+    const body = inner.slice(open.length + 1 + me.length + first.length, -1);
+    const at = body.indexOf(`,${me}${joint}`);
+    return at > 0 ? [body.slice(0, at), body.slice(at + 1 + me.length + joint.length)] : null;
+  };
+  const between = pair("AND", ">=", "<=");
+  if (between) return { type: "NUMBER_BETWEEN", values: between };
+  const outside = pair("OR", "<", ">");
+  if (outside) return { type: "NUMBER_NOT_BETWEEN", values: outside };
+  const single: [string, string][] = [[">=", "NUMBER_GREATER_THAN_EQ"], ["<=", "NUMBER_LESS_THAN_EQ"], ["<>", "NUMBER_NOT_EQ"], [">", "NUMBER_GREATER"], ["<", "NUMBER_LESS"], ["=", "NUMBER_EQ"]];
+  for (const [op, type] of single) if (inner.startsWith(me + op) && !/[(),]/.test(inner.slice(me.length + op.length))) return { type, values: [inner.slice(me.length + op.length)] };
+  return null;
+}
+
 function pushRun(runs: SizeRun[], index: number, px: number) {
   const last = runs[runs.length - 1];
   if (last && last[1] === index - 1 && last[2] === px) last[1] = index;
@@ -791,8 +811,15 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
         greaterThanOrEqual: `${subject}>=${a}`, lessThanOrEqual: `${subject}<=${a}`,
       };
       const numeric = /^-?\d+(\.\d+)?$/;
-      if ((type === "whole" || type === "decimal") && CF_OPERATORS[op] && numeric.test(f1) && (!/etween/.test(op) || numeric.test(f2))) {
-        validations.push({ rect, rule: { type: CF_OPERATORS[op], values: /etween/.test(op) ? [f1, f2] : [f1] }, ...extras });
+      // A bound is a number or a formula ("=A65495"): Google's import keeps a number rule either way
+      const bound = (raw: string, formula: string) => (numeric.test(raw) ? String(Number(raw)) : "=" + formula);
+      // Google's export writes a number rule with a formula for a bound as a custom formula about the
+      // cell, AND(ISNUMBER(C58),AND(C58>=0.0,C58<=A65495)): read back as the rule it was
+      const exported = google && type === "custom" ? exportedNumberRule(a, me) : null;
+      if (exported) {
+        validations.push({ rect, rule: { type: exported.type, values: exported.values.map((x) => bound(x, x)) }, ...extras });
+      } else if ((type === "whole" || type === "decimal") && CF_OPERATORS[op] && f1 && (!/etween/.test(op) || f2)) {
+        validations.push({ rect, rule: { type: CF_OPERATORS[op], values: /etween/.test(op) ? [bound(f1, a), bound(f2, b)] : [bound(f1, a)] }, ...extras });
       } else if (type === "custom" && a) {
         validations.push({ rect, rule: { type: "CUSTOM_FORMULA", values: ["=" + a] }, ...extras });
       } else if (["whole", "decimal", "date", "time", "textLength"].includes(type) && a && compare[op] && (!/etween/.test(op) || b)) {

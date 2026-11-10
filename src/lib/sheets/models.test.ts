@@ -153,6 +153,20 @@ test("an old .xls workbook is one Google converts: what it becomes is read, plan
   for (const k of ["sheet", "name", "span", "type", "fill", "fmt", "size", "merge", "dv", "groups", "prop"]) assert.ok(kinds.has(k as never), k);
 });
 
+test("the Google Sheet a real sync of the .xls model built is what Google made of the .xls: every cell, rule, name and formula result", async () => {
+  // lbo.synced.xlsx: Google's export of the spreadsheet made by sending every request of this model's
+  // sync (8,400 of them over ten tabs, none refused), compared with Google's export of its own conversion
+  const imported = await read("lbo.google-import.xlsx");
+  const synced = await read("lbo.synced.xlsx");
+  assert.deepEqual(workbookDifferences(imported, synced, 10, { results: true }), []);
+  assert.equal(synced.names?.length, 82);
+  // A number rule whose bound is a cell ("between 0 and A65495") is that rule, as in Google's conversion,
+  // though Google's export spells it as a formula about the cell
+  const rule = synced.sheets[0].validations?.find((v) => v.rect.join() === "57,2,57,2");
+  assert.deepEqual(rule?.rule, { type: "NUMBER_BETWEEN", values: ["0", "=A65495"] });
+  assert.deepEqual(imported.sheets[0].validations?.find((v) => v.rect.join() === "57,2,57,2")?.rule, rule?.rule);
+});
+
 test("reading the same workbook twice gives the same workbook, and Google's export of a sync would read the same again", async () => {
   // The reader is its own fixed point on what Google writes: read, written to the stub, the model unchanged
   const a = await read("fcff.google-import.xlsx");

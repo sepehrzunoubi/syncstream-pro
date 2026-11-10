@@ -37,7 +37,9 @@ export function workbookDifferences(a: Workbook, b: Workbook, max = 10, opts: { 
     const rd = ra.map((v, k) => (v !== rb[k] ? `${k}:${v}|${rb[k]}` : "")).filter(Boolean);
     if (rd.length) head.push(`row heights differ (${rd.length}): ${rd.slice(0, 8).join(" ")}`);
     for (const k of ["hiddenRows", "hiddenCols", "groups", "filter", "banding", "conditional", "charts"] as const) if (canon(sa[k]) !== canon(sb[k])) head.push(`${k}: ${canon(sa[k])?.slice(0, 200)} | ${canon(sb[k])?.slice(0, 200)}`);
-    const dv = (s: Sheet) => (s.validations ?? []).map((v) => canon({ ...v, rect: undefined }) + "@" + v.rect.join()).sort();
+    // (a dropdown's range set through the API is given back with its own sheet's name in front: the same range)
+    const own = (s: Sheet, source: string | undefined) => (source == null ? undefined : source.replace(new RegExp(`^=('?)${s.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/'/g, "''")}\\1!`, "i"), "="));
+    const dv = (s: Sheet) => (s.validations ?? []).map((v) => canon({ ...v, source: own(s, v.source), rect: undefined }) + "@" + v.rect.join()).sort();
     if (canon(dv(sa)) !== canon(dv(sb))) head.push(`validations ${dv(sa).length}|${dv(sb).length}: ${dv(sa).filter((x) => !dv(sb).includes(x)).slice(0, 2).join(" ; ").slice(0, 260)} || ${dv(sb).filter((x) => !dv(sa).includes(x)).slice(0, 2).join(" ; ").slice(0, 260)}`);
     const m = (w: Sheet) => w.merges.map((x) => x.join()).sort();
     if (canon(m(sa)) !== canon(m(sb))) head.push(`merges ${sa.merges.length}|${sb.merges.length}: only A ${m(sa).filter((x) => !m(sb).includes(x)).slice(0, 4).join(" ")} ; only B ${m(sb).filter((x) => !m(sa).includes(x)).slice(0, 4).join(" ")}`);
