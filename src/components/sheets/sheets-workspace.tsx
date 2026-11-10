@@ -317,7 +317,9 @@ export function SheetsWorkspace({ user, onSignOut, onReauth, compare = false }: 
     ? statusLine(focusedJob).replace(/^Typing/, "Building").replace(/typed$/, "built")
     : converting ? "Google Sheets is converting this .xls file"
     : reading ? "Reading the workbook"
+    : workbook && compare ? (haveBusy ? "Reading your spreadsheet" : target && have ? `What "${target.name}" is missing is typed into it when the sync starts` : "Pick the Google Sheet to bring up to this reference")
     : workbook ? "A new Google Sheet is made for it when the sync starts"
+    : compare ? "Upload the reference workbook, then pick the Google Sheet to bring up to it"
     : "Upload an Excel workbook to sync it into a new Google Sheet";
   const canStart = !!workbook && !!plan && !busy && !reading && (!compare || (!!target && !!have && plan.steps.length > 0));
 

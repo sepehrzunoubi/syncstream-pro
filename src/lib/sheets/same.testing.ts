@@ -3,7 +3,8 @@
  * look (blank ranges spread out, defaults filled in, theme colours resolved), every size, merge,
  * rule and name. Used to hold the reader to Google Sheets' own import of the same file: one side
  * is the file as SyncStream reads it, the other the .xlsx Google exports of what it imported.
- * Left out, because the export itself adds or drops them: a number format Sheets worked out for a
+ * An error constant and the formula that gives the same error count as the same (the API can only
+ * write the second). Left out, because the export itself adds or drops them: a number format Sheets worked out for a
  * formula, the inner edges of a merged cell, and the cells a merge covers.
  */
 import { cellName, type Sheet, type Workbook } from "./model";
@@ -53,6 +54,10 @@ export function workbookDifferences(a: Workbook, b: Workbook, max = 10, opts: { 
       if (covered.has(k)) continue;
       const ca2 = mapA.get(k), cb2 = mapB.get(k);
       const name = cellName(Math.floor(k / 16384), k % 16384);
+      // An error typed as a constant can't be written through the API: the sync writes the formula that
+      // gives the same error ("=#DIV/0!"), which shows and behaves the same
+      const constant = (x: typeof ca2, y: typeof ca2) => !!x && x.f == null && x.e != null && y?.f === x.e;
+      if (constant(ca2, cb2) || constant(cb2, ca2)) continue;
       if ((ca2?.f ?? null) !== (cb2?.f ?? null)) note("formula", `${name}: ${ca2?.f} | ${cb2?.f}`);
       else if (ca2?.f == null && !same(ca2?.v, cb2?.v)) note("value", `${name}: ${canon(ca2?.v)} | ${canon(cb2?.v)}`);
       // What a formula worked out to (both sides saved by the same spreadsheet program), when asked

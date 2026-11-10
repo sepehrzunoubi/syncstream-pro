@@ -112,6 +112,24 @@ test("the valuation model builds, tab by tab, into exactly itself", async () => 
   assert.equal(viewAt(wb, timeline, steps.length, 15).exists, true);
 });
 
+test("the Google Sheet a real sync of the model built reads back as the file: every cell, look, size and formula result", async () => {
+  // fcff.synced.xlsx is Google's export of the spreadsheet made by sending Google Sheets every request
+  // of this workbook's sync, in order (4,175 of them, none refused). It is compared with the file as
+  // the page reads it (what the preview shows) and with Google's own import of the file.
+  const original = await read("fcff.xlsx");
+  const synced = await read("fcff.synced.xlsx");
+  // The file and the finished Google Sheet: the same, down to what every formula works out to
+  assert.deepEqual(workbookDifferences(original, synced, 10, { results: true }), []);
+  // Google's own import and the finished Google Sheet: the same in every cell, look and size
+  assert.deepEqual(workbookDifferences(await read("fcff.google-import.xlsx"), synced), []);
+  // ...and the sync is nearer the file than the import is: the import shows #REF! where formulas refer
+  // to themselves (it drops iterative calculation); the synced sheet works them out as Excel did
+  const value = (wb: Workbook, r: number, c: number) => wb.sheets.find((s) => s.name === "Option Value")!.cells.find((x) => x.r === r && x.c === c);
+  const imported = value(await read("fcff.google-import.xlsx"), 14, 2);
+  assert.equal(imported?.e ?? imported?.v, "#REF!");
+  assert.ok(Math.abs((value(synced, 14, 2)?.v as number) - (value(original, 14, 2)?.v as number)) < 1e-4);
+});
+
 test("an old .xls workbook is one Google converts: what it becomes is read, planned and built into exactly itself", async () => {
   // The page doesn't read the binary format: it asks for Google's conversion instead
   assert.equal(isOldExcel(file("lbo.xls")), true);
