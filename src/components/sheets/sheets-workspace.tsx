@@ -38,7 +38,7 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
   const [reading, setReading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [settings, setSettings] = useState<SheetSettings>({ targetMinutes: null, startInMinutes: 0, seed: 1 });
+  const [settings, setSettings] = useState<SheetSettings>({ targetMinutes: null, startInMinutes: 0, seed: 1, breaks: [] });
   const [tab, setTab] = useState(0);
   const [selected, setSelected] = useState<GridSelection | null>({ r: 0, c: 0 });
   /** The build preview: how many steps are shown done (null: all of them) */
@@ -66,7 +66,7 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
       setPlaying(false);
       setFocusedJobId(null);
       setStartError(null);
-      setSettings((s) => ({ ...s, seed: randomSeed() }));
+      setSettings((s) => ({ ...s, seed: randomSeed(), breaks: [] }));
     } catch (err) {
       setFileError(err instanceof XlsxError ? err.message : "This file couldn't be read as an Excel workbook.");
     } finally {
@@ -89,7 +89,7 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
     return () => clearTimeout(id);
   }, [workbook, name, settings]);
 
-  const plan = useMemo<SheetPlan | null>(() => (workbook ? buildSheetPlan(workbook, { targetMinutes: settings.targetMinutes, seed: settings.seed }) : null), [workbook, settings.targetMinutes, settings.seed]);
+  const plan = useMemo<SheetPlan | null>(() => (workbook ? buildSheetPlan(workbook, { targetMinutes: settings.targetMinutes, seed: settings.seed, breaks: settings.breaks }) : null), [workbook, settings.targetMinutes, settings.seed, settings.breaks]);
   const timeline = useMemo(() => (workbook && plan ? buildTimeline(workbook, plan.steps) : null), [workbook, plan]);
   useEffect(() => { if (workbook) loadFonts(workbookFonts(workbook)); }, [workbook]);
 
@@ -150,7 +150,7 @@ export function SheetsWorkspace({ user, onSignOut, onReauth }: { user: HeaderUse
     setBusy(true);
     setStartError(null);
     const timeZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return undefined; } })();
-    const { ok, status, data } = await postJson<{ job?: PublicJob }>("/api/sheets/start", { workbook, name: name.trim() || workbook.name, targetMinutes: settings.targetMinutes, seed: plan.seed, startInMinutes: settings.startInMinutes, timeZone });
+    const { ok, status, data } = await postJson<{ job?: PublicJob }>("/api/sheets/start", { workbook, name: name.trim() || workbook.name, targetMinutes: settings.targetMinutes, seed: plan.seed, startInMinutes: settings.startInMinutes, timeZone, breaks: settings.breaks });
     setBusy(false);
     if (!ok || !data.job) {
       setStartError(status === 401 ? "Your Google sign-in expired. Reconnect your Google account from the account menu, then start again." : data.error ?? "Couldn't start the sync. Try again.");

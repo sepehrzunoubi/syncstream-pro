@@ -3,7 +3,8 @@ import { applyAuthCookies, googleStatus, resolveUser, tooLarge, unauthorized, wi
 import { createSpreadsheet, isSheetsApiDisabled } from "@/lib/google";
 import { enqueueProcess } from "@/lib/qstash";
 import { createJobId, getStore, hasRedis, MAX_STORED_JSON, storedSize, toPublicJob, type SyncJob, type SyncPlan } from "@/lib/sync-store";
-import { buildSheetPlan, MAX_SHEET_TARGET_MINUTES, MIN_SHEET_TARGET_MINUTES } from "@/lib/sheets/plan";
+import { buildSheetPlan, MAX_SHEET_TARGET_MINUTES, MIN_SHEET_TARGET_MINUTES, parseSheetBreaks } from "@/lib/sheets/plan";
+import { planSteps } from "@/lib/sheets/order";
 import { parseWorkbook } from "@/lib/sheets/validate";
 import { workbookStats } from "@/lib/sheets/model";
 import { withRoute } from "@/lib/route";
@@ -28,6 +29,8 @@ interface StartBody {
   startInMinutes?: unknown;
   /** The browser's time zone, for the new spreadsheet (TODAY() and NOW() follow it) */
   timeZone?: unknown;
+  /** Breaks placed by hand: [{ section, minutes }], each before that section of the build */
+  breaks?: unknown;
 }
 
 /**
@@ -72,7 +75,9 @@ export const POST = withRoute(async (req: NextRequest) => {
   }
   const timeZone = typeof body.timeZone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){1,2}$/.test(body.timeZone) ? body.timeZone : null;
 
-  const plan = buildSheetPlan(workbook, { targetMinutes, seed });
+  const breaks = parseSheetBreaks(body.breaks, planSteps(workbook).sections.length);
+  if (!breaks) return NextResponse.json({ error: "Those breaks don't fit this workbook. Place them again." }, { status: 400 });
+  const plan = buildSheetPlan(workbook, { targetMinutes, seed, breaks });
   if (!plan.steps.length) return NextResponse.json({ error: "This workbook has nothing to sync." }, { status: 400 });
   const now = Date.now();
   const id = createJobId();
@@ -106,7 +111,7 @@ export const POST = withRoute(async (req: NextRequest) => {
     typoSubStep: 0, typoCharsInDoc: 0, generation: 0, failures: 0,
     accessToken: user.accessToken, refreshToken: user.refreshToken,
     activity: startInMinutes > 0 ? "Scheduled" : "Queued", etaTargetAt: startAt + plan.totalMs, wpm: 0, baselineWordCount: 0,
-    breaks: [], breakAt: [], breaksVersion: 0, editableFrom: 0, completedBreaks: [], lastUpdate: now,
+    breaks: breaks.map((b) => b.minutes), breakAt: [], breaksVersion: 0, editableFrom: 0, completedBreaks: [], lastUpdate: now,
   };
 
   const store = getStore();

@@ -5,7 +5,7 @@
  * for a running sync.
  */
 
-import { layout, type CellStyle, type Rect, type Sheet, type Workbook } from "./model";
+import { layout, type CellStyle, type Chart, type Rect, type Sheet, type Workbook } from "./model";
 import { ASPECTS, hasAspect, type Aspect, type Step } from "./steps";
 
 /** Google Sheets' own defaults, before a sync has changed them */
@@ -31,6 +31,11 @@ interface SheetTimeline {
   tabAt: number;
   hiddenAt: number;
   sizeAt: number;
+  filterAt: number;
+  groupsAt: number;
+  conditionalAt: number;
+  /** Per chart: the step that inserts it */
+  chartAt: number[];
   /** What each step touches here, to show where the sync is */
   focus: Map<number, Rect[]>;
 }
@@ -48,7 +53,7 @@ const ASPECT_INDEX = new Map<Aspect, number>(ASPECTS.map((a, i) => [a, i]));
 export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
   const sheets: SheetTimeline[] = wb.sheets.map((s) => ({
     createdAt: Infinity, typedAt: new Float64Array(s.cells.length).fill(Infinity), runsAt: new Float64Array(s.cells.length).fill(Infinity),
-    looks: new Array(s.cells.length), mergedAt: s.merges.map(() => Infinity), sizes: [], gridlinesAt: Infinity, freezeAt: Infinity, tabAt: Infinity, hiddenAt: Infinity, sizeAt: Infinity, focus: new Map(),
+    looks: new Array(s.cells.length), mergedAt: s.merges.map(() => Infinity), sizes: [], gridlinesAt: Infinity, freezeAt: Infinity, tabAt: Infinity, hiddenAt: Infinity, sizeAt: Infinity, filterAt: Infinity, groupsAt: Infinity, conditionalAt: Infinity, chartAt: (s.charts ?? []).map(() => Infinity), focus: new Map(),
   }));
   // Cells by row, to find the ones a formatted range covers
   const rowsOf = wb.sheets.map((s) => {
@@ -110,6 +115,10 @@ export function buildTimeline(wb: Workbook, steps: readonly Step[]): Timeline {
         else if (step.p === "tab") t.tabAt = Math.min(t.tabAt, k);
         else t.hiddenAt = Math.min(t.hiddenAt, k);
         break;
+      case "filter": t.filterAt = Math.min(t.filterAt, k); break;
+      case "groups": t.groupsAt = Math.min(t.groupsAt, k); break;
+      case "cf": t.conditionalAt = Math.min(t.conditionalAt, k); break;
+      case "chart": if (step.i < t.chartAt.length) t.chartAt[step.i] = Math.min(t.chartAt[step.i], k); break;
       default: break;
     }
   });
@@ -139,6 +148,10 @@ export interface SheetView {
   styleOf(i: number): CellStyle | undefined;
   /** What the last step touched on this sheet */
   focus: Rect[];
+  /** The charts on the sheet so far, the filter range once it is on, and whether conditional formatting is */
+  charts: Chart[];
+  filter?: Rect;
+  conditional: boolean;
 }
 
 /**
@@ -151,6 +164,22 @@ function onScreen(sizes: number[]): { sizes: number[]; offsets: number[] } {
   offsets[0] = 0;
   for (let i = 0; i < out.length; i++) offsets[i + 1] = offsets[i] + out[i];
   return { sizes: out, offsets };
+}
+
+/** Rows or columns with the folded groups' members taken out of sight */
+function fold(sizes: number[], sheet: Sheet, d: "r" | "c"): number[] {
+  const groups = (sheet.groups ?? []).filter((g) => g.d === d && g.collapsed);
+  if (!groups.length) return sizes;
+  const out = sizes.slice();
+  for (const g of groups) for (let i = g.from; i <= g.to && i < out.length; i++) out[i] = 0;
+  return out;
+}
+
+function offsetsOf(sizes: number[]): number[] {
+  const o = new Array<number>(sizes.length + 1);
+  o[0] = 0;
+  for (let i = 0; i < sizes.length; i++) o[i + 1] = o[i] + sizes[i];
+  return o;
 }
 
 /** The picked value of one part of a look, copied from the style that has it */
@@ -170,6 +199,7 @@ function takeAspect(into: CellStyle, from: CellStyle, a: Aspect): void {
     case "vAlign": into.vAlign = from.vAlign; break;
     case "wrap": into.wrap = from.wrap; break;
     case "rotation": into.rotation = from.rotation; break;
+    case "indent": into.indent = from.indent; break;
     case "borders": into.borders = from.borders; break;
   }
 }
@@ -180,11 +210,12 @@ export function finalView(wb: Workbook, s: number): SheetView {
   return {
     sheet, exists: true, hidden: !!sheet.hidden, tabColor: sheet.tabColor, hideGridlines: !!sheet.hideGridlines,
     frozenRows: sheet.frozenRows ?? 0, frozenCols: sheet.frozenCols ?? 0,
-    rows: layout(sheet.rowPx, sheet.rowCount, sheet.defaultRowPx, sheet.hiddenRows), cols: onScreen(layout(sheet.colPx, sheet.colCount, sheet.defaultColPx, sheet.hiddenCols).sizes),
+    rows: (() => { const sizes = fold(layout(sheet.rowPx, sheet.rowCount, sheet.defaultRowPx, sheet.hiddenRows).sizes, sheet, "r"); return { sizes, offsets: offsetsOf(sizes) }; })(),
+    cols: onScreen(fold(layout(sheet.colPx, sheet.colCount, sheet.defaultColPx, sheet.hiddenCols).sizes, sheet, "c")),
     defaultFont: wb.defaultFont, merges: sheet.merges,
     typed: () => true, rich: () => true,
     styleOf: (i) => { const c = sheet.cells[i]; return c?.s ? wb.styles[c.s] : undefined; },
-    focus: [],
+    focus: [], charts: sheet.charts ?? [], filter: sheet.filter, conditional: !!sheet.conditional?.length,
   };
 }
 
@@ -200,13 +231,13 @@ export function viewAt(wb: Workbook, timeline: Timeline, done: number, s: number
     const sizes = d === "r" ? rowSizes : colSizes;
     for (let i = Math.max(0, from); i <= to && i < sizes.length; i++) sizes[i] = px;
   }
-  const offsetsOf = (sizes: number[]) => { const o = new Array<number>(sizes.length + 1); o[0] = 0; for (let i = 0; i < sizes.length; i++) o[i + 1] = o[i] + sizes[i]; return o; };
   const cache = new Map<string, CellStyle | undefined>();
   const last = done - 1;
   return {
     sheet, exists: t.createdAt < done, hidden: t.hiddenAt < done, tabColor: t.tabAt < done ? sheet.tabColor : undefined, hideGridlines: t.gridlinesAt < done,
     frozenRows: t.freezeAt < done ? sheet.frozenRows ?? 0 : 0, frozenCols: t.freezeAt < done ? sheet.frozenCols ?? 0 : 0,
-    rows: { sizes: rowSizes, offsets: offsetsOf(rowSizes) }, cols: onScreen(colSizes),
+    rows: (() => { const sizes = t.groupsAt < done ? fold(rowSizes, sheet, "r") : rowSizes; return { sizes, offsets: offsetsOf(sizes) }; })(),
+    cols: onScreen(t.groupsAt < done ? fold(colSizes, sheet, "c") : colSizes),
     defaultFont: { family: timeline.themeAt < done ? wb.defaultFont.family : SHEETS_DEFAULT_FONT.family, size: t.sizeAt < done ? wb.defaultFont.size : SHEETS_DEFAULT_FONT.size },
     merges: sheet.merges.filter((_m, i) => t.mergedAt[i] < done),
     typed: (i) => t.typedAt[i] < done,
@@ -227,6 +258,7 @@ export function viewAt(wb: Workbook, timeline: Timeline, done: number, s: number
       return style;
     },
     focus: last >= 0 && timeline.sheetOf[last] === s ? t.focus.get(last) ?? [] : [],
+    charts: (sheet.charts ?? []).filter((_c, i) => t.chartAt[i] < done), filter: t.filterAt < done ? sheet.filter : undefined, conditional: t.conditionalAt < done,
   };
 }
 

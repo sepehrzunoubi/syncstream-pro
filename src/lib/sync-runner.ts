@@ -22,7 +22,7 @@ import { FormatIndex, OBJ, SegmentFormat, type DocListState, type DocsRequest, t
 import { isTerminal, type JobAnchor, type PublicJob, type SyncJob, type SyncPlan, type SyncStore, toPublicJob } from "./sync-store";
 import { errorFields, log, startTimer, uidTag, type Fields } from "./log";
 import { reportError } from "./monitor";
-import { needsCheck, stepRequests, type Existing, type SheetsRequest } from "./sheets/steps";
+import { needsCheck, stepLabel, stepRequests, type Existing, type SheetsRequest } from "./sheets/steps";
 
 /**
  * The document's Docs calls, each in the tab being typed into (`tabId`: none for a document without
@@ -52,6 +52,11 @@ export interface SheetsApi {
   /** The tabs, named ranges and conditional formatting the spreadsheet has, for steps that add one */
   existing(accessToken: string, spreadsheetId: string): Promise<Existing>;
 }
+
+/** A refusal that means the sync has nowhere to write (its tab is gone), not that one edit was unwelcome */
+const isLostSheet = (err: unknown): boolean => /No grid with id|Unable to parse range|sheet[^.]*(not found|deleted)|Invalid sheet/i.test(err instanceof Error ? err.message : String(err));
+/** Refused edits a spreadsheet sync leaves out before it gives up: a few are a quirk of the file, many are a broken sync */
+const maxRefused = (totalActions: number): number => Math.max(40, Math.round(totalActions * 0.2));
 
 /** What a job writes into, in words */
 const productOf = (job: { kind?: string } | null | undefined) => (job?.kind === "sheet" ? "Google Sheets" : "Google Docs");
@@ -543,7 +548,34 @@ class Context {
     const requests = stepRequests(data.workbook, step, existing);
     if (requests.length) {
       const timer = startTimer(this.now);
-      await this.withToken((t) => sheets.batch(t, this.job.documentId, requests));
+      try {
+        await this.withToken((t) => sheets.batch(t, this.job.documentId, requests));
+      } catch (err) {
+        // Google refused the batch as written (400). One bad edit shouldn't end the sync: each is sent
+        // on its own, the refused ones are left out and noted, and the rest of the step lands.
+        if (errorStatus(err) !== 400 || isLostSheet(err)) throw err;
+        let refused = 0;
+        let reason = err;
+        if (requests.length === 1) refused = 1;
+        else {
+          for (const request of requests) {
+            try { await this.withToken((t) => sheets.batch(t, this.job.documentId, [request])); }
+            catch (one) {
+              if (errorStatus(one) !== 400 || isLostSheet(one)) throw one;
+              refused++;
+              reason = one;
+            }
+          }
+        }
+        if (refused) {
+          const before = this.job.refused ?? { count: 0, notes: [] };
+          const why = (reason instanceof Error ? reason.message : String(reason)).replace(/\s+/g, " ").slice(0, 160);
+          const note = `${stepLabel(data.workbook, step)}: ${why}`;
+          this.job.refused = { count: before.count + refused, notes: before.notes.length < 5 ? [...before.notes, note] : before.notes };
+          log.warn("sync.sheet_refused", { ...this.tag, action: index, kind: step.k, refused, of: requests.length, why });
+          if (this.job.refused.count > maxRefused(data.steps.length)) throw err;
+        }
+      }
       log.info("sync.sheet_step", { ...this.tag, action: index, kind: step.k, requests: requests.length, sheetsMs: timer(), totalActions: data.steps.length });
     }
     this.job.charsSent = Math.min(this.job.totalChars, this.job.charsSent + (data.units[index] ?? 0));

@@ -8,7 +8,7 @@
     "start": "next start",
     "smoke:standalone": "node scripts/smoke-standalone.mjs",
     "lint": "next lint --dir src --dir e2e --dir scripts",
-    "test": "tsx --test src/**/*.test.ts src/components/**/*.test.ts scripts/**/*.test.ts",
+    "test": "tsx --test src/**/*.test.ts src/lib/**/*.test.ts src/components/**/*.test.ts scripts/**/*.test.ts",
     "fidelity": "tsx scripts/fidelity/run.ts",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test",

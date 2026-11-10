@@ -5,6 +5,7 @@
 
 import type { Workbook } from "@/lib/sheets/model";
 import { parseWorkbook } from "@/lib/sheets/validate";
+import { parseSheetBreaks } from "@/lib/sheets/plan";
 
 const KEY = "syncstream_sheet_draft_v1";
 /** Past this the draft isn't kept (browsers give a page about 5 MB) */
@@ -13,7 +14,7 @@ const MAX_CHARS = 3_500_000;
 export interface SheetDraft {
   workbook: Workbook;
   name: string;
-  settings: { targetMinutes: number | null; startInMinutes: number; seed: number };
+  settings: { targetMinutes: number | null; startInMinutes: number; seed: number; breaks: { section: number; minutes: number }[] };
 }
 
 export function loadDraft(): SheetDraft | null {
@@ -32,6 +33,7 @@ export function loadDraft(): SheetDraft | null {
         targetMinutes: typeof s.targetMinutes === "number" && s.targetMinutes > 0 ? s.targetMinutes : null,
         startInMinutes: typeof s.startInMinutes === "number" && s.startInMinutes >= 0 ? s.startInMinutes : 0,
         seed: typeof s.seed === "number" && Number.isInteger(s.seed) && s.seed >= 0 ? s.seed : 1,
+        breaks: parseSheetBreaks(s.breaks, 100_000) ?? [],
       },
     };
   } catch {

@@ -35,6 +35,11 @@ export interface StubSheet {
   hiddenCols: Set<number>;
   validations: { rect: Rect; rule: unknown }[];
   conditional: unknown[];
+  filter?: Rect;
+  /** Groups as added: "ROWS 3-7" */
+  groups: string[];
+  collapsed: string[];
+  charts: Map<number, Record<string, unknown>>;
 }
 
 type Obj = Record<string, unknown>;
@@ -87,7 +92,7 @@ export class StubSpreadsheet {
     const grid = (props.gridProperties ?? {}) as Obj;
     const sheet: StubSheet = {
       id, title, index: Number(props.index ?? this.sheets.size), rowCount: Number(grid.rowCount ?? 1000), colCount: Number(grid.columnCount ?? 26),
-      frozenRows: 0, frozenCols: 0, cells: new Map(), merges: [], rowPx: new Map(), colPx: new Map(), hiddenRows: new Set(), hiddenCols: new Set(), validations: [], conditional: [],
+      frozenRows: 0, frozenCols: 0, cells: new Map(), merges: [], rowPx: new Map(), colPx: new Map(), hiddenRows: new Set(), hiddenCols: new Set(), validations: [], conditional: [], groups: [], collapsed: [], charts: new Map(),
       ...(props.rightToLeft ? { rightToLeft: true } : {}),
     };
     this.sheets.set(id, sheet);
@@ -235,6 +240,37 @@ export class StubSpreadsheet {
           sheet.conditional.splice(Number(body.index ?? sheet.conditional.length), 0, structuredClone(rule));
           break;
         }
+        case "setBasicFilter": {
+          const range = (body.filter as Obj).range as Obj;
+          const sheet = this.sheet(range.sheetId);
+          sheet.filter = this.rect(sheet, range);
+          break;
+        }
+        case "addDimensionGroup": {
+          const range = body.range as Obj;
+          const sheet = this.sheet(range.sheetId);
+          // Like Sheets: adding a group that is there already nests another inside it
+          sheet.groups.push(`${range.dimension} ${range.startIndex}-${range.endIndex}`);
+          break;
+        }
+        case "updateDimensionGroup": {
+          const group = body.dimensionGroup as Obj;
+          const range = group.range as Obj;
+          const sheet = this.sheet(range.sheetId);
+          const key = `${range.dimension} ${range.startIndex}-${range.endIndex}`;
+          if (!sheet.groups.includes(key)) throw Object.assign(new Error("Invalid requests: no such group"), { code: 400 });
+          if (group.collapsed && !sheet.collapsed.includes(key)) sheet.collapsed.push(key);
+          break;
+        }
+        case "addChart": {
+          const chart = body.chart as Obj;
+          const anchor = (((chart.position as Obj).overlayPosition as Obj).anchorCell as Obj);
+          const sheet = this.sheet(anchor.sheetId);
+          const id = Number(chart.chartId);
+          for (const s of this.sheets.values()) if (s.charts.has(id)) throw Object.assign(new Error("Invalid requests: a chart with that id already exists"), { code: 400 });
+          sheet.charts.set(id, structuredClone(chart) as Record<string, unknown>);
+          break;
+        }
         default: throw new Error(`stub: unknown request ${kind}`);
       }
     }
@@ -246,6 +282,8 @@ export class StubSpreadsheet {
       sheetIds: new Set(this.sheets.keys()),
       namedRangeIds: new Set(this.namedRanges.keys()),
       conditionalRules: new Map(Array.from(this.sheets.values()).map((s) => [s.id, s.conditional.length])),
+      groups: new Map(Array.from(this.sheets.values()).map((s) => [s.id, s.groups.length])),
+      chartIds: new Set(Array.from(this.sheets.values()).flatMap((s) => Array.from(s.charts.keys()))),
     };
   }
 }

@@ -8,10 +8,10 @@
  * was lost), except the ones `needsCheck` names, which the runner looks up first.
  */
 
-import { cellName, rectName, type Border, type Cell, type CellStyle, type Color, type FontStyle, type Rect, type Sheet, type Workbook } from "./model";
+import { cellName, rectName, type Border, type Cell, type CellStyle, type Chart, type ChartSource, type Color, type FontStyle, type Rect, type Sheet, type Workbook } from "./model";
 
 /** One part of a cell's look, applied on its own as a person would (select, then one button) */
-export const ASPECTS = ["family", "size", "bold", "italic", "underline", "strike", "color", "fill", "numFmt", "hAlign", "vAlign", "wrap", "rotation", "borders"] as const;
+export const ASPECTS = ["family", "size", "bold", "italic", "underline", "strike", "color", "fill", "numFmt", "hAlign", "vAlign", "wrap", "rotation", "indent", "borders"] as const;
 export type Aspect = (typeof ASPECTS)[number];
 
 export type Step =
@@ -38,6 +38,12 @@ export type Step =
   | { k: "prop"; s: number; p: "gridlines" | "freeze" | "tab" | "hidden" }
   | { k: "name"; i: number }
   | { k: "dv"; s: number; i: number }
+  /** Filter buttons on the sheet's filter range */
+  | { k: "filter"; s: number }
+  /** The sheet's row and column groups, all of them */
+  | { k: "groups"; s: number }
+  /** Insert the sheet's chart number `i` */
+  | { k: "chart"; s: number; i: number }
   /** The sheet's conditional formatting, all of it */
   | { k: "cf"; s: number }
   /** Time away from the sheet */
@@ -106,6 +112,7 @@ export function hasAspect(style: CellStyle, a: Aspect): boolean {
     case "vAlign": return style.vAlign != null;
     case "wrap": return style.wrap != null;
     case "rotation": return style.rotation != null;
+    case "indent": return !!style.indent;
     case "borders": return style.borders != null;
   }
 }
@@ -123,6 +130,7 @@ export function aspectKey(style: CellStyle, a: Aspect): string {
     case "vAlign": return style.vAlign ?? "";
     case "wrap": return style.wrap ?? "";
     case "rotation": return String(style.rotation ?? "");
+    case "indent": return style.indent ? `${style.indent}${style.hAlign === "RIGHT" ? "R" : "L"}` : "";
     case "borders": return style.borders ? JSON.stringify(style.borders) : "";
   }
 }
@@ -141,8 +149,13 @@ const MASK: Record<Aspect, string> = {
   vAlign: "userEnteredFormat.verticalAlignment",
   wrap: "userEnteredFormat.wrapStrategy",
   rotation: "userEnteredFormat.textRotation",
+  indent: "userEnteredFormat.padding",
   borders: "userEnteredFormat.borders",
 };
+
+/** A cell's padding in Google Sheets, and what one step of Excel's indent adds to a side (about three spaces) */
+export const CELL_PADDING = { top: 2, right: 3, bottom: 2, left: 3 };
+export const INDENT_PX = 9;
 
 /** The cell format that carries one part of a style */
 export function aspectFormat(style: CellStyle, a: Aspect): Record<string, unknown> {
@@ -161,6 +174,11 @@ export function aspectFormat(style: CellStyle, a: Aspect): Record<string, unknow
     case "vAlign": return { verticalAlignment: style.vAlign };
     case "wrap": return { wrapStrategy: style.wrap };
     case "rotation": return { textRotation: style.rotation === "vertical" ? { vertical: true } : { angle: style.rotation } };
+    case "indent": {
+      // Sheets has no indent: the same room is made with padding, on the side the text starts from
+      const extra = (style.indent ?? 0) * INDENT_PX;
+      return { padding: style.hAlign === "RIGHT" ? { ...CELL_PADDING, right: CELL_PADDING.right + extra } : { ...CELL_PADDING, left: CELL_PADDING.left + extra } };
+    }
     case "borders": {
       const b = style.borders!;
       const out: Record<string, unknown> = {};
@@ -273,7 +291,7 @@ function conditionalRequests(wb: Workbook, sheet: Sheet): SheetsRequest[] {
 }
 
 /** Steps that would write twice if sent twice: the runner reads what is there before sending one */
-export const needsCheck = (step: Step): boolean => step.k === "sheet" || step.k === "name" || step.k === "cf";
+export const needsCheck = (step: Step): boolean => step.k === "sheet" || step.k === "name" || step.k === "cf" || step.k === "groups" || step.k === "chart";
 
 /** What the spreadsheet already has, as far as those steps care */
 export interface Existing {
@@ -281,6 +299,45 @@ export interface Existing {
   namedRangeIds: ReadonlySet<string>;
   /** Conditional formatting rules on each sheet, by sheet id */
   conditionalRules: ReadonlyMap<number, number>;
+  /** Row and column groups on each sheet, by sheet id */
+  groups?: ReadonlyMap<number, number>;
+  chartIds?: ReadonlySet<number>;
+}
+
+/** The id a chart gets in the Google Sheet: the same on every try, so a retry can tell it is there */
+export const chartId = (sheetIndex: number, i: number): number => 900_000 + sheetIndex * 1000 + i;
+
+const LEGEND = { RIGHT: "RIGHT_LEGEND", LEFT: "LEFT_LEGEND", TOP: "TOP_LEGEND", BOTTOM: "BOTTOM_LEGEND", NONE: "NO_LEGEND" } as const;
+
+function chartRequest(wb: Workbook, sheetIndex: number, sheet: Sheet, chart: Chart, i: number): SheetsRequest | null {
+  const source = (src: ChartSource) => { const on = wb.sheets[src.sheet]; return on ? { sourceRange: { sources: [gridRange(on.id, src.rect)] } } : null; };
+  const series = chart.series.map((s) => ({ s, range: source(s.src) })).filter((x) => x.range);
+  if (!series.length) return null;
+  const domain = chart.domain ? source(chart.domain) : null;
+  const legendPosition = LEGEND[chart.legend ?? "RIGHT"];
+  let spec: Record<string, unknown>;
+  if (chart.type === "PIE") {
+    spec = { pieChart: { legendPosition, ...(domain ? { domain } : {}), series: series[0].range, ...(chart.hole ? { pieHole: chart.hole } : {}) } };
+  } else {
+    // A bar chart's values run along the bottom; every other kind's run up the side
+    const bar = chart.type === "BAR";
+    const axis = [
+      ...(chart.xTitle ? [{ position: bar ? "LEFT_AXIS" : "BOTTOM_AXIS", title: chart.xTitle }] : []),
+      ...(chart.yTitle ? [{ position: bar ? "BOTTOM_AXIS" : "LEFT_AXIS", title: chart.yTitle }] : []),
+    ];
+    spec = { basicChart: {
+      chartType: chart.type, legendPosition, headerCount: chart.headers ?? 0,
+      ...(chart.stacked ? { stackedType: chart.stacked } : {}),
+      ...(axis.length ? { axis } : {}),
+      ...(domain ? { domains: [{ domain }] } : {}),
+      series: series.map(({ s, range }) => ({ series: range, targetAxis: bar ? "BOTTOM_AXIS" : "LEFT_AXIS", ...(chart.type === "COMBO" && s.type ? { type: s.type } : {}), ...(s.color ? { colorStyle: colorStyle(s.color) } : {}) })),
+    } };
+  }
+  return { addChart: { chart: {
+    chartId: chartId(sheetIndex, i),
+    spec: { ...(chart.title ? { title: chart.title } : {}), ...spec },
+    position: { overlayPosition: { anchorCell: { sheetId: sheet.id, rowIndex: chart.at[0], columnIndex: chart.at[1] }, offsetXPixels: chart.at[2], offsetYPixels: chart.at[3], widthPixels: chart.size[0], heightPixels: chart.size[1] } },
+  } } };
 }
 
 export const namedRangeId = (i: number): string => `ss_name_${i}`;
@@ -351,8 +408,28 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
     case "dv": {
       const v = sheet.validations?.[step.i];
       if (!v) return [];
-      const condition = v.values ? { type: "ONE_OF_LIST", values: v.values.map((x) => ({ userEnteredValue: x })) } : { type: "ONE_OF_RANGE", values: [{ userEnteredValue: v.source }] };
-      return [{ setDataValidation: { range: gridRange(id, v.rect), rule: { condition, showCustomUi: true } } }];
+      const condition = v.values ? { type: "ONE_OF_LIST", values: v.values.map((x) => ({ userEnteredValue: x })) }
+        : v.source ? { type: "ONE_OF_RANGE", values: [{ userEnteredValue: v.source }] }
+        : v.rule ? { type: v.rule.type, values: v.rule.values.map((x) => ({ userEnteredValue: x })) } : null;
+      if (!condition) return [];
+      const list = !!(v.values || v.source);
+      return [{ setDataValidation: { range: gridRange(id, v.rect), rule: { condition, ...(list ? { showCustomUi: true } : {}), ...(v.strict ? { strict: true } : {}), ...(v.help ? { inputMessage: v.help } : {}) } } }];
+    }
+    case "filter":
+      return sheet.filter ? [{ setBasicFilter: { filter: { range: gridRange(id, sheet.filter) } } }] : [];
+    case "groups": {
+      const groups = sheet.groups ?? [];
+      const range = (g: (typeof groups)[number]) => ({ sheetId: id, dimension: DIMENSION[g.d], startIndex: g.from, endIndex: g.to + 1 });
+      // Groups are added, not set: a sheet that has them already only gets its folds
+      const adds = (existing?.groups?.get(id) ?? 0) > 0 ? [] : groups.map((g) => ({ addDimensionGroup: { range: range(g) } }));
+      const folds = groups.filter((g) => g.collapsed).map((g) => ({ updateDimensionGroup: { dimensionGroup: { range: range(g), depth: g.depth, collapsed: true }, fields: "collapsed" } }));
+      return [...adds, ...folds];
+    }
+    case "chart": {
+      const chart = sheet.charts?.[step.i];
+      if (!chart || existing?.chartIds?.has(chartId(step.s, step.i))) return [];
+      const request = chartRequest(wb, step.s, sheet, chart, step.i);
+      return request ? [request] : [];
     }
     case "cf":
       // Rules are added, not set: a sheet that has them already is left alone
@@ -383,12 +460,15 @@ export function stepLabel(wb: Workbook, step: Step): string {
     case "size": return `Resizing ${dims(step.d, step.from, step.to)}`;
     case "hide": return `Hiding ${dims(step.d, step.from, step.to)}`;
     case "prop": return step.p === "gridlines" ? "Hiding the gridlines" : step.p === "freeze" ? "Freezing panes" : step.p === "tab" ? "Colouring the tab" : "Hiding the tab";
-    case "dv": return "Adding a dropdown";
+    case "dv": { const v = sheet?.validations?.[step.i]; return v && !v.values && !v.source ? "Adding a validation rule" : "Adding a dropdown"; }
+    case "filter": return "Turning on the filter";
+    case "groups": return "Grouping rows and columns";
+    case "chart": return `Inserting a chart${sheet?.charts?.[step.i]?.title ? ` (${sheet.charts[step.i].title})` : ""}`;
     case "cf": return "Adding conditional formatting";
   }
 }
 
 const ASPECT_WORDS: Record<Aspect, string> = {
   family: "Font", size: "Font size", bold: "Bold", italic: "Italic", underline: "Underline", strike: "Strikethrough", color: "Text colour",
-  fill: "Fill colour", numFmt: "Number format", hAlign: "Alignment", vAlign: "Vertical alignment", wrap: "Text wrapping", rotation: "Text rotation", borders: "Borders",
+  fill: "Fill colour", numFmt: "Number format", hAlign: "Alignment", vAlign: "Vertical alignment", wrap: "Text wrapping", rotation: "Text rotation", indent: "Indent", borders: "Borders",
 };

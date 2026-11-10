@@ -494,13 +494,17 @@ export async function sheetsBatchUpdate(accessToken: string, spreadsheetId: stri
 /** The tabs, named ranges and conditional formatting a spreadsheet has (see sheets/steps.ts) */
 export async function sheetsExisting(accessToken: string, spreadsheetId: string): Promise<Existing> {
   const sheets = sheetsClient(accessToken);
-  const res = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties.sheetId,conditionalFormats.ranges.sheetId),namedRanges.namedRangeId" }));
+  const res = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties.sheetId,conditionalFormats.ranges.sheetId,rowGroups.depth,columnGroups.depth,charts.chartId),namedRanges.namedRangeId" }));
   const sheetIds = new Set<number>();
   const conditionalRules = new Map<number, number>();
+  const groups = new Map<number, number>();
+  const chartIds = new Set<number>();
   for (const s of res.data.sheets ?? []) {
     const id = s.properties?.sheetId ?? 0;
     sheetIds.add(id);
     conditionalRules.set(id, s.conditionalFormats?.length ?? 0);
+    groups.set(id, (s.rowGroups?.length ?? 0) + (s.columnGroups?.length ?? 0));
+    for (const c of s.charts ?? []) if (c.chartId != null) chartIds.add(c.chartId);
   }
-  return { sheetIds, conditionalRules, namedRangeIds: new Set((res.data.namedRanges ?? []).map((n) => n.namedRangeId ?? "")) };
+  return { sheetIds, conditionalRules, groups, chartIds, namedRangeIds: new Set((res.data.namedRanges ?? []).map((n) => n.namedRangeId ?? "")) };
 }

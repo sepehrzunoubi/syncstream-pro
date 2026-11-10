@@ -1,20 +1,21 @@
 "use client";
 
 import React from "react";
-import { ExternalLink, FileSpreadsheet, Pause, Play, Shuffle, Table2, Upload } from "lucide-react";
+import { Coffee, ExternalLink, FileSpreadsheet, Pause, Play, Shuffle, Table2, Upload } from "lucide-react";
 import type { PublicJob } from "@/lib/sync-store";
 import type { Workbook, WorkbookStats } from "@/lib/sheets/model";
-import type { SheetPlan } from "@/lib/sheets/plan";
+import type { SheetBreak, SheetPlan } from "@/lib/sheets/plan";
 import type { PlanSection } from "@/lib/sheets/order";
 import { stepLabel, type Step } from "@/lib/sheets/steps";
 import { formatClock, formatCountdown, formatSpan } from "@/lib/format";
 import { isActive, progressOf, statusLine } from "../workspace/job-status";
 import { Menu, MenuItem } from "../workspace/menu";
 
-export interface SheetSettings { targetMinutes: number | null; startInMinutes: number; seed: number }
+export interface SheetSettings { targetMinutes: number | null; startInMinutes: number; seed: number; breaks: SheetBreak[] }
 
 const DURATION_OPTIONS: (number | null)[] = [null, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
 const START_OPTIONS = [0, 5, 10, 15, 30, 60, 120, 180, 360, 720];
+const BREAK_OPTIONS = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240];
 
 const DOT: Record<PublicJob["status"], string> = { scheduled: "#8e918f", pending: "#0b57d0", running: "#0b57d0", paused: "#b06000", done: "#146c2e", error: "#b3261e", cancelled: "#8e918f" };
 const sheetUrl = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
@@ -105,6 +106,8 @@ export function DraftPanel(p: {
   const startAt = Date.now() + settings.startInMinutes * 60_000;
   const shown = p.step ?? plan.steps.length;
   const away = plan.steps.filter((s) => s.k === "pause").length;
+  const breakOf = (section: number) => settings.breaks.find((b) => b.section === section);
+  const setBreak = (section: number, minutes: number | null) => p.onSettings({ ...settings, breaks: [...settings.breaks.filter((b) => b.section !== section), ...(minutes ? [{ section, minutes }] : [])].sort((a, b) => a.section - b.section) });
   const current = p.step != null && p.step > 0 ? plan.steps[p.step - 1] : null;
   return (
     <div className="flex flex-col gap-4 px-5 pt-4">
@@ -158,7 +161,7 @@ export function DraftPanel(p: {
           </button>
         </div>
         <dl className="mt-3 grid grid-cols-3 gap-2">
-          {([["Steps", plan.steps.length - away], ["Formulas", stats.formulas], ["Times away", away]] as const).map(([label, value]) => (
+          {([["Steps", plan.steps.length - away], ["Formulas", stats.formulas], [settings.breaks.length ? "Breaks" : "Times away", away]] as const).map(([label, value]) => (
             <div key={label} className="flex flex-col-reverse">
               <dt className="text-[12px] leading-4 text-[var(--ss-text-2)]">{label}</dt>
               <dd className="text-[16px] leading-6 tabular-nums">{value.toLocaleString()}</dd>
@@ -174,7 +177,7 @@ export function DraftPanel(p: {
 
       <section aria-label="Build order">
         <div className="flex items-center justify-between">
-          <h3 className="ss-field-label mb-0">How it will be built</h3>
+          <h3 className="ss-field-label mb-0" title="Sections in the order they are built. The cup adds a break before one.">How it will be built</h3>
           <button type="button" className="ss-btn ss-btn-text h-8" onClick={p.onTogglePlay} aria-pressed={p.playing} data-testid="sx-play">
             {p.playing ? <Pause className="h-4 w-4" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
             {p.playing ? "Pause" : "Play"}
@@ -191,13 +194,32 @@ export function DraftPanel(p: {
           {plan.sections.map((s, i) => {
             const end = i + 1 < plan.sections.length ? plan.sections[i + 1].at : plan.steps.length;
             const on = p.step != null && p.step > s.at && p.step <= end;
+            const pause = breakOf(i);
             return (
               <li key={`${s.sheet}-${s.at}`}>
-                <button type="button" className="sx-section" aria-current={on ? "step" : undefined} onClick={() => p.onJump(s)} title="Show the sheet as this section starts">
-                  <span className="sx-section-n">{i + 1}</span>
-                  <span className="min-w-0 flex-1 truncate">{sectionName(workbook, s)}</span>
-                  <span className="sx-section-t">{formatSpan(times[s.at] / 60_000)}</span>
-                </button>
+                {pause && (
+                  <div className="sx-break" data-testid="sx-break">
+                    <span className="sx-break-dot" aria-hidden="true" />
+                    <label className="sr-only" htmlFor={`sx-break-${i}`}>Break before section {i + 1}</label>
+                    <span>Break</span>
+                    <select id={`sx-break-${i}`} className="sx-break-select" disabled={p.busy} value={pause.minutes} onChange={(e) => setBreak(i, Number(e.target.value))}>
+                      {(BREAK_OPTIONS.includes(pause.minutes) ? BREAK_OPTIONS : [...BREAK_OPTIONS, pause.minutes].sort((a, b) => a - b)).map((m) => <option key={m} value={m}>{formatSpan(m)}</option>)}
+                    </select>
+                    <button type="button" className="sx-break-x" onClick={() => setBreak(i, null)} disabled={p.busy} aria-label={`Remove the break before section ${i + 1}`} title="Remove this break">×</button>
+                  </div>
+                )}
+                <div className="sx-section-row">
+                  <button type="button" className="sx-section" aria-current={on ? "step" : undefined} onClick={() => p.onJump(s)} title="Show the sheet as this section starts">
+                    <span className="sx-section-n">{i + 1}</span>
+                    <span className="min-w-0 flex-1 truncate">{sectionName(workbook, s)}</span>
+                    <span className="sx-section-t">{formatSpan(times[s.at] / 60_000)}</span>
+                  </button>
+                  {i > 0 && !pause && (
+                    <button type="button" className="sx-break-add" onClick={() => setBreak(i, 15)} disabled={p.busy} aria-label={`Add a break before section ${i + 1}`} title="Take a break before this section">
+                      <Coffee className="h-[14px] w-[14px]" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}
@@ -218,12 +240,12 @@ export function JobPanel({ job, now, steps, sections, workbook, onPause, onResum
 }) {
   const active = isActive(job);
   const pct = Math.round(job.status === "done" ? 100 : progressOf(job));
-  const away = job.status === "running" && /^Away/.test(job.activity);
+  const away = job.status === "running" && /^(Away|On a break)/.test(job.activity);
   const left = job.etaTargetAt != null ? Math.max(0, job.etaTargetAt - now) : null;
   const current = sections ? sections.reduce((best, s, i) => (s.at <= Math.max(0, job.currentAction - 1) ? i : best), -1) : -1;
   return (
     <div className="flex flex-col gap-4 px-5 pt-4">
-      <h2 className="text-[16px] font-medium leading-6" data-testid="sx-job-title">{away ? "Away from the sheet" : TITLE[job.status]}</h2>
+      <h2 className="text-[16px] font-medium leading-6" data-testid="sx-job-title">{away ? (/^On a break/.test(job.activity) ? "On a break" : "Away from the sheet") : TITLE[job.status]}</h2>
       <section className="rounded-xl bg-[var(--ss-soft)] p-4" aria-live="polite">
         <div className="flex items-baseline justify-between">
           <div className="text-[22px] leading-7 tabular-nums">{pct}%</div>
@@ -243,6 +265,13 @@ export function JobPanel({ job, now, steps, sections, workbook, onPause, onResum
           <p className="mt-1 text-[13px] text-[var(--ss-text-2)]">{job.status === "scheduled" ? "Takes" : "About"} {formatCountdown(left)}{job.status === "scheduled" ? "" : " left"}{job.etaTargetAt ? `, done around ${formatClock(job.etaTargetAt)}` : ""}</p>
         )}
       </section>
+
+      {job.refused && job.refused.count > 0 && (
+        <div className="rounded-lg bg-[#fef7e0] px-3 py-2 text-[13px] leading-5 text-[#5c4300]" data-testid="sx-refused">
+          <p>Google Sheets refused {job.refused.count} {job.refused.count === 1 ? "edit" : "edits"}. {job.refused.count === 1 ? "It was" : "They were"} left out and the sync went on:</p>
+          <ul className="mt-1 list-disc pl-4">{job.refused.notes.map((n) => <li key={n} className="break-words">{n}</li>)}</ul>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         <a className="ss-btn ss-btn-outlined" href={sheetUrl(job.documentId)} target="_blank" rel="noopener noreferrer">

@@ -4,7 +4,7 @@
  * anything that isn't exactly what the model allows refuses the whole thing.
  */
 
-import { BORDER_STYLES, THEME_SLOTS, type Border, type Cell, type CellStyle, type Color, type ConditionalRule, type FontStyle, type ListValidation, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Workbook } from "./model";
+import { BORDER_STYLES, CHART_TYPES, THEME_SLOTS, type Border, type Cell, type CellStyle, type Chart, type ChartSource, type Color, type ConditionalRule, type DimensionGroup, type FontStyle, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Validation, type Workbook } from "./model";
 
 export const MAX_WORKBOOK_CELLS = 150_000;
 const MAX_SHEETS = 60;
@@ -71,6 +71,7 @@ function style(v: unknown): CellStyle {
   if (o.vAlign != null) out.vAlign = oneOf(o.vAlign, ["TOP", "MIDDLE", "BOTTOM"] as const, "alignment");
   if (o.wrap != null) out.wrap = oneOf(o.wrap, ["WRAP", "CLIP"] as const, "wrapping");
   if (o.rotation != null) out.rotation = o.rotation === "vertical" ? "vertical" : int(o.rotation, -90, 90, "rotation");
+  if (o.indent != null) { const n = int(o.indent, 0, 15, "indent"); if (n) out.indent = n; }
   return out;
 }
 
@@ -104,7 +105,40 @@ function styleSpans(v: unknown, count: number, styles: number, what: string): [n
 const ERRORS = /^#(N\/A|DIV\/0!|REF!|VALUE!|NAME\?|NUM!|NULL!)$/;
 const CONDITIONS = ["NUMBER_GREATER", "NUMBER_GREATER_THAN_EQ", "NUMBER_LESS", "NUMBER_LESS_THAN_EQ", "NUMBER_EQ", "NUMBER_NOT_EQ", "NUMBER_BETWEEN", "NUMBER_NOT_BETWEEN", "TEXT_EQ", "TEXT_CONTAINS", "TEXT_NOT_CONTAINS", "TEXT_STARTS_WITH", "TEXT_ENDS_WITH", "BLANK", "NOT_BLANK", "CUSTOM_FORMULA"] as const;
 
-function sheet(v: unknown, styles: number, budget: { cells: number; grid: number }, ids: Set<number>, names: Set<string>, first: boolean): Sheet {
+type PendingCharts = { sheet: Sheet; raw: unknown[] }[];
+
+function chartSource(v: unknown, sheets: readonly Sheet[]): ChartSource {
+  const o = obj(v, "chart range");
+  const index = int(o.sheet, 0, sheets.length - 1, "chart range");
+  return { sheet: index, rect: rect(o.rect, sheets[index].rowCount, sheets[index].colCount, "chart range") };
+}
+
+function chart(v: unknown, on: Sheet, sheets: readonly Sheet[]): Chart {
+  const o = obj(v, "chart");
+  const at = arr(o.at, "chart", 4);
+  const size = arr(o.size, "chart", 2);
+  const out: Chart = {
+    at: [int(at[0], 0, on.rowCount - 1, "chart"), int(at[1], 0, on.colCount - 1, "chart"), int(at[2], 0, 5000, "chart"), int(at[3], 0, 5000, "chart")],
+    size: [int(size[0], 20, 4000, "chart"), int(size[1], 20, 4000, "chart")],
+    type: oneOf(o.type, CHART_TYPES, "chart"),
+    series: arr(o.series, "chart", 100).map((s) => {
+      const so = obj(s, "chart series");
+      return { src: chartSource(so.src, sheets), ...(so.type != null ? { type: oneOf(so.type, ["COLUMN", "LINE", "AREA"] as const, "chart series") } : {}), ...(so.color != null ? { color: color(so.color, "chart series") } : {}) };
+    }),
+  };
+  if (!out.series.length) bad("chart");
+  if (o.stacked != null) out.stacked = oneOf(o.stacked, ["STACKED", "PERCENT_STACKED"] as const, "chart");
+  if (o.title != null) out.title = str(o.title, 300, "chart");
+  if (o.legend != null) out.legend = oneOf(o.legend, ["RIGHT", "LEFT", "TOP", "BOTTOM", "NONE"] as const, "chart");
+  if (o.xTitle != null) out.xTitle = str(o.xTitle, 300, "chart");
+  if (o.yTitle != null) out.yTitle = str(o.yTitle, 300, "chart");
+  if (o.domain != null) out.domain = chartSource(o.domain, sheets);
+  if (o.headers === 1) out.headers = 1;
+  if (o.hole != null) out.hole = num(o.hole, 0, 0.9, "chart");
+  return out;
+}
+
+function sheet(v: unknown, styles: number, budget: { cells: number; grid: number }, ids: Set<number>, names: Set<string>, first: boolean, pendingCharts: PendingCharts): Sheet {
   const o = obj(v, "sheet");
   const id = first ? int(o.id, 0, 0, "sheet id") : int(o.id, 1, 2_000_000_000, "sheet id");
   if (ids.has(id)) bad("sheet id");
@@ -167,16 +201,34 @@ function sheet(v: unknown, styles: number, budget: { cells: number; grid: number
   }
 
   if (o.validations != null) {
-    const list: ListValidation[] = arr(o.validations, "dropdowns", 5000).map((d) => {
-      const dv = obj(d, "dropdown");
-      const r = rect(dv.rect, rowCount, colCount, "dropdown");
-      if (dv.values != null) return { rect: r, values: arr(dv.values, "dropdown", 500).map((x) => str(x, 500, "dropdown")) };
-      const source = str(dv.source, 1000, "dropdown");
-      if (!source.startsWith("=")) bad("dropdown");
-      return { rect: r, source };
+    const list: Validation[] = arr(o.validations, "validation", 5000).map((d) => {
+      const dv = obj(d, "validation");
+      const extras = { ...(dv.strict === true ? { strict: true } : {}), ...(dv.help != null ? { help: str(dv.help, 500, "validation") } : {}) };
+      const r = rect(dv.rect, rowCount, colCount, "validation");
+      if (dv.values != null) return { rect: r, values: arr(dv.values, "validation", 500).map((x) => str(x, 500, "validation")), ...extras };
+      if (dv.rule != null) {
+        const rule = obj(dv.rule, "validation");
+        return { rect: r, rule: { type: oneOf(rule.type, CONDITIONS, "validation"), values: arr(rule.values, "validation", 3).map((x) => str(x, 2000, "validation")) }, ...extras };
+      }
+      const source = str(dv.source, 1000, "validation");
+      if (!source.startsWith("=")) bad("validation");
+      return { rect: r, source, ...extras };
     });
     if (list.length) out.validations = list;
   }
+  if (o.filter != null) out.filter = rect(o.filter, rowCount, colCount, "filter");
+  if (o.groups != null) {
+    const list: DimensionGroup[] = arr(o.groups, "groups", 2000).map((g) => {
+      const go = obj(g, "group");
+      const d = oneOf(go.d, ["r", "c"] as const, "group");
+      const count = d === "r" ? rowCount : colCount;
+      const from = int(go.from, 0, count - 1, "group");
+      return { d, from, to: int(go.to, from, count - 1, "group"), depth: int(go.depth, 1, 8, "group"), ...(go.collapsed === true ? { collapsed: true as const } : {}) };
+    });
+    if (list.length) out.groups = list;
+  }
+  // (a chart's ranges name sheets by their place in the workbook: checked once all are read)
+  if (o.charts != null) pendingCharts.push({ sheet: out, raw: arr(o.charts, "charts", 50) });
   if (o.conditional != null) {
     const list: ConditionalRule[] = arr(o.conditional, "conditional formatting", 500).map((x) => {
       const rule = obj(x, "conditional formatting");
@@ -216,7 +268,9 @@ export function parseWorkbook(raw: unknown): { ok: true; workbook: Workbook } | 
     const names = new Set<string>();
     const rawSheets = arr(o.sheets, "sheets", MAX_SHEETS);
     if (!rawSheets.length) bad("sheets");
-    const sheets = rawSheets.map((s, i) => sheet(s, styles.length, budget, ids, names, i === 0));
+    const pendingCharts: PendingCharts = [];
+    const sheets = rawSheets.map((s, i) => sheet(s, styles.length, budget, ids, names, i === 0, pendingCharts));
+    for (const p of pendingCharts) { const list = p.raw.map((c) => chart(c, p.sheet, sheets)); if (list.length) p.sheet.charts = list; }
     const workbook: Workbook = {
       name: str(o.name, 300, "name").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 200) || "Untitled spreadsheet",
       origin: oneOf(o.origin, ["google", "excel", "other"] as const, "origin"),

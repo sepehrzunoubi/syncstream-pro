@@ -280,6 +280,8 @@ export function planSteps(wb: Workbook): StepPlan {
   };
 
   steps.push({ k: "theme" });
+  /** Charts that draw from a later sheet, by the sheet they wait for */
+  const chartsAfter = new Map<number, Step[]>();
 
   sheets.forEach((sheet, s) => {
     const cells = sheet.cells;
@@ -412,8 +414,18 @@ export function planSteps(wb: Workbook): StepPlan {
       }
     }
 
+    // Charts go in once the cells they draw from are there (on this sheet, or a later one)
+    (sheet.charts ?? []).forEach((chart, i) => {
+      const last = Math.max(s, ...chart.series.map((x) => x.src.sheet), chart.domain?.sheet ?? 0);
+      if (last <= s) steps.push({ k: "chart", s, i });
+      else (chartsAfter.get(last) ?? chartsAfter.set(last, []).get(last)!).push({ k: "chart", s, i });
+    });
+    for (const waiting of chartsAfter.get(s) ?? []) steps.push(waiting);
+
     // Finishing touches
     if (sheet.frozenRows || sheet.frozenCols) steps.push({ k: "prop", s, p: "freeze" });
+    if (sheet.filter) steps.push({ k: "filter", s });
+    if (sheet.groups?.length) steps.push({ k: "groups", s });
     if (sheet.hideGridlines) steps.push({ k: "prop", s, p: "gridlines" });
     if (sheet.tabColor) steps.push({ k: "prop", s, p: "tab" });
     (sheet.validations ?? []).forEach((_v, i) => steps.push({ k: "dv", s, i }));

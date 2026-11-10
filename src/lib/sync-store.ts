@@ -148,6 +148,11 @@ export interface SyncJob {
   nextBreakAt?: number;
   lastUpdate: number;
   error?: string;
+  /**
+   * A spreadsheet sync: edits Google Sheets refused (a number format it doesn't take, say). Each was
+   * left out and the sync went on; `notes` says what the first few were.
+   */
+  refused?: { count: number; notes: string[] };
 }
 
 /** What the dashboard sees: a job without credentials. */

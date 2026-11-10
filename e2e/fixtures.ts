@@ -54,6 +54,7 @@ export interface SheetStartBody {
   seed?: number;
   startInMinutes?: number;
   timeZone?: string;
+  breaks?: { section: number; minutes: number }[];
 }
 
 /** What `/api/sync/breaks` received */

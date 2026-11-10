@@ -75,6 +75,10 @@ export function differences(wb: Workbook, doc: StubSpreadsheet, limit = 20): str
     if (Array.from(got.hiddenCols).sort((a, b) => a - b).join() !== hidden(sheet.hiddenCols)) say(`sheet ${sheet.name} hidden columns`);
     if (got.validations.length !== (sheet.validations?.length ?? 0)) say(`sheet ${sheet.name} dropdowns`);
     if (got.conditional.length !== (sheet.conditional?.length ?? 0)) say(`sheet ${sheet.name} conditional formatting`);
+    if ((got.filter ?? []).join() !== (sheet.filter ?? []).join()) say(`sheet ${sheet.name} filter ${got.filter} instead of ${sheet.filter}`);
+    if (got.groups.length !== (sheet.groups?.length ?? 0)) say(`sheet ${sheet.name} has ${got.groups.length} groups, not ${sheet.groups?.length ?? 0}`);
+    if (got.collapsed.length !== (sheet.groups ?? []).filter((g) => g.collapsed).length) say(`sheet ${sheet.name} folded groups`);
+    if (got.charts.size !== (sheet.charts?.length ?? 0)) say(`sheet ${sheet.name} has ${got.charts.size} charts, not ${sheet.charts?.length ?? 0}`);
   });
   if (doc.namedRanges.size !== (wb.names?.length ?? 0)) say("named ranges");
   return out;

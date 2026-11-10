@@ -12,9 +12,13 @@
 import { child, children, find, flag, parseXml, type XmlNode } from "./xml";
 import { Zip, ZipError } from "./zip";
 import { shiftFormula, toSheetsFormula } from "./formula";
+import { resolveTableRefs, type TableInfo } from "./table-refs";
+import { readCharts } from "./xlsx-charts";
+import { readRels } from "./xlsx-parts";
+import { numberFormatType } from "./steps";
 import {
-  hasContent, parseCellName, parseRange,
-  type Border, type BorderStyle, type Cell, type CellStyle, type Color, type ConditionalRule, type FontStyle, type ListValidation, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Workbook,
+  cellName, hasContent, parseCellName, parseRange, rectName,
+  type Border, type BorderStyle, type Cell, type CellStyle, type Color, type ConditionalRule, type DimensionGroup, type FontStyle, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Validation, type Workbook,
 } from "./model";
 
 export type XlsxErrorCode = "notXlsx" | "oldExcel" | "encrypted" | "empty" | "tooLarge" | "damaged";
@@ -52,6 +56,41 @@ const BUILTIN_FORMATS: Record<number, string> = {
   43: '_(* #,##0.00_);_(* \\(#,##0.00\\);_(* "-"??_);_(@_)', 44: '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)',
   45: "mm:ss", 46: "[h]:mm:ss", 47: "mm:ss.0", 48: "##0.0E+0", 49: "@",
 };
+
+/**
+ * A number format as Google Sheets takes it. Excel writes things into formats that Sheets refuses:
+ * a locale or currency tag ("[$-409]", "[$€-407]"), number-shape tags ("[DBNum1]") and the word
+ * General inside a longer format. Quoted text and escaped characters are left alone.
+ */
+export function sheetsNumberFormat(code: string, general = "0.##########"): string {
+  let out = "";
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '"') {
+      const j = code.indexOf('"', i + 1);
+      const end = j < 0 ? code.length - 1 : j;
+      out += code.slice(i, end + 1);
+      i = end;
+    } else if (ch === "\\" || ch === "_" || ch === "*") {
+      out += code.slice(i, i + 2);
+      i++;
+    } else if (ch === "[") {
+      const j = code.indexOf("]", i);
+      if (j < 0) { out += ch; continue; }
+      const inner = code.slice(i + 1, j);
+      i = j;
+      if (inner.startsWith("$")) {
+        // A currency symbol with a locale after it: only the symbol is something to show
+        const symbol = inner.slice(1).split("-")[0].replace(/"/g, "");
+        if (symbol) out += `"${symbol}"`;
+      } else if (!/^(DBNum|NatNum|ENG$|JPN$|CHS$|CHT$|KOR$)/i.test(inner)) out += `[${inner}]`;
+    } else if (/^general/i.test(code.slice(i, i + 7))) {
+      out += general;
+      i += 6;
+    } else out += ch;
+  }
+  return out;
+}
 
 const INDEXED = [
   "000000", "ffffff", "ff0000", "00ff00", "0000ff", "ffff00", "ff00ff", "00ffff",
@@ -176,12 +215,17 @@ interface StyleBook {
   /** A cell's `s` (its xf) → index into styles */
   xf: number[];
   defaultFont: { family: string; size: number };
+  /**
+   * Styles whose number format has Excel's General inside it ("General \"units\""), by style, with the
+   * format as the file has it: Sheets has no such code, so it is written for the values it shows
+   */
+  general: Map<number, string>;
   /** Differential formats, for conditional formatting */
   dxfs: NonNullable<ConditionalRule["format"]>[];
 }
 
 function readStyles(xml: string | null, palette: Palette): StyleBook {
-  const book: StyleBook = { styles: [{}], xf: [0], defaultFont: { family: "Calibri", size: 11 }, dxfs: [] };
+  const book: StyleBook = { styles: [{}], xf: [0], defaultFont: { family: "Calibri", size: 11 }, general: new Map(), dxfs: [] };
   if (!xml) return book;
   const root = child(parseXml(xml), "styleSheet");
   if (!root) return book;
@@ -233,7 +277,7 @@ function readStyles(xml: string | null, palette: Palette): StyleBook {
     if (border) style.borders = border;
     const fmtId = Number(xf.attrs.numFmtId ?? 0);
     const fmt = numFmts.get(fmtId) ?? BUILTIN_FORMATS[fmtId];
-    if (fmt && fmt.toLowerCase() !== "general") style.numFmt = fmt;
+    if (fmt && fmt.trim().toLowerCase() !== "general") { const clean = sheetsNumberFormat(fmt); if (clean.trim()) style.numFmt = clean; }
     const al = child(xf, "alignment");
     if (al) {
       const h = H_ALIGN[al.attrs.horizontal ?? ""];
@@ -246,10 +290,13 @@ function readStyles(xml: string | null, palette: Palette): StyleBook {
       if (rot === 255) style.rotation = "vertical";
       else if (rot > 0 && rot <= 90) style.rotation = rot;
       else if (rot > 90 && rot <= 180) style.rotation = 90 - rot;
+      const indent = Math.round(Number(al.attrs.indent ?? 0));
+      if (indent > 0) style.indent = Math.min(15, indent);
     }
     const key = JSON.stringify(style);
     let idx = seen.get(key);
     if (idx == null) { idx = book.styles.length; book.styles.push(style); seen.set(key, idx); }
+    if (fmt && /general/i.test(fmt.replace(/"[^"]*"/g, "")) && style.numFmt) book.general.set(idx, fmt);
     return idx;
   });
 
@@ -292,32 +339,6 @@ function readRich(node: XmlNode | undefined, palette: Palette): RichText {
 
 // ── Parts ──────────────────────────────────────────────────────────────────
 
-interface Rel { type: string; target: string; external: boolean }
-
-/** A part's relationships by id, their targets as paths inside the archive */
-async function readRels(zip: Zip, part: string): Promise<Map<string, Rel>> {
-  const slash = part.lastIndexOf("/");
-  const dir = slash < 0 ? "" : part.slice(0, slash + 1);
-  const xml = await zip.text(`${dir}_rels/${part.slice(slash + 1)}.rels`);
-  const out = new Map<string, Rel>();
-  if (!xml) return out;
-  for (const r of children(child(parseXml(xml), "Relationships"), "Relationship")) {
-    const external = r.attrs.TargetMode === "External";
-    let target = r.attrs.Target ?? "";
-    if (!external) {
-      if (target.startsWith("/")) target = target.slice(1);
-      else {
-        const parts = (dir + target).split("/");
-        const stack: string[] = [];
-        for (const p of parts) { if (p === "..") stack.pop(); else if (p !== "." && p !== "") stack.push(p); }
-        target = stack.join("/");
-      }
-    }
-    out.set(r.attrs.Id ?? "", { type: (r.attrs.Type ?? "").replace(/^.*\//, ""), target, external });
-  }
-  return out;
-}
-
 const CF_OPERATORS: Record<string, string> = {
   greaterThan: "NUMBER_GREATER", greaterThanOrEqual: "NUMBER_GREATER_THAN_EQ", lessThan: "NUMBER_LESS", lessThanOrEqual: "NUMBER_LESS_THAN_EQ",
   equal: "NUMBER_EQ", notEqual: "NUMBER_NOT_EQ", between: "NUMBER_BETWEEN", notBetween: "NUMBER_NOT_BETWEEN",
@@ -343,6 +364,12 @@ interface ReadContext {
   origin: Workbook["origin"];
   warnings: Set<string>;
   budget: { cells: number };
+  /** Every table of the workbook, for the formulas that name them */
+  tables: TableInfo[];
+  /** Drawing parts still to read for charts, once every sheet is known */
+  drawings: { sheet: number; part: string }[];
+  /** Dates count from 1904 (old Mac workbooks): four years and a day later than everyone else's */
+  date1904: boolean;
 }
 
 /**
@@ -367,7 +394,7 @@ function pushSpan(spans: [number, number][], index: number) {
   else spans.push([index, index]);
 }
 
-async function readSheet(ctx: ReadContext, part: string, name: string, id: number): Promise<Sheet> {
+async function readSheet(ctx: ReadContext, part: string, name: string, id: number, index: number): Promise<Sheet> {
   const xml = await ctx.zip.text(part);
   if (xml == null) fail("damaged");
   const ws = child(parseXml(xml!), "worksheet");
@@ -409,6 +436,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
   if (tab) sheet.tabColor = tab;
 
   let maxColDeclared = 0;
+  /** Outline levels of rows and columns (groups), and which of them are hidden */
+  const levels = { r: new Map<number, number>(), c: new Map<number, number>() };
   const hiddenCols: [number, number][] = [];
   const colStyles: [number, number, number][] = [];
   for (const col of children(child(ws, "cols"), "col")) {
@@ -424,6 +453,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
       maxColDeclared = Math.max(maxColDeclared, max + 1);
     }
     if (flag(col.attrs.hidden) && !toEnd) hiddenCols.push([min, max]);
+    const colLevel = Number(col.attrs.outlineLevel ?? 0);
+    if (colLevel > 0 && !toEnd) for (let i = min; i <= max; i++) levels.c.set(i, colLevel);
     const style = book.xf[Number(col.attrs.style ?? 0)] ?? 0;
     if (style && !toEnd) colStyles.push([min, max, style]);
   }
@@ -448,6 +479,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
       if (px !== defaultRowPx) pushRun(sheet.rowPx, r, px);
     }
     if (flag(row.attrs.hidden)) pushSpan(hiddenRows, r);
+    const rowLevel = Number(row.attrs.outlineLevel ?? 0);
+    if (rowLevel > 0) levels.r.set(r, rowLevel);
     if (flag(row.attrs.customFormat)) {
       const style = book.xf[Number(row.attrs.s ?? 0)] ?? 0;
       if (style) { const last = rowStyles[rowStyles.length - 1]; if (last && last[1] === r - 1 && last[2] === style) last[1] = r; else rowStyles.push([r, r, style]); }
@@ -494,6 +527,10 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
           // A formula's text result isn't rich text
           delete cell.runs;
         }
+      }
+      if (ctx.date1904 && typeof cell.v === "number" && cell.s) {
+        const kind = book.styles[cell.s].numFmt ? numberFormatType(book.styles[cell.s].numFmt!) : "NUMBER";
+        if (kind === "DATE" || kind === "DATE_TIME") cell.v += 1462;
       }
       if (cell.s == null && !hasContent(cell)) continue;
       if (--ctx.budget.cells < 0) fail("tooLarge");
@@ -553,23 +590,53 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
   }
   sheet.cells.sort((a, b) => a.r - b.r || a.c - b.c);
 
-  // Dropdowns
-  const validations: ListValidation[] = [];
+  // What cells may hold: dropdowns, and rules on numbers, dates, text length or a formula
+  const validations: Validation[] = [];
   let otherValidation = false;
   for (const dv of children(child(ws, "dataValidations"), "dataValidation")) {
-    const f1 = child(dv, "formula1")?.text ?? "";
-    if (dv.attrs.type !== "list" || !f1) { otherValidation = true; continue; }
+    const f1 = (child(dv, "formula1")?.text ?? "").trim();
+    const f2 = (child(dv, "formula2")?.text ?? "").trim();
+    const type = dv.attrs.type ?? "";
+    const op = dv.attrs.operator ?? "between";
+    // Excel refuses a bad value unless told to only warn; the hint is its input message
+    const extras = {
+      ...(flag(dv.attrs.showErrorMessage, false) && (dv.attrs.errorStyle ?? "stop") === "stop" ? { strict: true } : {}),
+      ...(flag(dv.attrs.showInputMessage) && dv.attrs.prompt ? { help: dv.attrs.prompt.slice(0, 500) } : {}),
+    };
     for (const rect of sqrefRects(dv.attrs.sqref)) {
-      if (/^"(?:[^"]|"")*"$/.test(f1.trim())) validations.push({ rect, values: f1.trim().slice(1, -1).replace(/""/g, '"').split(",").map((v) => v.trim()).filter(Boolean).slice(0, 500) });
-      else validations.push({ rect, source: "=" + toSheetsFormula(f1) });
+      if (type === "list" && f1) {
+        if (/^"(?:[^"]|"")*"$/.test(f1)) validations.push({ rect, values: f1.slice(1, -1).replace(/""/g, '"').split(",").map((v) => v.trim()).filter(Boolean).slice(0, 500), ...extras });
+        else validations.push({ rect, source: "=" + toSheetsFormula(f1), ...extras });
+        continue;
+      }
+      // Rules are written about the range's first cell, as Sheets' custom formulas are
+      const me = cellName(rect[0], rect[1]);
+      const subject = type === "textLength" ? `LEN(${me})` : me;
+      const a = f1 ? toSheetsFormula(f1) : "", b = f2 ? toSheetsFormula(f2) : "";
+      const compare: Record<string, string> = {
+        between: `AND(${subject}>=${a},${subject}<=${b})`, notBetween: `OR(${subject}<${a},${subject}>${b})`,
+        equal: `${subject}=${a}`, notEqual: `${subject}<>${a}`, greaterThan: `${subject}>${a}`, lessThan: `${subject}<${a}`,
+        greaterThanOrEqual: `${subject}>=${a}`, lessThanOrEqual: `${subject}<=${a}`,
+      };
+      const numeric = /^-?\d+(\.\d+)?$/;
+      if ((type === "whole" || type === "decimal") && CF_OPERATORS[op] && numeric.test(f1) && (!/etween/.test(op) || numeric.test(f2))) {
+        validations.push({ rect, rule: { type: CF_OPERATORS[op], values: /etween/.test(op) ? [f1, f2] : [f1] }, ...extras });
+      } else if (type === "custom" && a) {
+        validations.push({ rect, rule: { type: "CUSTOM_FORMULA", values: ["=" + a] }, ...extras });
+      } else if (["whole", "decimal", "date", "time", "textLength"].includes(type) && a && compare[op] && (!/etween/.test(op) || b)) {
+        const whole = type === "whole" ? `,${me}=INT(${me})` : "";
+        const number = type === "textLength" ? "" : `ISNUMBER(${me}),`;
+        validations.push({ rect, rule: { type: "CUSTOM_FORMULA", values: [`=AND(${number}${compare[op]}${whole})`] }, ...extras });
+      } else otherValidation = true;
     }
   }
   if (validations.length) sheet.validations = validations;
-  if (otherValidation) ctx.warnings.add("Data validation other than dropdown lists isn't copied.");
+  if (otherValidation) ctx.warnings.add("A data validation rule that couldn't be read isn't copied.");
 
   // Conditional formatting
   const conditional: ConditionalRule[] = [];
   let otherRule = false;
+  let noSheetsKind = false;
   for (const cf of children(ws, "conditionalFormatting")) {
     const ranges = sqrefRects(cf.attrs.sqref);
     if (!ranges.length) continue;
@@ -601,23 +668,107 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
       else if (type === "endsWith" && rule.attrs.text) when = { type: "TEXT_ENDS_WITH", values: [rule.attrs.text] };
       else if (type === "containsBlanks") when = { type: "BLANK", values: [] };
       else if (type === "notContainsBlanks") when = { type: "NOT_BLANK", values: [] };
+      else {
+        // Rules Sheets has no kind for, written as the formula that says the same about the range's first cell
+        const me = cellName(ranges[0][0], ranges[0][1]);
+        const all = rectName(ranges[0]).replace(/([A-Z]+)(\d+)/g, "$$$1$$$2");
+        const n = Number(rule.attrs.rank ?? 10);
+        let f: string | null = null;
+        if (type === "top10") {
+          const count = flag(rule.attrs.percent) ? `MAX(1,ROUNDDOWN(COUNT(${all})*${n}/100,0))` : String(n);
+          f = flag(rule.attrs.bottom) ? `AND(ISNUMBER(${me}),RANK(${me},${all},1)<=${count})` : `AND(ISNUMBER(${me}),RANK(${me},${all})<=${count})`;
+        } else if (type === "aboveAverage") {
+          const above = flag(rule.attrs.aboveAverage, true);
+          const dev = Number(rule.attrs.stdDev ?? 0);
+          const bar = dev ? `AVERAGE(${all})${above ? "+" : "-"}${dev}*STDEVP(${all})` : `AVERAGE(${all})`;
+          f = `AND(ISNUMBER(${me}),${me}${above ? ">" : "<"}${flag(rule.attrs.equalAverage) ? "=" : ""}${bar})`;
+        } else if (type === "duplicateValues") f = `AND(${me}<>"",COUNTIF(${all},${me})>1)`;
+        else if (type === "uniqueValues") f = `AND(${me}<>"",COUNTIF(${all},${me})=1)`;
+        else if (type === "containsErrors") f = `ISERROR(${me})`;
+        else if (type === "notContainsErrors") f = `NOT(ISERROR(${me}))`;
+        else if (type === "timePeriod") {
+          const day = `INT(${me})`;
+          const periods: Record<string, string> = {
+            today: `${day}=TODAY()`, yesterday: `${day}=TODAY()-1`, tomorrow: `${day}=TODAY()+1`, last7Days: `AND(${day}>TODAY()-7,${day}<=TODAY())`,
+            thisWeek: `AND(${day}>=TODAY()-WEEKDAY(TODAY())+1,${day}<=TODAY()-WEEKDAY(TODAY())+7)`, lastWeek: `AND(${day}>=TODAY()-WEEKDAY(TODAY())-6,${day}<=TODAY()-WEEKDAY(TODAY()))`,
+            nextWeek: `AND(${day}>=TODAY()-WEEKDAY(TODAY())+8,${day}<=TODAY()-WEEKDAY(TODAY())+14)`,
+            thisMonth: `AND(MONTH(${me})=MONTH(TODAY()),YEAR(${me})=YEAR(TODAY()))`, lastMonth: `AND(MONTH(${me})=MONTH(EDATE(TODAY(),-1)),YEAR(${me})=YEAR(EDATE(TODAY(),-1)))`,
+            nextMonth: `AND(MONTH(${me})=MONTH(EDATE(TODAY(),1)),YEAR(${me})=YEAR(EDATE(TODAY(),1)))`,
+          };
+          f = periods[rule.attrs.timePeriod ?? ""] ? `AND(ISNUMBER(${me}),${periods[rule.attrs.timePeriod!]})` : null;
+        }
+        if (f) when = { type: "CUSTOM_FORMULA", values: ["=" + f] };
+        else if (type === "dataBar" || type === "iconSet") noSheetsKind = true;
+      }
       if (when && format && Object.keys(format).length) conditional.push({ ranges, when, format });
-      else otherRule = true;
+      else if (type !== "dataBar" && type !== "iconSet") otherRule = true;
     }
   }
   if (conditional.length) sheet.conditional = conditional;
-  if (otherRule) ctx.warnings.add("Some conditional formatting (data bars, icon sets, top or bottom rules) isn't copied.");
+  if (noSheetsKind) ctx.warnings.add("Data bars and icon sets aren't copied: Google Sheets has neither.");
+  if (otherRule) ctx.warnings.add("A conditional formatting rule that couldn't be read isn't copied.");
 
-  // What the sheet has that a cell-by-cell sync doesn't write
+  // Tables: their columns, for the formulas that name them, and their filter buttons
+  let tableFilter: Rect | null = null;
+  let tableCount = 0;
   for (const rel of rels.values()) {
     if (rel.type === "drawing" && !rel.external) {
+      ctx.drawings.push({ sheet: index, part: rel.target });
       const dx = await ctx.zip.text(rel.target);
-      if (dx && /<(xdr:)?(pic|graphicFrame|sp|cxnSp)[\s>]/.test(dx)) ctx.warnings.add("Charts, images and shapes aren't copied yet: the cells, formulas and formatting are.");
+      if (dx && /<(xdr:)?(pic|sp|cxnSp)[\s>]/.test(dx)) ctx.warnings.add("Images and shapes aren't copied: Google Sheets has no way to place them from outside. The cells, formulas, formatting and charts are.");
     }
     if (rel.type === "pivotTable") ctx.warnings.add("Pivot tables are copied as the values they showed.");
-    if (rel.type === "table") ctx.warnings.add("Tables are copied as cells: a table's own banding and filter buttons aren't.");
+    if (rel.type !== "table" || rel.external) continue;
+    const tx = await ctx.zip.text(rel.target);
+    const table = tx ? child(parseXml(tx), "table") : undefined;
+    const ref = parseRange(table?.attrs.ref ?? "");
+    if (!table || !ref) continue;
+    tableCount++;
+    const headerRows = Number(table.attrs.headerRowCount ?? 1) ? 1 : 0;
+    const totalsRows = Number(table.attrs.totalsRowCount ?? 0) ? 1 : 0;
+    const columns = children(child(table, "tableColumns"), "tableColumn").map((c) => c.attrs.name ?? "");
+    for (const tableName of new Set([table.attrs.displayName, table.attrs.name].filter((x): x is string => !!x))) ctx.tables.push({ name: tableName, sheet: name, rect: ref, headerRows, totalsRows, columns });
+    if (child(table, "autoFilter") && headerRows) tableFilter = [ref[0], ref[1], ref[2] - totalsRows, ref[3]];
+    if (child(table, "tableStyleInfo")?.attrs.name) ctx.warnings.add("A table's own colour banding isn't copied: its cells, formulas and filter buttons are.");
   }
-  if (child(ws, "autoFilter")) ctx.warnings.add("Filters aren't copied.");
+  // Sheets has one filter a sheet: the sheet's own, or its only table's
+  const filter = parseRange(child(ws, "autoFilter")?.attrs.ref ?? "") ?? (tableCount === 1 ? tableFilter : null);
+  if (filter) sheet.filter = filter;
+  else if (tableCount > 1 && tableFilter) ctx.warnings.add("Only one range a sheet can have filter buttons in Google Sheets: the tables' filter buttons aren't copied.");
+
+  // Groups: rows or columns at an outline level, each run a group; one whose rows are all hidden is folded
+  const groups: DimensionGroup[] = [];
+  const hiddenIn = (spans: [number, number][], i: number) => spans.some(([a, b]) => i >= a && i <= b);
+  for (const d of ["r", "c"] as const) {
+    const at = levels[d];
+    const spans = d === "r" ? hiddenRows : hiddenCols;
+    const deepest = Math.min(8, Math.max(0, ...at.values()));
+    for (let depth = 1; depth <= deepest; depth++) {
+      const members = Array.from(at.entries()).filter(([, level]) => level >= depth).map(([i]) => i).sort((x, y) => x - y);
+      let from = -1, prev = -2;
+      const close = (to: number) => {
+        if (from < 0) return;
+        let folded = true;
+        for (let i = from; i <= to; i++) if (!hiddenIn(spans, i)) { folded = false; break; }
+        groups.push({ d, from, to, depth, ...(folded ? { collapsed: true as const } : {}) });
+      };
+      for (const i of members) { if (i !== prev + 1) { close(prev); from = i; } prev = i; }
+      close(prev);
+    }
+  }
+  if (groups.length) {
+    sheet.groups = groups;
+    // A folded group hides its own rows: they aren't hidden a second time
+    const folded = (d: "r" | "c", i: number) => groups.some((g) => g.d === d && g.collapsed && i >= g.from && i <= g.to);
+    const keep = (d: "r" | "c", spans: [number, number][]) => {
+      const out: [number, number][] = [];
+      for (const [a, b] of spans) for (let i = a; i <= b; i++) if (!folded(d, i)) pushSpan(out, i);
+      return out;
+    };
+    const rowsLeft = keep("r", hiddenRows), colsLeft = keep("c", hiddenCols);
+    if (rowsLeft.length) sheet.hiddenRows = rowsLeft; else delete sheet.hiddenRows;
+    if (colsLeft.length) sheet.hiddenCols = colsLeft; else delete sheet.hiddenCols;
+  }
 
   sheet.rowCount = Math.max(1000, maxRow + 1, google ? maxRowDeclared : 0);
   sheet.colCount = Math.max(26, maxCol + 1, google ? maxColDeclared : 0);
@@ -656,7 +807,8 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
     const shared = sharedXml ? children(child(parseXml(sharedXml), "sst"), "si").map((si) => readRich(si, palette)) : [];
 
     const warnings = new Set<string>();
-    const ctx: ReadContext = { zip, palette, book, shared, origin, warnings, budget: { cells: MAX_CELLS } };
+    const date1904 = flag(child(wb, "workbookPr")?.attrs.date1904);
+    const ctx: ReadContext = { zip, palette, book, shared, origin, warnings, budget: { cells: MAX_CELLS }, tables: [], drawings: [], date1904 };
     const sheetNodes = children(child(wb, "sheets"), "sheet");
     if (!sheetNodes.length) return fail("empty");
     if (sheetNodes.length > MAX_SHEETS) return fail("tooLarge");
@@ -665,13 +817,37 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
       const rel = rels.get(node.attrs["r:id"] ?? "");
       if (!rel) continue;
       // The new Google Sheet's first tab is the one it is made with (id 0); the rest are added
-      const sheet = await readSheet(ctx, rel.target, (node.attrs.name ?? `Sheet${sheets.length + 1}`).slice(0, 100), sheets.length === 0 ? 0 : 1000 + sheets.length);
+      const sheet = await readSheet(ctx, rel.target, (node.attrs.name ?? `Sheet${sheets.length + 1}`).slice(0, 100), sheets.length === 0 ? 0 : 1000 + sheets.length, sheets.length);
       if (node.attrs.state === "hidden" || node.attrs.state === "veryHidden") sheet.hidden = true;
       sheets.push(sheet);
     }
     if (!sheets.length || !sheets.some((s) => s.cells.length)) return fail("empty");
     // Google Sheets always shows one tab
     if (sheets.every((s) => s.hidden)) delete sheets[0].hidden;
+
+    // General inside a longer format: digits as needed, and no stray decimal point when every value is whole
+    if (book.general.size) {
+      const whole = new Map<number, boolean>();
+      for (const sheet of sheets) for (const cell of sheet.cells) {
+        if (cell.s && book.general.has(cell.s) && typeof cell.v === "number") whole.set(cell.s, (whole.get(cell.s) ?? true) && Number.isInteger(cell.v));
+      }
+      for (const [idx, raw] of book.general) if (whole.get(idx)) book.styles[idx].numFmt = sheetsNumberFormat(raw, "0");
+    }
+    // Formulas that name a table's columns read cell ranges in Sheets
+    if (ctx.tables.length) {
+      for (const sheet of sheets) for (const cell of sheet.cells) {
+        if (cell.f != null && cell.f.includes("[")) cell.f = resolveTableRefs(cell.f, ctx.tables, sheet.name, cell.r, cell.c);
+      }
+    }
+    // Charts, now that the sheets their ranges name are all known
+    const sheetIndex = new Map(sheets.map((s, i) => [s.name.toLowerCase(), i]));
+    for (const d of ctx.drawings) {
+      const sheet = sheets[d.sheet];
+      if (!sheet) continue;
+      const charts = await readCharts({ zip, sheetIndex, color: (node) => palette.resolve(node), warnings }, d.part, sheet);
+      if (charts.length) sheet.charts = [...(sheet.charts ?? []), ...charts].slice(0, 50);
+    }
+    if (date1904) warnings.add("This workbook counts dates from 1904 (an old Mac setting): its dates are shifted to the usual calendar.");
 
     const names: NamedRange[] = [];
     for (const dn of children(child(wb, "definedNames"), "definedName")) {

@@ -19,10 +19,33 @@ const MIN_PAUSE_MS = 45_000;
 export const MIN_SHEET_TARGET_MINUTES = 1;
 export const MAX_SHEET_TARGET_MINUTES = 7 * 24 * 60;
 
+/** A break someone placed: before section number `section` (as planSteps lists them) starts, for `minutes` */
+export interface SheetBreak { section: number; minutes: number }
+export const MAX_SHEET_BREAKS = 50;
+export const MAX_SHEET_BREAK_MINUTES = 12 * 60;
+
+/** The breaks of a request, checked: whole sections that exist (not the first), each once, sane lengths */
+export function parseSheetBreaks(raw: unknown, sections: number): SheetBreak[] | null {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_SHEET_BREAKS) return null;
+  const seen = new Set<number>();
+  const out: SheetBreak[] = [];
+  for (const b of raw) {
+    const o = b as Partial<SheetBreak> | null;
+    if (!o || typeof o.section !== "number" || !Number.isInteger(o.section) || o.section < 1 || o.section >= sections || seen.has(o.section)) return null;
+    if (typeof o.minutes !== "number" || !Number.isFinite(o.minutes) || o.minutes < 1 || o.minutes > MAX_SHEET_BREAK_MINUTES) return null;
+    seen.add(o.section);
+    out.push({ section: o.section, minutes: o.minutes });
+  }
+  return out.sort((a, b) => a.section - b.section);
+}
+
 export interface SheetPlanOptions {
   /** The whole sync's length in minutes; none for a natural pace */
   targetMinutes?: number | null;
   seed?: number;
+  /** Breaks placed by hand, each before a section; they are part of the total time when one is asked for */
+  breaks?: SheetBreak[];
 }
 
 export interface SheetPlan {
@@ -40,6 +63,8 @@ export interface SheetPlan {
   /** False when the time asked for is shorter than the fastest */
   fitsTarget: boolean;
   seed: number;
+  /** The sections before any time away was added: what a break's `section` counts in */
+  sectionCount: number;
 }
 
 interface Timing { floor: number; think: number }
@@ -61,6 +86,7 @@ function stepTiming(rng: Rng, wb: Workbook, step: Step): Timing {
     case "merge": return { floor: 1_000, think: rng.float(700, 2_200) + Math.min(2_500, (step.rects.length - 1) * 400) };
     case "size": case "hide": return { floor: 900, think: rng.float(500, 1_900) };
     case "sheet": return { floor: 1_200, think: rng.float(2_500, 7_000) };
+    case "chart": return { floor: 2_500, think: rng.float(5_000, 14_000) };
     case "pause": return { floor: 0, think: 0 };
     default: return { floor: 1_100, think: rng.float(900, 3_200) };
   }
@@ -104,9 +130,17 @@ export function buildSheetPlan(wb: Workbook, opts: SheetPlanOptions = {}): Sheet
 
   const minMs = timings.reduce((a, t) => a + t.floor, 0);
   const naturalMs = timings.reduce((a, t) => a + t.floor + t.think, 0);
-  const target = opts.targetMinutes != null && Number.isFinite(opts.targetMinutes)
+  const asked = opts.targetMinutes != null && Number.isFinite(opts.targetMinutes)
     ? Math.min(MAX_SHEET_TARGET_MINUTES, Math.max(MIN_SHEET_TARGET_MINUTES, opts.targetMinutes)) * 60_000
     : null;
+  // Breaks placed by hand: each before its section. With a total time, they are part of it
+  const breakAt = new Map<number, number>();
+  for (const b of opts.breaks ?? []) {
+    const section = base.sections[b.section];
+    if (section && b.section > 0 && section.at > 0) breakAt.set(section.at, (breakAt.get(section.at) ?? 0) + Math.round(b.minutes * 60_000));
+  }
+  const breaksMs = Array.from(breakAt.values()).reduce((a, b) => a + b, 0);
+  const target = asked == null ? null : asked - breaksMs;
 
   let scale = 1;
   let away = 0;
@@ -146,10 +180,10 @@ export function buildSheetPlan(wb: Workbook, opts: SheetPlanOptions = {}): Sheet
   const moved = new Map<number, number>();
   let totalMs = 0;
   base.steps.forEach((step, i) => {
-    const pause = awayAt.get(i);
-    if (pause) {
+    for (const [pause, activity] of [[breakAt.get(i), "On a break"], [awayAt.get(i), "Away from the sheet"]] as const) {
+      if (!pause) continue;
       steps.push({ k: "pause" });
-      actions.push({ kind: "pause", text: "", delayMs: pause, activity: "Away from the sheet" });
+      actions.push({ kind: "pause", text: "", delayMs: pause, activity });
       units.push(0);
       totalMs += pause;
     }
@@ -164,10 +198,10 @@ export function buildSheetPlan(wb: Workbook, opts: SheetPlanOptions = {}): Sheet
   // Rounding leaves a second or two: the last wait takes it, so the total is the one asked for
   if (target != null && fitsTarget && actions.length > 1) {
     const last = actions[actions.length - 1];
-    const fixed = Math.max(MIN_STEP_MS, last.delayMs + (target - totalMs));
+    const fixed = Math.max(MIN_STEP_MS, last.delayMs + (target + breaksMs - totalMs));
     totalMs += fixed - last.delayMs;
     last.delayMs = fixed;
   }
   const sections = base.sections.map((s) => ({ ...s, at: moved.get(s.at) ?? s.at }));
-  return { steps, sections, actions, units, totalUnits: units.reduce((a, b) => a + b, 0), totalMs, naturalMs, minMs, fitsTarget, seed };
+  return { steps, sections, actions, units, totalUnits: units.reduce((a, b) => a + b, 0), totalMs, naturalMs, minMs, fitsTarget, seed, sectionCount: base.sections.length };
 }

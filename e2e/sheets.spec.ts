@@ -13,13 +13,16 @@ async function openSheets(page: Page, api: FakeGoogle, query = ""): Promise<void
   await expect(page.locator(".sx-workspace")).toBeVisible();
 }
 
-async function upload(page: Page): Promise<void> {
-  await page.locator("[data-testid=sx-file]").setInputFiles(WORKBOOK);
+/** A second one (scripts/make-xlsx-features-fixture.py): charts, a table, a filter, groups, rules */
+const FEATURES = path.join(__dirname, "..", "fixtures", "xlsx", "features.xlsx");
+
+async function upload(page: Page, file = WORKBOOK): Promise<void> {
+  await page.locator("[data-testid=sx-file]").setInputFiles(file);
   await expect(page.locator(".sx-grid")).toBeVisible();
 }
 
 /** The text a cell shows on the grid */
-const cell = (page: Page, ref: string) => page.locator(`.sx-text[data-cell="${ref}"]`);
+const cell = (page: Page, ref: string) => page.locator(`.sx-cells .sx-text[data-cell="${ref}"]`);
 
 /** Click a cell (its text lets clicks through to the grid, so the click goes where the cell is) */
 async function clickCell(page: Page, ref: string): Promise<void> {
@@ -89,7 +92,7 @@ test.describe("sheets", () => {
 
     await scrub.fill("0");
     await expect(page.locator("[data-testid=sx-step]")).toContainText("Before the first step");
-    await expect(page.locator(".sx-text")).toHaveCount(0);
+    await expect(page.locator(".sx-cells .sx-text")).toHaveCount(0);
     await expect(page.getByRole("tab")).toHaveCount(0);
 
     // A little in: the first tab exists and its first labels are typed, in Sheets' own font until the look is set
@@ -142,6 +145,97 @@ test.describe("sheets", () => {
     // Back to the workbook, which is still there for another sync
     await page.getByRole("button", { name: "Back to the workbook" }).click();
     await expect(cell(page, "A1")).toHaveText("Default");
+  });
+
+  test("charts, filter buttons, conditional formatting and folded groups show as Google Sheets shows them", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await upload(page, FEATURES);
+    // Five charts, each of its kind, where the workbook has them
+    const charts = page.locator("[data-testid=sx-chart]");
+    await expect(charts).toHaveCount(5);
+    expect(await charts.evaluateAll((els) => els.map((e) => e.getAttribute("data-chart")))).toEqual(["COLUMN", "LINE", "PIE", "BAR", "SCATTER"]);
+    await expect(page.getByRole("img", { name: "Chart: Units and price" })).toBeVisible();
+    await expect(page.getByRole("img", { name: "Chart: Units and price" }).locator("polyline")).toHaveCount(2);
+    // The table's header row carries filter buttons
+    await expect(page.locator(".sx-filter-btn")).toHaveCount(4);
+    // A formula that named the table's columns reads cell ranges
+    await clickCell(page, "A2");
+    for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowUp");
+    await expect(page.locator(".sx-namebox")).toHaveText("F1");
+    await expect(page.locator("[data-testid=sx-formula]")).toHaveText("=SUM($D$2:$D$7)");
+
+    await page.getByRole("tab", { name: "Rules" }).click();
+    // Top three green and bold, the repeated and low values red: the rules, worked out from the values
+    await expect(cell(page, "A5")).toHaveCSS("color", "rgb(0, 97, 0)");
+    await expect(cell(page, "A5")).toHaveCSS("font-weight", "700");
+    await expect(cell(page, "A2")).toHaveCSS("color", "rgb(156, 0, 6)");
+    await expect(cell(page, "A8")).toHaveCSS("color", "rgb(156, 0, 6)");
+    // Rows 9 to 11 are a folded group, row 14 is hidden: neither shows
+    await expect(page.locator(".sx-rowhead", { hasText: /^8$/ })).toHaveCount(1);
+    await expect(page.locator(".sx-rowhead", { hasText: /^10$/ })).toHaveCount(0);
+    await expect(page.locator(".sx-rowhead", { hasText: /^14$/ })).toHaveCount(0);
+    await expect(cell(page, "E3")).toHaveText("March 9, 2024");
+    await expect(cell(page, "E5")).toHaveText("7 units");
+    // An indent is room before the text
+    await expect(cell(page, "E1")).toHaveCSS("padding-left", "21px");
+    // What can't be carried over is said
+    await expect(page.locator("[data-testid=sx-warnings]")).toContainText("Data bars and icon sets");
+  });
+
+  test("frozen rows and columns stay put while the rest scrolls", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await upload(page);
+    const frozenRow = page.locator("[data-testid=sx-frozen-rows]");
+    const frozenCol = page.locator("[data-testid=sx-frozen-cols]");
+    await expect(frozenRow.locator('.sx-text[data-cell="C1"]')).toHaveText("TNR14bi");
+    const before = (await frozenRow.locator('.sx-text[data-cell="C1"]').boundingBox())!;
+    await page.locator(".sx-grid").evaluate((el) => { el.scrollTop = 600; el.scrollLeft = 40; });
+    await expect.poll(async () => (await page.locator(".sx-grid").evaluate((el) => el.scrollTop))).toBe(600);
+    // Row 1 is still at the top (it moved sideways with its columns, not down), column A still at the left
+    const after = (await frozenRow.locator('.sx-text[data-cell="C1"]').boundingBox())!;
+    expect(Math.round(after.y)).toBe(Math.round(before.y));
+    expect(Math.round(after.x)).toBe(Math.round(before.x) - 40);
+    const grid = (await page.locator(".sx-grid").boundingBox())!;
+    const colA = (await frozenCol.locator('.sx-text[data-cell="A31"]').boundingBox())!;
+    expect(colA.x).toBeGreaterThanOrEqual(grid.x + 46);
+    expect(colA.x).toBeLessThan(grid.x + 46 + 40);
+    // A click on the frozen row picks the cell shown there
+    await page.mouse.click(after.x + 4, after.y + after.height / 2);
+    await expect(page.locator(".sx-namebox")).toHaveText("C1");
+  });
+
+  test("a break placed before a section is part of the plan and of what Start sends", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await upload(page, FEATURES);
+    const total = page.locator("[data-testid=sx-total]");
+    // (the schedule is drawn afresh for each upload: a few minutes, give or take one)
+    const minutes = Number(/^(\d+) min$/.exec((await total.textContent()) ?? "")?.[1]);
+    expect(minutes).toBeGreaterThan(3);
+    await page.getByRole("button", { name: "Add a break before section 2" }).click();
+    await expect(page.locator("[data-testid=sx-break]")).toHaveCount(1);
+    await expect(total).toHaveText(`${minutes + 15} min`);
+    await page.getByLabel("Break before section 2", { exact: true }).selectOption("30");
+    await expect(total).toHaveText(`${minutes + 30} min`);
+    await page.getByRole("button", { name: "Add a break before section 3" }).click();
+    await page.getByRole("button", { name: "Remove the break before section 3" }).click();
+    await expect(page.locator("[data-testid=sx-break]")).toHaveCount(1);
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    expect(api.sheetStarts[0].breaks).toEqual([{ section: 1, minutes: 30 }]);
+  });
+
+  test("a sync that had edits refused says which, and still shows as finished", async ({ app, page, api }) => {
+    void app;
+    const now = Date.now();
+    api.jobs = [{ id: "sheet_r", userId: "user-1", kind: "sheet", documentId: "sheet-r", documentName: "Budget", status: "done", createdAt: now, startAt: now, finishedAt: now, currentAction: 10, totalActions: 10, charsSent: 10, totalChars: 10, activity: "Done", wpm: 0, baselineWordCount: 0, breaks: [], completedBreaks: [], lastUpdate: now, refused: { count: 2, notes: ["Number format on C3: Invalid number format pattern"] } }];
+    await openSheets(page, api, "?job=sheet_r");
+    await expect(page.locator("[data-testid=sx-job-title]")).toHaveText("Finished");
+    await expect(page.locator("[data-testid=sx-refused]")).toContainText("Google Sheets refused 2 edits");
+    await expect(page.locator("[data-testid=sx-refused]")).toContainText("Number format on C3");
   });
 
   test("a refused start says why and keeps the workbook", async ({ app, page, api }) => {

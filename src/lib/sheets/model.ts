@@ -41,6 +41,8 @@ export interface CellStyle {
   wrap?: "WRAP" | "CLIP";
   /** Degrees (-90 to 90), or letters stacked top to bottom */
   rotation?: number | "vertical";
+  /** Excel's indent steps (each about three spaces wide), from the side the text is aligned to */
+  indent?: number;
 }
 
 /** Part of a cell's text with a look of its own, from `at` (in characters) to the next run */
@@ -72,11 +74,49 @@ export type Rect = [number, number, number, number];
 /** Consecutive rows or columns with the same size: [first, last, pixels] */
 export type SizeRun = [number, number, number];
 
-export interface ListValidation {
+/** What a range's cells may hold: a dropdown (its choices, or the range they come from), or a rule */
+export interface Validation {
   rect: Rect;
-  /** The choices, or the range they come from ("=Sheet!A1:A5") */
+  /** A dropdown's choices, or the range they come from ("=Sheet!A1:A5") */
   values?: string[];
   source?: string;
+  /** Any other rule, as a Sheets condition ("NUMBER_BETWEEN" with its two values, "CUSTOM_FORMULA" with one) */
+  rule?: { type: string; values: string[] };
+  /** Whether a value that breaks the rule is refused (otherwise it is only flagged) */
+  strict?: boolean;
+  /** The hint shown when the cell is picked */
+  help?: string;
+}
+export type ListValidation = Validation;
+
+/** Rows or columns folded together under a +/- control; an outer group comes before the ones inside it */
+export interface DimensionGroup { d: "r" | "c"; from: number; to: number; depth: number; collapsed?: true }
+
+/** Cells a chart draws from, on a sheet of the workbook (by its place in the list) */
+export interface ChartSource { sheet: number; rect: Rect }
+
+export const CHART_TYPES = ["COLUMN", "BAR", "LINE", "AREA", "SCATTER", "PIE", "COMBO"] as const;
+export type ChartType = (typeof CHART_TYPES)[number];
+
+export interface Chart {
+  /** Where its top left corner is: the cell, and pixels into it */
+  at: [number, number, number, number];
+  /** Width and height in pixels */
+  size: [number, number];
+  type: ChartType;
+  stacked?: "STACKED" | "PERCENT_STACKED";
+  title?: string;
+  legend?: "RIGHT" | "LEFT" | "TOP" | "BOTTOM" | "NONE";
+  /** Titles of the category axis and the value axis */
+  xTitle?: string;
+  yTitle?: string;
+  /** The labels along the category axis (a pie's slice names, a scatter's x values) */
+  domain?: ChartSource;
+  series: { src: ChartSource; type?: "COLUMN" | "LINE" | "AREA"; color?: Color }[];
+  /** 1 when each range starts with its name (the cell above a column of values) */
+  headers?: 0 | 1;
+  /** A doughnut's hole, as a share of the pie */
+  hole?: number;
 }
 
 export interface ConditionalRule {
@@ -113,8 +153,12 @@ export interface Sheet {
   rowStyles?: [number, number, number][];
   /** Every cell with a value or a style, row by row */
   cells: Cell[];
-  validations?: ListValidation[];
+  validations?: Validation[];
   conditional?: ConditionalRule[];
+  /** The range with filter buttons on its first row */
+  filter?: Rect;
+  groups?: DimensionGroup[];
+  charts?: Chart[];
 }
 
 export interface NamedRange { name: string; sheet: number; rect: Rect }
