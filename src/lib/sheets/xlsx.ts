@@ -16,7 +16,8 @@ import { resolveTableRefs, type TableInfo } from "./table-refs";
 import { readCharts } from "./xlsx-charts";
 import { readRels } from "./xlsx-parts";
 import { numberFormatType } from "./steps";
-import { type Banding,
+import { coverRects } from "./cover";
+import { type Banding, type StyleSpan,
   cellName, hasContent, parseCellName, parseRange, rectName,
   type Border, type BorderStyle, type Cell, type CellStyle, type Color, type ConditionalRule, type DimensionGroup, type FontStyle, type NamedRange, type Rect, type Sheet, type SizeRun, type TextRun, type ThemeSlot, type Validation, type Workbook,
 } from "./model";
@@ -31,11 +32,13 @@ export class XlsxError extends Error {
 export const MAX_XLSX_BYTES = 12 * 1024 * 1024;
 /** Cells (with a value or a look) a workbook may have */
 export const MAX_CELLS = 150_000;
+/** Cells read before the blank ones that share a look are folded into ranges (a Google export spells every one out) */
+const MAX_RAW_CELLS = 3_000_000;
 export const MAX_SHEETS = 60;
 
 const MESSAGES: Record<XlsxErrorCode, string> = {
   notXlsx: "This file isn't an Excel workbook (.xlsx).",
-  oldExcel: "This is an older Excel file (.xls). Open it in Excel or Google Sheets, save it as .xlsx, and upload that.",
+  oldExcel: "This is an older Excel file (.xls), which Google Sheets converts first. That didn't happen here: open it in Excel or Google Sheets, save it as .xlsx, and upload that.",
   encrypted: "This workbook is password protected. Remove the password in Excel, save it, and upload it again.",
   empty: "This workbook has no sheets with cells.",
   tooLarge: "This workbook is too large to sync cell by cell. Try a smaller one, or split it.",
@@ -179,6 +182,8 @@ export function tableLook(name: string, color: (theme: number, tint?: number) =>
 }
 
 class Palette {
+  /** The workbook's own indexed colours, where it has them */
+  indexed: string[] = [];
   constructor(readonly theme: string[]) {}
 
   /** A <color>-like element's colour; undefined for none or "automatic" */
@@ -198,7 +203,9 @@ class Palette {
       const idx = Number(a.indexed);
       if (idx === 64) return "#000000";
       if (idx === 65) return "#ffffff";
-      return INDEXED[idx] ? "#" + INDEXED[idx] : undefined;
+      // (a workbook can replace the standard palette with its own: old Mac files do)
+      const hex = this.indexed[idx] ?? INDEXED[idx];
+      return hex ? "#" + hex : undefined;
     }
     return undefined;
   }
@@ -228,12 +235,22 @@ const BORDER: Record<string, BorderStyle> = {
 const H_ALIGN: Record<string, CellStyle["hAlign"]> = { left: "LEFT", center: "CENTER", right: "RIGHT", justify: "LEFT", fill: "CENTER", centerContinuous: "CENTER", distributed: "CENTER" };
 const V_ALIGN: Record<string, CellStyle["vAlign"]> = { top: "TOP", center: "MIDDLE", bottom: "BOTTOM", justify: "MIDDLE", distributed: "MIDDLE" };
 
+/**
+ * Fonts Google Sheets' import replaces with one of its own (read back from its import of a workbook
+ * with fifty common fonts: the rest, Times, Calibri, Tahoma, Courier, Monaco and so on, keep their names)
+ */
+const IMPORT_FONTS: Record<string, string> = {
+  geneva: "Arimo", helvetica: "Helvetica Neue", helv: "Helvetica Neue", "lucida grande": "Merriweather Sans", "segoe ui": "Quattrocento Sans", symbol: "Noto Sans Symbols",
+  wingdings: "Noto Sans Symbols", "ms sans serif": "Open Sans", "franklin gothic medium": "Libre Franklin", optima: "Belleza", futura: "Poppins",
+  baskerville: "Libre Baskerville", "tw cen mt": "Twentieth Century",
+};
+
 function readFont(node: XmlNode | undefined, palette: Palette): FontStyle {
   const font: FontStyle = {};
   if (!node) return font;
   const on = (tag: string) => { const c = child(node, tag); return !!c && flag(c.attrs.val, true); };
   const name = (child(node, "name") ?? child(node, "rFont"))?.attrs.val;
-  if (name) font.family = name;
+  if (name) font.family = IMPORT_FONTS[name.toLowerCase()] ?? name;
   const size = Number(child(node, "sz")?.attrs.val);
   if (Number.isFinite(size) && size > 0) font.size = Math.round(size * 100) / 100;
   if (on("b")) font.bold = true;
@@ -252,6 +269,8 @@ interface StyleBook {
   /** A cell's `s` (its xf) → index into styles */
   xf: number[];
   defaultFont: { family: string; size: number };
+  /** Cell formats (by their place in cellXfs) that centre their text across the cells after them */
+  across: Set<number>;
   /**
    * Styles whose number format has Excel's General inside it ("General \"units\""), by style, with the
    * format as the file has it: Sheets has no such code, so it is written for the values it shows
@@ -262,11 +281,12 @@ interface StyleBook {
 }
 
 function readStyles(xml: string | null, palette: Palette): StyleBook {
-  const book: StyleBook = { styles: [{}], xf: [0], defaultFont: { family: "Calibri", size: 11 }, general: new Map(), dxfs: [] };
+  const book: StyleBook = { styles: [{}], xf: [0], defaultFont: { family: "Calibri", size: 11 }, general: new Map(), dxfs: [], across: new Set() };
   if (!xml) return book;
   const root = child(parseXml(xml), "styleSheet");
   if (!root) return book;
 
+  palette.indexed = children(child(child(root, "colors"), "indexedColors"), "rgbColor").map((n) => (/^[0-9a-fA-F]{6,8}$/.test(n.attrs.rgb ?? "") ? n.attrs.rgb.slice(-6).toLowerCase() : ""));
   const numFmts = new Map<number, string>();
   for (const n of children(child(root, "numFmts"), "numFmt")) numFmts.set(Number(n.attrs.numFmtId), n.attrs.formatCode ?? "");
   const fontNodes = children(child(root, "fonts"), "font");
@@ -316,6 +336,7 @@ function readStyles(xml: string | null, palette: Palette): StyleBook {
     const fmt = numFmts.get(fmtId) ?? BUILTIN_FORMATS[fmtId];
     if (fmt && fmt.trim().toLowerCase() !== "general") { const clean = sheetsNumberFormat(fmt); if (clean.trim()) style.numFmt = clean; }
     const al = child(xf, "alignment");
+    if (al?.attrs.horizontal === "centerContinuous") book.across.add(i);
     if (al) {
       const h = H_ALIGN[al.attrs.horizontal ?? ""];
       if (h) style.hAlign = h;
@@ -418,9 +439,105 @@ interface ReadContext {
  */
 function colPixels(width: number, origin: Workbook["origin"], digit: number): number {
   if (origin === "google") return Math.max(2, Math.round(width * digit - 1));
-  return Math.max(2, Math.floor(((256 * width + Math.floor(128 / 7)) / 256) * 7));
+  // Google's import of an Excel width: seven pixels a character, a half rounded down, less one
+  // (8.43 is 58, 12.5 is 86, 12.71 is 88, 20.29 is 141: read back from its import)
+  return Math.max(2, Math.ceil(width * 7 - 1.5 - 1e-9));
 }
-const rowPixels = (points: number): number => Math.max(2, Math.round((points * 4) / 3));
+/** A height in points as the pixels Google's import gives it: 96 to the inch, rounded down (14pt is 18, 20pt is 26) */
+const rowPixels = (points: number, origin?: Workbook["origin"]): number => Math.max(2, origin === "google" ? Math.round((points * 4) / 3) : Math.floor((points * 4) / 3 + 1e-9));
+
+/**
+ * Blank cells that share a look become ranges (Sheet.spans) instead of cells. Two sources: a column
+ * or a row formatted as a whole, which gives its look to every cell of it the sheet doesn't write
+ * out (a row's over a column's), down to the grid's edge as Google's import does; and blank cells
+ * written out one by one with a look that draws no border. Cells with anything of their own keep it.
+ */
+function blankSpans(sheet: Sheet, styles: CellStyle[], present: Set<number>, colStyles: [number, number, number][], rowStyles: [number, number, number][]): void {
+  const by = new Map<number, { r: number; c: number }[]>();
+  const add = (v: number, r: number, c: number) => { const list = by.get(v); if (list) list.push({ r, c }); else by.set(v, [{ r, c }]); };
+  if (colStyles.length || rowStyles.length) {
+    const colOf = new Array<number>(sheet.colCount).fill(0);
+    for (const [from, to, v] of colStyles) for (let c = from; c <= Math.min(to, sheet.colCount - 1); c++) colOf[c] = v;
+    const rowOf = new Map<number, number>();
+    for (const [from, to, v] of rowStyles) for (let r = from; r <= Math.min(to, sheet.rowCount - 1); r++) rowOf.set(r, v);
+    const anyCol = colOf.some(Boolean);
+    for (let r = 0; r < sheet.rowCount; r++) {
+      const rowV = rowOf.get(r) ?? 0;
+      if (!rowV && !anyCol) continue;
+      for (let c = 0; c < sheet.colCount; c++) {
+        const v = rowV || colOf[c];
+        if (v && !present.has(r * 16384 + c)) add(v, r, c);
+      }
+    }
+  }
+  // Blank cells spelled out: folded when there are enough of them to matter
+  const plain = (cell: Cell) => cell.s != null && !hasContent(cell) && cell.note == null && cell.link == null && !cell.spill && !styles[cell.s]?.borders;
+  if (sheet.cells.reduce((n, cell) => n + (plain(cell) ? 1 : 0), 0) >= 256) {
+    const merged = new Set<number>();
+    for (const m of sheet.merges) merged.add(m[0] * 16384 + m[1]);
+    const kept: Cell[] = [];
+    for (const cell of sheet.cells) {
+      if (plain(cell) && !merged.has(cell.r * 16384 + cell.c)) add(cell.s!, cell.r, cell.c);
+      else kept.push(cell);
+    }
+    sheet.cells = kept;
+  }
+  if (!by.size) return;
+  const spans: StyleSpan[] = [];
+  for (const [v, cells] of by) {
+    cells.sort((a, b) => a.r - b.r || a.c - b.c);
+    spans.push({ v, rects: coverRects(cells) });
+  }
+  sheet.spans = spans.sort((a, b) => a.rects[0][0] - b.rects[0][0] || a.rects[0][1] - b.rects[0][1] || a.v - b.v);
+}
+
+/**
+ * A comment as the note Google's import makes of it: plain newlines, and Excel's stand-in for a
+ * threaded comment ("[Threaded comment]", a notice, then "Comment:" and each "Reply:" indented by
+ * four spaces) tightened the way the import tightens it
+ */
+function noteText(text: string): string {
+  const plain = text.replace(/\r\n?/g, "\n");
+  if (!plain.startsWith("[Threaded comment]\n")) return plain;
+  return plain.replace(/^\[Threaded comment\]\n\n/, "[Threaded comment]\n ").replace(/\n\n(Comment|Reply):\n {4}/g, "\n$1:\n\t").replace(/\n*$/, "\n");
+}
+
+/** Whether a formula is, as a whole, an IF with its "then" or "else" left empty: IF(test,,x) or IF(test,x,) */
+export function emptyBranchIf(formula: string): boolean {
+  const f = formula.trim();
+  if (!/^IF\(/i.test(f) || !f.endsWith(")")) return false;
+  const args: string[] = [];
+  let depth = 0, quoted = false, from = 3;
+  for (let i = 3; i < f.length; i++) {
+    const ch = f[i];
+    if (ch === '"') quoted = !quoted;
+    if (quoted) continue;
+    if (ch === "(" || ch === "{") depth++;
+    else if (ch === ")" || ch === "}") { if (depth === 0) { if (i !== f.length - 1) return false; args.push(f.slice(from, i)); break; } depth--; }
+    else if (ch === "," && depth === 0) { args.push(f.slice(from, i)); from = i + 1; }
+  }
+  return args.length === 3 && (args[1].trim() === "" || args[2].trim() === "");
+}
+
+/** A number rule as Google's export spells it for the cell `me`, back as its kind and bounds; null when it isn't one */
+function exportedNumberRule(formula: string, me: string): { type: string; values: string[] } | null {
+  const head = `AND(ISNUMBER(${me}),`;
+  if (!formula.startsWith(head) || !formula.endsWith(")")) return null;
+  const inner = formula.slice(head.length, -1);
+  const pair = (open: string, first: string, joint: string): string[] | null => {
+    if (!inner.startsWith(`${open}(${me}${first}`) || !inner.endsWith(")")) return null;
+    const body = inner.slice(open.length + 1 + me.length + first.length, -1);
+    const at = body.indexOf(`,${me}${joint}`);
+    return at > 0 ? [body.slice(0, at), body.slice(at + 1 + me.length + joint.length)] : null;
+  };
+  const between = pair("AND", ">=", "<=");
+  if (between) return { type: "NUMBER_BETWEEN", values: between };
+  const outside = pair("OR", "<", ">");
+  if (outside) return { type: "NUMBER_NOT_BETWEEN", values: outside };
+  const single: [string, string][] = [[">=", "NUMBER_GREATER_THAN_EQ"], ["<=", "NUMBER_LESS_THAN_EQ"], ["<>", "NUMBER_NOT_EQ"], [">", "NUMBER_GREATER"], ["<", "NUMBER_LESS"], ["=", "NUMBER_EQ"]];
+  for (const [op, type] of single) if (inner.startsWith(me + op) && !/[(),]/.test(inner.slice(me.length + op.length))) return { type, values: [inner.slice(me.length + op.length)] };
+  return null;
+}
 
 function pushRun(runs: SizeRun[], index: number, px: number) {
   const last = runs[runs.length - 1];
@@ -452,12 +569,14 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
   const baseColW = Number(fmt?.attrs.baseColWidth ?? 8);
   // A Google Sheet's rows are 21 pixels and its export gives each row its height; Excel's default is the file's
   const defaultRowPx = google ? 21 : Number.isFinite(defaultRowPt) && defaultRowPt > 0 ? rowPixels(defaultRowPt) : 20;
+  // Excel's standard width when the sheet gives none: its base count of digits and five pixels, kept to a 256th
+  const standardColW = Math.floor((((Number.isFinite(baseColW) ? baseColW : 8) * 7 + 5) / 7) * 256) / 256;
   // A Google Sheet's columns are 100 pixels until resized, so its default width says which digit it counts in
   const fromDefault = google && Number.isFinite(defaultColW) && defaultColW > 0 ? Math.round(101 / defaultColW) : 0;
   const digit = fromDefault >= 4 && fromDefault <= 20 ? fromDefault : Math.max(4, Math.round(book.defaultFont.size * 0.7));
   const defaultColPx = google ? 100
     : Number.isFinite(defaultColW) && defaultColW > 0 ? colPixels(defaultColW, origin, digit)
-    : Math.ceil(((Number.isFinite(baseColW) ? baseColW : 8) * 7 + 5) / 8) * 8;
+    : colPixels(standardColW, origin, digit);
 
   const sheet: Sheet = { id, name, rowCount: 1000, colCount: 26, defaultRowPx, defaultColPx, rowPx: [], colPx: [], merges: [], cells: [] };
 
@@ -498,13 +617,17 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
     if (style && !toEnd) colStyles.push([min, max, style]);
   }
   if (hiddenCols.length) sheet.hiddenCols = hiddenCols;
-  if (colStyles.length) sheet.colStyles = colStyles;
+  const centred: Rect[] = [];
 
   // Array formulas fill a range from their first cell: the other cells show values they don't hold
   const spills: { rect: Rect; anchor: number }[] = [];
   const sharedFormulas = new Map<string, { f: string; r: number; c: number }>();
   const hiddenRows: [number, number][] = [];
   const rowStyles: [number, number, number][] = [];
+  /** Every cell the sheet writes out, blank ones too, and the ones that centre across a selection */
+  const present = new Set<number>();
+  const across = new Set<number>();
+  let rawCells = 0;
   let maxRow = -1, maxCol = -1, maxRowDeclared = 0;
   let nextRow = 0;
   for (const row of children(child(ws, "sheetData"), "row")) {
@@ -513,8 +636,9 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
     nextRow = r + 1;
     maxRowDeclared = Math.max(maxRowDeclared, r + 1);
     const ht = Number(row.attrs.ht);
-    if (Number.isFinite(ht) && ht > 0) {
-      const px = rowPixels(ht);
+    // (a height Excel worked out for itself isn't kept by Google's import: only one someone set)
+    if (Number.isFinite(ht) && ht > 0 && (google || flag(row.attrs.customHeight))) {
+      const px = rowPixels(ht, origin);
       if (px !== defaultRowPx) pushRun(sheet.rowPx, r, px);
     }
     if (flag(row.attrs.hidden)) pushSpan(hiddenRows, r);
@@ -533,6 +657,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
       const cell: Cell = { r, c: col };
       const style = book.xf[Number(c.attrs.s ?? 0)] ?? 0;
       if (style) cell.s = style;
+      present.add(r * 16384 + col);
+      if (book.across.has(Number(c.attrs.s ?? 0))) across.add(r * 16384 + col);
 
       const t = c.attrs.t ?? "n";
       const vNode = child(c, "v");
@@ -567,19 +693,38 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
           delete cell.runs;
         }
       }
+      // IF with a branch left empty gives 0 in Excel and nothing in Sheets: the page shows what Sheets will
+      if (cell.f != null && cell.v === 0 && emptyBranchIf(cell.f)) delete cell.v;
       if (ctx.date1904 && typeof cell.v === "number" && cell.s) {
         const kind = book.styles[cell.s].numFmt ? numberFormatType(book.styles[cell.s].numFmt!) : "NUMBER";
         if (kind === "DATE" || kind === "DATE_TIME") cell.v += 1462;
       }
       if (cell.s == null && !hasContent(cell)) continue;
-      if (--ctx.budget.cells < 0) fail("tooLarge");
+      if (++rawCells > MAX_RAW_CELLS) fail("tooLarge");
       sheet.cells.push(cell);
       if (hasContent(cell) || cell.s) { maxRow = Math.max(maxRow, r); maxCol = Math.max(maxCol, col); }
     }
   }
   if (hiddenRows.length) sheet.hiddenRows = hiddenRows;
-  if (rowStyles.length) sheet.rowStyles = rowStyles;
   sheet.cells.sort((a, b) => a.r - b.r || a.c - b.c);
+
+  // Centred across a selection: Google's import merges the cell with the blank ones after it that
+  // carry on the selection (a cell with something in it starts a merge of its own)
+  if (across.size) {
+    const gone = new Set<Cell>();
+    for (let i = 0; i < sheet.cells.length; i++) {
+      const first = sheet.cells[i];
+      if (!across.has(first.r * 16384 + first.c) || !hasContent(first)) continue;
+      let j = i + 1;
+      while (j < sheet.cells.length && sheet.cells[j].r === first.r && sheet.cells[j].c === sheet.cells[j - 1].c + 1 && across.has(sheet.cells[j].r * 16384 + sheet.cells[j].c) && !hasContent(sheet.cells[j])) j++;
+      if (j - 1 > i) {
+        centred.push([first.r, first.c, first.r, sheet.cells[j - 1].c]);
+        for (let k = i + 1; k < j; k++) gone.add(sheet.cells[k]);
+      }
+      i = j - 1;
+    }
+    if (gone.size) sheet.cells = sheet.cells.filter((c) => !gone.has(c));
+  }
 
   // Cells an array formula fills: shown with the formula's cell, never typed
   if (spills.length) {
@@ -594,6 +739,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
     const rect = parseRange(m.attrs.ref ?? "");
     if (rect && (rect[2] > rect[0] || rect[3] > rect[1])) { sheet.merges.push(rect); maxRow = Math.max(maxRow, rect[2]); maxCol = Math.max(maxCol, rect[3]); }
   }
+  // (a selection centred across isn't merged where the sheet's own merges already are)
+  for (const rect of centred) if (!sheet.merges.some((m) => m[0] <= rect[2] && m[2] >= rect[0] && m[1] <= rect[3] && m[3] >= rect[1])) sheet.merges.push(rect);
 
   // Links: a cell's own, to the web or to a place in the workbook
   const at = new Map<number, Cell>();
@@ -624,7 +771,8 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
       if (!text) continue;
       let cell = at.get(pos[0] * 16384 + pos[1]);
       if (!cell) { cell = { r: pos[0], c: pos[1] }; sheet.cells.push(cell); at.set(pos[0] * 16384 + pos[1], cell); }
-      cell.note = text.slice(0, 4000);
+      // (Sheets keeps a note's line ends as plain newlines)
+      cell.note = noteText(text).slice(0, 4000);
     }
   }
   sheet.cells.sort((a, b) => a.r - b.r || a.c - b.c);
@@ -632,7 +780,12 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
   // What cells may hold: dropdowns, and rules on numbers, dates, text length or a formula
   const validations: Validation[] = [];
   let otherValidation = false;
-  for (const dv of children(child(ws, "dataValidations"), "dataValidation")) {
+  // Rules that read another sheet are kept in the sheet's extension list, their formulas and ranges as elements
+  const extRules = children(find(child(ws, "extLst"), "dataValidations"), "dataValidation").map((dv): XmlNode => ({
+    tag: "dataValidation", text: "", attrs: { ...dv.attrs, sqref: child(dv, "sqref")?.text ?? "" },
+    children: ["formula1", "formula2"].map((f) => ({ tag: f, attrs: {}, children: [], text: child(child(dv, f), "f")?.text ?? "" })),
+  }));
+  for (const dv of [...children(child(ws, "dataValidations"), "dataValidation"), ...extRules]) {
     const f1 = (child(dv, "formula1")?.text ?? "").trim();
     const f2 = (child(dv, "formula2")?.text ?? "").trim();
     const type = dv.attrs.type ?? "";
@@ -658,8 +811,15 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
         greaterThanOrEqual: `${subject}>=${a}`, lessThanOrEqual: `${subject}<=${a}`,
       };
       const numeric = /^-?\d+(\.\d+)?$/;
-      if ((type === "whole" || type === "decimal") && CF_OPERATORS[op] && numeric.test(f1) && (!/etween/.test(op) || numeric.test(f2))) {
-        validations.push({ rect, rule: { type: CF_OPERATORS[op], values: /etween/.test(op) ? [f1, f2] : [f1] }, ...extras });
+      // A bound is a number or a formula ("=A65495"): Google's import keeps a number rule either way
+      const bound = (raw: string, formula: string) => (numeric.test(raw) ? String(Number(raw)) : "=" + formula);
+      // Google's export writes a number rule with a formula for a bound as a custom formula about the
+      // cell, AND(ISNUMBER(C58),AND(C58>=0.0,C58<=A65495)): read back as the rule it was
+      const exported = google && type === "custom" ? exportedNumberRule(a, me) : null;
+      if (exported) {
+        validations.push({ rect, rule: { type: exported.type, values: exported.values.map((x) => bound(x, x)) }, ...extras });
+      } else if ((type === "whole" || type === "decimal") && CF_OPERATORS[op] && f1 && (!/etween/.test(op) || f2)) {
+        validations.push({ rect, rule: { type: CF_OPERATORS[op], values: /etween/.test(op) ? [bound(f1, a), bound(f2, b)] : [bound(f1, a)] }, ...extras });
       } else if (type === "custom" && a) {
         validations.push({ rect, rule: { type: "CUSTOM_FORMULA", values: ["=" + a] }, ...extras });
       } else if (["whole", "decimal", "date", "time", "textLength"].includes(type) && a && compare[op] && (!/etween/.test(op) || b)) {
@@ -827,13 +987,22 @@ async function readSheet(ctx: ReadContext, part: string, name: string, id: numbe
 
   sheet.rowCount = Math.max(1000, maxRow + 1, google ? maxRowDeclared : 0);
   sheet.colCount = Math.max(26, maxCol + 1, google ? maxColDeclared : 0);
+  // A width set on columns past the last one the sheet writes a cell in isn't kept by Google's import
+  if (!google) {
+    let lastCol = -1;
+    for (const key of present) lastCol = Math.max(lastCol, key % 16384);
+    sheet.colPx = sheet.colPx.filter((run) => run[0] <= lastCol).map((run) => [run[0], Math.min(run[1], lastCol), run[2]] as SizeRun);
+  }
+  blankSpans(sheet, book.styles, present, colStyles, rowStyles);
+  ctx.budget.cells -= sheet.cells.length;
+  if (ctx.budget.cells < 0) fail("tooLarge");
   // Sizes past the grid's edge have nothing to size
   sheet.colPx = sheet.colPx.filter((run) => run[0] < sheet.colCount).map((run) => [run[0], Math.min(run[1], sheet.colCount - 1), run[2]] as SizeRun);
   return sheet;
 }
 
 /** Whether the bytes start like an .xls file (the old binary format) */
-const isOldExcel = (b: Uint8Array) => b.length > 8 && b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0;
+export const isOldExcel = (b: Uint8Array) => b.length > 8 && b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0;
 
 /** The workbook in an .xlsx (or .xlsm) file. Throws XlsxError with words for the person when it can't be read */
 export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): Promise<Workbook> {
@@ -863,6 +1032,9 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
 
     const warnings = new Set<string>();
     const date1904 = flag(child(wb, "workbookPr")?.attrs.date1904);
+    // Circular formulas that Excel settles by repeating: Google Sheets has the same setting, off unless set
+    const calc = child(wb, "calcPr");
+    const iterate = calc && flag(calc.attrs.iterate) ? { max: Math.min(10_000, Math.max(1, Math.round(Number(calc.attrs.iterateCount ?? 100)) || 100)), threshold: Math.min(1, Math.max(0, Number(calc.attrs.iterateDelta ?? 0.001))) || 0.001 } : null;
     const ctx: ReadContext = { zip, palette, book, shared, origin, warnings, budget: { cells: MAX_CELLS }, tables: [], tableText: [], drawings: [], date1904 };
     const sheetNodes = children(child(wb, "sheets"), "sheet");
     if (!sheetNodes.length) return fail("empty");
@@ -936,7 +1108,7 @@ export async function readXlsx(bytes: Uint8Array, fileName = "Workbook.xlsx"): P
     const theme: Workbook["theme"] = {};
     for (const [slot, i] of slots) theme[slot] = "#" + themeHex[i];
     const name = fileName.replace(/\.(xlsx|xlsm|xltx)$/i, "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 200) || "Untitled spreadsheet";
-    return { name, origin, defaultFont: book.defaultFont, theme, styles: book.styles, sheets, ...(names.length ? { names } : {}), warnings: Array.from(warnings) };
+    return { ...(iterate ? { iterate } : {}), name, origin, defaultFont: book.defaultFont, theme, styles: book.styles, sheets, ...(names.length ? { names } : {}), warnings: Array.from(warnings) };
   } catch (err) {
     if (err instanceof XlsxError) throw err;
     if (err instanceof ZipError) return fail("damaged");

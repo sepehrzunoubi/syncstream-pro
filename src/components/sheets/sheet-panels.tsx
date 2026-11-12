@@ -22,6 +22,36 @@ const sheetUrl = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/e
 /** A sync's one-line status, in a spreadsheet's words */
 export const sheetStatus = (job: PublicJob) => statusLine(job).replace(/^Typing/, "Building").replace(/typed$/, "built");
 
+/** Compare & Sync: the Google Sheet to bring up to the reference, and what that will take */
+function ComparePick({ compare, plan }: { compare: NonNullable<Parameters<typeof DraftPanel>[0]["compare"]>; plan: SheetPlan | null }) {
+  return (
+        <div data-testid="sx-compare">
+          <label className="ss-field-label" htmlFor="sx-target">Your spreadsheet</label>
+          <select id="sx-target" className="ss-select" aria-label="Your spreadsheet" value={compare.target?.id ?? ""} onChange={(e) => compare.onTarget(compare.targets.find((t) => t.id === e.target.value) ?? null)} disabled={compare.busy}>
+            <option value="">{compare.targets.length ? "Choose a Google Sheet" : "No spreadsheet made by SyncStream yet"}</option>
+            {compare.targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <p className="ss-field-help">{compare.busy ? "Reading what it holds now" : "The Google Sheets SyncStream made: the ones it is allowed to write to. The file above is the reference."}</p>
+          {compare.error && <p role="alert" className="mt-2 rounded-lg bg-[#fce8e6] p-3 text-[13px] leading-5 text-[#8c1d18]">{compare.error}</p>}
+          {plan?.compare && (
+            <div className="mt-2 rounded-lg bg-[var(--ss-soft)] px-3 py-2 text-[13px] leading-5" data-testid="sx-compare-summary">
+              {plan.steps.length === 0 ? <p>Your spreadsheet already holds everything the reference does.</p> : (
+                <>
+                  <p>{[
+                    plan.compare.summary.cells ? `${plan.compare.summary.cells.toLocaleString()} ${plan.compare.summary.cells === 1 ? "cell" : "cells"} to type` : "",
+                    plan.compare.summary.looks ? `${plan.compare.summary.looks.toLocaleString()} ${plan.compare.summary.looks === 1 ? "cell" : "cells"} to format` : "",
+                    plan.compare.summary.newSheets.length ? `${plan.compare.summary.newSheets.length} new ${plan.compare.summary.newSheets.length === 1 ? "tab" : "tabs"} (${plan.compare.summary.newSheets.slice(0, 3).join(", ")}${plan.compare.summary.newSheets.length > 3 ? ", and more" : ""})` : "",
+                  ].filter(Boolean).join(" · ") || "Sizes and settings to bring in line"}</p>
+                  <p className="text-[var(--ss-text-2)]">Marked cells on the page are the ones that will be typed. Nothing only your spreadsheet has is removed.</p>
+                </>
+              )}
+              {plan.compare.summary.kept.map((k) => <p key={k} className="text-[var(--ss-text-2)]">{k}</p>)}
+            </div>
+          )}
+        </div>
+  );
+}
+
 /** When each step happens, from the start: starts[i] is the wait before step i has run out */
 function stepTimes(plan: SheetPlan): number[] {
   const out = new Array<number>(plan.actions.length + 1);
@@ -86,6 +116,8 @@ export function DraftPanel(p: {
   workbook: Workbook | null; stats: WorkbookStats | null; plan: SheetPlan | null; settings: SheetSettings; onSettings: (s: SheetSettings) => void;
   step: number | null; playing: boolean; onTogglePlay: () => void; onScrub: (to: number | null) => void; onJump: (s: PlanSection) => void;
   onPick: () => void; reading: boolean; fileError: string | null; startError: string | null; busy: boolean;
+  /** Compare & Sync: the Google Sheets that can be brought up to date, the one picked, and whether it has been read */
+  compare?: { targets: { id: string; name: string }[]; target: { id: string; name: string } | null; onTarget: (t: { id: string; name: string } | null) => void; busy: boolean; error: string | null; ready: boolean };
 }) {
   const { workbook, stats, plan, settings } = p;
   const times = React.useMemo(() => (plan ? stepTimes(plan) : []), [plan]);
@@ -93,7 +125,20 @@ export function DraftPanel(p: {
     return (
       <div className="flex flex-col gap-3 px-5 pt-4">
         <h2 className="text-[16px] font-medium leading-6">Sync settings</h2>
-        <p className="text-[14px] leading-5 text-[var(--ss-text-2)]">Upload a workbook to see how long its sync takes and the order it is built in.</p>
+        {p.compare && workbook && (
+          <>
+            <section className="sx-file-card">
+              <span className="sx-file-icon"><FileSpreadsheet className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" /></span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[14px] font-medium leading-5">{workbook.name}</div>
+                <div className="text-[12px] leading-4 text-[var(--ss-text-2)]">The reference</div>
+              </div>
+              <button type="button" className="ss-link-btn text-[13px]" onClick={p.onPick} disabled={p.reading}>Replace</button>
+            </section>
+            <ComparePick compare={p.compare} plan={null} />
+          </>
+        )}
+        <p className="text-[14px] leading-5 text-[var(--ss-text-2)]" hidden={!!(p.compare && workbook)}>{p.compare ? "Upload the reference workbook, then pick the Google Sheet to bring up to it." : "Upload a workbook to see how long its sync takes and the order it is built in."}</p>
         <ul className="sx-carries">
           <li>Values and formulas, each formula written only once the cells it reads are in</li>
           <li>Fonts, sizes, colours, fills, borders, number formats, alignment and wrapping</li>
@@ -124,6 +169,7 @@ export function DraftPanel(p: {
         <button type="button" className="ss-link-btn text-[13px]" onClick={p.onPick} disabled={p.reading}>Replace</button>
       </section>
       {p.fileError && <p role="alert" className="rounded-lg bg-[#fce8e6] p-3 text-[13px] leading-5 text-[#8c1d18]">{p.fileError}</p>}
+      {p.compare && <ComparePick compare={p.compare} plan={plan} />}
       {workbook.warnings.length > 0 && (
         <div className="rounded-lg bg-[#fef7e0] px-3 py-2 text-[13px] leading-5 text-[#5c4300]" data-testid="sx-warnings">
           {workbook.warnings.map((w) => <p key={w} className="py-0.5">{w}</p>)}

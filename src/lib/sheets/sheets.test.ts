@@ -374,7 +374,7 @@ test("the sheet at step 0 is empty, and at the last step it is the finished one"
   assert.deepEqual(end.rows, final.rows);
   assert.deepEqual(end.merges.map(String).sort(), final.merges.map(String).sort());
   // A column takes its width plus its gridline on screen, as in Google Sheets
-  assert.equal(final.cols.sizes[0], 35 + 1);
+  assert.equal(final.cols.sizes[0], 34 + 1);
 });
 
 test("what a step touches is where the page looks", () => {

@@ -10,6 +10,7 @@ import type { DripAction } from "../drip-engine";
 import { createRng, randomSeed, type Rng } from "../prng";
 import { typedText, type Workbook } from "./model";
 import { planSteps, type PlanSection } from "./order";
+import { compareSteps, type CompareSummary } from "./compare";
 import { stepLabel, type Step } from "./steps";
 
 /** Google allows 60 writes a minute per person: no step follows the one before it sooner than this */
@@ -46,6 +47,12 @@ export interface SheetPlanOptions {
   seed?: number;
   /** Breaks placed by hand, each before a section; they are part of the total time when one is asked for */
   breaks?: SheetBreak[];
+  /**
+   * Compare & Sync: the spreadsheet as it is now. The plan is then only what it is missing of the
+   * workbook (compare.ts); `tabs` names the tabs of it that can be written, lower-cased.
+   */
+  have?: Workbook;
+  tabs?: ReadonlySet<string>;
 }
 
 export interface SheetPlan {
@@ -65,6 +72,8 @@ export interface SheetPlan {
   seed: number;
   /** The sections before any time away was added: what a break's `section` counts in */
   sectionCount: number;
+  /** Compare & Sync: what will be typed and what is left as it is */
+  compare?: { typed: Set<number>[]; summary: CompareSummary };
 }
 
 interface Timing { floor: number; think: number }
@@ -109,7 +118,8 @@ function stepPlace(wb: Workbook, step: Step): [number, number, number] | null {
 export function buildSheetPlan(wb: Workbook, opts: SheetPlanOptions = {}): SheetPlan {
   const seed = opts.seed ?? randomSeed();
   const rng = createRng(seed);
-  const base = planSteps(wb);
+  const compared = opts.have ? compareSteps(opts.have, wb, opts.tabs) : null;
+  const base = compared ?? planSteps(wb);
   const starts = new Set(base.sections.map((s) => s.at));
 
   const timings: Timing[] = [];
@@ -203,5 +213,5 @@ export function buildSheetPlan(wb: Workbook, opts: SheetPlanOptions = {}): Sheet
     last.delayMs = fixed;
   }
   const sections = base.sections.map((s) => ({ ...s, at: moved.get(s.at) ?? s.at }));
-  return { steps, sections, actions, units, totalUnits: units.reduce((a, b) => a + b, 0), totalMs, naturalMs, minMs, fitsTarget, seed, sectionCount: base.sections.length };
+  return { steps, sections, actions, units, totalUnits: units.reduce((a, b) => a + b, 0), totalMs, naturalMs, minMs, fitsTarget, seed, sectionCount: base.sections.length, ...(compared ? { compare: { typed: compared.typed, summary: compared.summary } } : {}) };
 }

@@ -43,6 +43,8 @@ export interface SheetPlanData {
   steps: Step[];
   units: number[];
   sections: PlanSection[];
+  /** Compare & Sync: the spreadsheet held everything no step sets before the sync began */
+  baseline?: true;
 }
 
 export interface PlanSegment {

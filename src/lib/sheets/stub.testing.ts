@@ -76,6 +76,7 @@ function prune(obj: Obj): Obj | undefined {
 export class StubSpreadsheet {
   title = "Untitled spreadsheet";
   theme: unknown = null;
+  iterate?: { maxIterations: number; convergenceThreshold: number };
   sheets = new Map<number, StubSheet>();
   namedRanges = new Map<string, { name: string; range: Obj }>();
   /** Every batch received, in order */
@@ -91,8 +92,11 @@ export class StubSpreadsheet {
     const title = String(props.title ?? `Sheet${this.sheets.size + 1}`);
     for (const s of this.sheets.values()) if (s.title === title) throw Object.assign(new Error(`Invalid requests: addSheet: A sheet with the name "${title}" already exists`), { code: 400 });
     const grid = (props.gridProperties ?? {}) as Obj;
+    // A tab added in the middle moves the ones after it along, as in Google Sheets
+    const index = Math.min(Number(props.index ?? this.sheets.size), this.sheets.size);
+    for (const s of this.sheets.values()) if (s.index >= index) s.index += 1;
     const sheet: StubSheet = {
-      id, title, index: Number(props.index ?? this.sheets.size), rowCount: Number(grid.rowCount ?? 1000), colCount: Number(grid.columnCount ?? 26),
+      id, title, index, rowCount: Number(grid.rowCount ?? 1000), colCount: Number(grid.columnCount ?? 26),
       frozenRows: 0, frozenCols: 0, cells: new Map(), merges: [], rowPx: new Map(), colPx: new Map(), hiddenRows: new Set(), hiddenCols: new Set(), validations: [], conditional: [], groups: [], collapsed: [], charts: new Map(), banding: new Map(),
       ...(props.rightToLeft ? { rightToLeft: true } : {}),
     };
@@ -150,6 +154,7 @@ export class StubSpreadsheet {
           const p = body.properties as Obj;
           for (const f of String(body.fields).split(",")) {
             if (f === "spreadsheetTheme") this.theme = structuredClone(p.spreadsheetTheme);
+            else if (f === "iterativeCalculationSettings") this.iterate = structuredClone(p.iterativeCalculationSettings) as { maxIterations: number; convergenceThreshold: number };
             else if (f === "title") this.title = String(p.title);
             else throw new Error(`stub: unknown spreadsheet field ${f}`);
           }

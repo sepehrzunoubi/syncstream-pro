@@ -17,12 +17,18 @@ export type Aspect = (typeof ASPECTS)[number];
 export type Step =
   /** The spreadsheet's theme: its default font and theme colours */
   | { k: "theme" }
+  /** Iterative calculation turned on, as the workbook has it */
+  | { k: "calc" }
   /** Make the tab (the first one is renamed) and size its grid */
-  | { k: "sheet"; s: number }
+  | { k: "sheet"; s: number; mode?: "add" | "update" }
   /** A sheet-wide default: every cell's font size, every row's height, every column's width */
   | { k: "base"; s: number; what: "size" | "rows" | "cols" }
   /** Whole columns or rows given a style */
   | { k: "band"; s: number; d: "c" | "r"; from: number; to: number; v: number }
+  /** One part of the look taken off cells that have it and shouldn't (Compare & Sync) */
+  | { k: "clear"; s: number; a: Aspect; rects: Rect[] }
+  /** A look given to ranges of blank cells (the sheet's i-th span) */
+  | { k: "span"; s: number; i: number }
   /** Type these cells (one, as a rule), each index into the sheet's cells */
   | { k: "type"; s: number; cells: number[] }
   /** Fill a formula from the cell before into these, or paste a block of values */
@@ -308,10 +314,10 @@ export interface Existing {
 }
 
 /** The id a sheet's i-th banded range is made with, so a step sent twice is seen to be there already */
-export const bandId = (sheetIndex: number, i: number): number => 800_000 + sheetIndex * 1000 + i;
+export const bandId = (sheetIndex: number, i: number, base = 0): number => 800_000 + base + sheetIndex * 1000 + i;
 
 /** The id a chart gets in the Google Sheet: the same on every try, so a retry can tell it is there */
-export const chartId = (sheetIndex: number, i: number): number => 900_000 + sheetIndex * 1000 + i;
+export const chartId = (sheetIndex: number, i: number, base = 0): number => 900_000 + base + sheetIndex * 1000 + i;
 
 const LEGEND = { RIGHT: "RIGHT_LEGEND", LEFT: "LEFT_LEGEND", TOP: "TOP_LEGEND", BOTTOM: "BOTTOM_LEGEND", NONE: "NO_LEGEND" } as const;
 
@@ -340,17 +346,20 @@ function chartRequest(wb: Workbook, sheetIndex: number, sheet: Sheet, chart: Cha
     } };
   }
   return { addChart: { chart: {
-    chartId: chartId(sheetIndex, i),
+    chartId: chartId(sheetIndex, i, wb.idBase),
     spec: { ...(chart.title ? { title: chart.title } : {}), ...spec },
     position: { overlayPosition: { anchorCell: { sheetId: sheet.id, rowIndex: chart.at[0], columnIndex: chart.at[1] }, offsetXPixels: chart.at[2], offsetYPixels: chart.at[3], widthPixels: chart.size[0], heightPixels: chart.size[1] } },
   } } };
 }
 
-export const namedRangeId = (i: number): string => `ss_name_${i}`;
+export const namedRangeId = (i: number, base = 0): string => `ss_name_${base ? `${base}_` : ""}${i}`;
 
 /** The requests a step sends. `existing` (for the steps that need it) leaves out what is already there */
 export function stepRequests(wb: Workbook, step: Step, existing?: Existing): SheetsRequest[] {
   if (step.k === "pause") return [];
+  if (step.k === "calc") {
+    return wb.iterate ? [{ updateSpreadsheetProperties: { properties: { iterativeCalculationSettings: { maxIterations: wb.iterate.max, convergenceThreshold: wb.iterate.threshold } }, fields: "iterativeCalculationSettings" } }] : [];
+  }
   if (step.k === "theme") {
     const theme = wb.theme ?? {};
     const themeColors = Object.entries(theme).map(([colorType, hex]) => ({ colorType, color: colorStyle(hex!) }));
@@ -361,8 +370,8 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
   if (step.k === "name") {
     const n = wb.names?.[step.i];
     const sheet = n ? wb.sheets[n.sheet] : undefined;
-    if (!n || !sheet || existing?.namedRangeIds.has(namedRangeId(step.i))) return [];
-    return [{ addNamedRange: { namedRange: { namedRangeId: namedRangeId(step.i), name: n.name, range: gridRange(sheet.id, n.rect) } } }];
+    if (!n || !sheet || existing?.namedRangeIds.has(namedRangeId(step.i, wb.idBase))) return [];
+    return [{ addNamedRange: { namedRange: { namedRangeId: namedRangeId(step.i, wb.idBase), name: n.name, range: gridRange(sheet.id, n.rect) } } }];
   }
   const sheet = wb.sheets[step.s];
   if (!sheet) return [];
@@ -372,8 +381,9 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
       const grid = { rowCount: sheet.rowCount, columnCount: sheet.colCount };
       const props = { sheetId: id, title: sheet.name, gridProperties: grid, ...(sheet.rtl ? { rightToLeft: true } : {}) };
       const fields = "title,gridProperties.rowCount,gridProperties.columnCount" + (sheet.rtl ? ",rightToLeft" : "");
-      // The spreadsheet is made with its first tab; a retry finds the others already added
-      if (step.s === 0 || existing?.sheetIds.has(id)) return [{ updateSheetProperties: { properties: props, fields } }];
+      // The spreadsheet is made with its first tab; a retry finds the others already added. (Compare & Sync
+      // says which it is: a tab the spreadsheet has, or one to add wherever it comes in the workbook.)
+      if (step.mode === "update" || (step.mode !== "add" && step.s === 0) || existing?.sheetIds.has(id)) return [{ updateSheetProperties: { properties: props, fields } }];
       return [{ addSheet: { properties: { ...props, index: step.s } } }];
     }
     case "base":
@@ -384,6 +394,14 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
       if (!fields) return [];
       const range = step.d === "c" ? { sheetId: id, startColumnIndex: step.from, endColumnIndex: step.to + 1 } : { sheetId: id, startRowIndex: step.from, endRowIndex: step.to + 1 };
       return [{ repeatCell: { range, cell: { userEnteredFormat: format }, fields } }];
+    }
+    case "clear":
+      return step.rects.map((rect) => ({ repeatCell: { range: gridRange(id, rect), cell: {}, fields: MASK[step.a] } }));
+    case "span": {
+      const span = sheet.spans?.[step.i];
+      const { format, fields } = styleFormat((span && wb.styles[span.v]) ?? {});
+      if (!span || !fields) return [];
+      return span.rects.map((rect) => ({ repeatCell: { range: gridRange(id, rect), cell: { userEnteredFormat: format }, fields } }));
     }
     case "type": case "fill": case "paste": {
       const withNote = step.cells.some((i) => sheet.cells[i]?.note);
@@ -433,16 +451,16 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
     }
     case "banding": {
       const b = sheet.banding?.[step.i];
-      if (!b || existing?.bandIds?.has(bandId(step.s, step.i))) return [];
+      if (!b || existing?.bandIds?.has(bandId(step.s, step.i, wb.idBase))) return [];
       const props = (p: NonNullable<typeof b.rows>) => ({
         ...(p.header ? { headerColorStyle: colorStyle(p.header) } : {}), firstBandColorStyle: colorStyle(p.first), secondBandColorStyle: colorStyle(p.second),
         ...(p.footer ? { footerColorStyle: colorStyle(p.footer) } : {}),
       });
-      return [{ addBanding: { bandedRange: { bandedRangeId: bandId(step.s, step.i), range: gridRange(id, b.rect), ...(b.rows ? { rowProperties: props(b.rows) } : {}), ...(b.cols ? { columnProperties: props(b.cols) } : {}) } } }];
+      return [{ addBanding: { bandedRange: { bandedRangeId: bandId(step.s, step.i, wb.idBase), range: gridRange(id, b.rect), ...(b.rows ? { rowProperties: props(b.rows) } : {}), ...(b.cols ? { columnProperties: props(b.cols) } : {}) } } }];
     }
     case "chart": {
       const chart = sheet.charts?.[step.i];
-      if (!chart || existing?.chartIds?.has(chartId(step.s, step.i))) return [];
+      if (!chart || existing?.chartIds?.has(chartId(step.s, step.i, wb.idBase))) return [];
       const request = chartRequest(wb, step.s, sheet, chart, step.i);
       return request ? [request] : [];
     }
@@ -456,6 +474,7 @@ export function stepRequests(wb: Workbook, step: Step, existing?: Existing): She
 export function stepLabel(wb: Workbook, step: Step): string {
   if (step.k === "pause") return "Away from the sheet";
   if (step.k === "theme") return "Setting the font";
+  if (step.k === "calc") return "Turning on iterative calculation";
   if (step.k === "name") return `Naming a range (${wb.names?.[step.i]?.name ?? ""})`;
   const sheet = wb.sheets[step.s];
   const at = (i: number) => { const c = sheet?.cells[i]; return c ? cellName(c.r, c.c) : ""; };
@@ -466,6 +485,8 @@ export function stepLabel(wb: Workbook, step: Step): string {
     case "sheet": return step.s === 0 ? `Naming the tab "${sheet?.name}"` : `Adding the tab "${sheet?.name}"`;
     case "base": return step.what === "size" ? "Setting the font size" : step.what === "rows" ? "Setting the row height" : "Setting the column width";
     case "band": return `Formatting ${dims(step.d, step.from, step.to)}`;
+    case "span": return `Formatting ${ranges(sheet?.spans?.[step.i]?.rects ?? [])}`;
+    case "clear": return `Clearing ${ASPECT_WORDS[step.a].toLowerCase()} on ${ranges(step.rects)}`;
     case "type": { const c = sheet?.cells[step.cells[0]]; return c?.f != null ? `Writing the formula in ${span(step.cells)}` : `Typing ${span(step.cells)}`; }
     case "fill": return `Filling ${span(step.cells)}`;
     case "paste": return `Pasting ${span(step.cells)}`;

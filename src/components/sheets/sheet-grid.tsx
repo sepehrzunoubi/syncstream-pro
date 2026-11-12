@@ -21,6 +21,8 @@ interface GridProps {
   view: SheetView;
   selected: GridSelection | null;
   onSelect: (sel: GridSelection) => void;
+  /** Compare & Sync: the cells (by their place) the sync types into, marked on the page */
+  pending?: ReadonlySet<number>;
   /** Keep what the sync last touched in sight */
   follow?: boolean;
   /** Names the grid for assistive tech and tests */
@@ -67,6 +69,7 @@ function cellText(wb: Workbook, cell: Cell, text: string, rich: boolean, fallbac
 interface Scene {
   wb: Workbook;
   view: SheetView;
+  pending?: ReadonlySet<number>;
   rowSpans: Map<number, [number, number]>;
   cellAt: Map<number, number>;
   mergeOf: Map<number, Rect>;
@@ -107,6 +110,16 @@ const Region = React.memo(function Region({ scene, r0, r1, c0, c1, selection }: 
     for (let r = r0; r <= r1; r++) if (rows.sizes[r]) fills.push(<div key={`h${r}`} className="sx-gridline" style={{ left: x0, top: rows.offsets[r + 1] - 1, width: x1 - x0, height: 1 }} />);
     for (let c = c0; c <= c1; c++) if (cols.sizes[c]) fills.push(<div key={`v${c}`} className="sx-gridline" style={{ left: cols.offsets[c + 1] - 1, top: y0, width: 1, height: y1 - y0 }} />);
   }
+  // Empty areas with a fill
+  view.fills.forEach((span, n) => {
+    const color = cssColor(wb, span.fill);
+    if (!color) return;
+    span.rects.forEach(([a0, b0, a1, b1], m) => {
+      const ra = Math.max(a0, r0), rb = Math.min(a1, r1), ca = Math.max(b0, c0), cb = Math.min(b1, c1);
+      if (ra > rb || ca > cb) return;
+      fills.push(<div key={`s${n}-${m}`} className="sx-fill" data-span={n} style={{ left: cols.offsets[ca], top: rows.offsets[ra], width: cols.offsets[cb + 1] - cols.offsets[ca], height: rows.offsets[rb + 1] - rows.offsets[ra], background: color }} />);
+    });
+  });
   // Alternating colours lie under the cells' own fills, and over the gridlines as a fill does
   view.banding.forEach((band, n) => {
     const [b0, bc0, b1, bc1] = band.rect;
@@ -168,6 +181,7 @@ const Region = React.memo(function Region({ scene, r0, r1, c0, c1, selection }: 
       if (!anchor || !cols.sizes[c]) continue;
       const fill = cssColor(wb, look?.fill ?? style?.fill);
       if (fill && !merge) fills.push(<div key={`f${i}`} className="sx-fill" style={{ left, top, width, height, background: fill }} />);
+      if (scene.pending?.has(i)) lines.push(<div key={`p${i}`} className="sx-pending" data-pending={cellName(cell.r, cell.c)} style={{ left, top, width, height }} />);
       if (cell.note && view.typed(i)) lines.push(<div key={`n${i}`} className="sx-note" style={{ left: left + width - 8, top }} title={cell.note} />);
       // A filter's first row carries its buttons
       const f = view.filter;
@@ -230,7 +244,7 @@ const Region = React.memo(function Region({ scene, r0, r1, c0, c1, selection }: 
   );
 });
 
-export function SheetGrid({ wb, view, selected, onSelect, follow, label }: GridProps) {
+export function SheetGrid({ wb, view, selected, onSelect, follow, label, pending }: GridProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const [port, setPort] = useState({ left: 0, top: 0, width: 1200, height: 700 });
   const frame = useRef(0);
@@ -271,7 +285,7 @@ export function SheetGrid({ wb, view, selected, onSelect, follow, label }: GridP
   }, [merges]);
   const allLooks = useMemo(() => conditionalLooks(sheet, wb.theme ?? {}), [sheet, wb.theme]);
   const looks = view.conditional && allLooks.size ? allLooks : null;
-  const scene = useMemo<Scene>(() => ({ wb, view, rowSpans, cellAt, mergeOf, looks }), [wb, view, rowSpans, cellAt, mergeOf, looks]);
+  const scene = useMemo<Scene>(() => ({ wb, view, rowSpans, cellAt, mergeOf, looks, pending }), [wb, view, rowSpans, cellAt, mergeOf, looks, pending]);
 
   const frozenRows = Math.min(view.frozenRows, sheet.rowCount - 1);
   const frozenCols = Math.min(view.frozenCols, sheet.colCount - 1);

@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { google, type docs_v1, type sheets_v4 } from "googleapis";
 import type { Existing, SheetsRequest } from "./sheets/steps";
 import { indexedText } from "./doc-import";
@@ -482,6 +483,47 @@ export async function createSpreadsheet(accessToken: string, title: string, time
     fields: "spreadsheetId,properties.title",
   });
   return { id: res.data.spreadsheetId!, name: res.data.properties?.title || title };
+}
+
+/**
+ * A workbook as Google Sheets reads it: the file is uploaded to the person's Drive to be converted
+ * into a Google Sheet, that spreadsheet is exported as an .xlsx, and the copy in Drive is deleted
+ * whatever happened. (drive.file covers all three: the file is one this app made.)
+ */
+export async function convertToGoogleSheet(accessToken: string, bytes: Uint8Array, mimeType: string, name: string): Promise<Uint8Array> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const drive = google.drive({ version: "v3", auth: client, timeout: 45_000 });
+  // Never retried: an upload that timed out may still have made the file
+  const made = await drive.files.create({
+    requestBody: { name: `${name} (SyncStream is reading this)`, mimeType: "application/vnd.google-apps.spreadsheet" },
+    media: { mimeType, body: Readable.from(Buffer.from(bytes)) },
+    fields: "id",
+  });
+  const fileId = made.data.id;
+  if (!fileId) throw new Error("Drive made no file");
+  try {
+    const res = await withRetry(() => drive.files.export({ fileId, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, { responseType: "arraybuffer" }));
+    return new Uint8Array(res.data as ArrayBuffer);
+  } finally {
+    await drive.files.delete({ fileId }).catch((err) => log.warn("sheets.import_cleanup_failed", { fileId, err }));
+  }
+}
+
+/** A Google Sheet as the .xlsx Google exports of it (any spreadsheet the person can open) */
+export async function exportSpreadsheet(accessToken: string, fileId: string): Promise<Uint8Array> {
+  const client = getOAuth2Client();
+  client.setCredentials({ access_token: accessToken });
+  const drive = google.drive({ version: "v3", auth: client, timeout: 45_000 });
+  const res = await withRetry(() => drive.files.export({ fileId, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, { responseType: "arraybuffer" }));
+  return new Uint8Array(res.data as ArrayBuffer);
+}
+
+/** A spreadsheet's name and its tabs, each with the id the Sheets API knows it by */
+export async function spreadsheetTabs(accessToken: string, spreadsheetId: string): Promise<{ name: string; tabs: { id: number; title: string }[] }> {
+  const sheets = sheetsClient(accessToken);
+  const res = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "properties.title,sheets.properties(sheetId,title)" }));
+  return { name: res.data.properties?.title ?? "Untitled spreadsheet", tabs: (res.data.sheets ?? []).map((s) => ({ id: s.properties?.sheetId ?? 0, title: s.properties?.title ?? "" })) };
 }
 
 /** One atomic spreadsheets.batchUpdate */

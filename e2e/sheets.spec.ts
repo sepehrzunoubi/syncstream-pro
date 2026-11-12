@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect, type FakeGoogle } from "./fixtures";
@@ -15,6 +16,8 @@ async function openSheets(page: Page, api: FakeGoogle, query = ""): Promise<void
 
 /** A second one (scripts/make-xlsx-features-fixture.py): charts, a table, a filter, groups, rules */
 const FEATURES = path.join(__dirname, "..", "fixtures", "xlsx", "features.xlsx");
+/** Two real financial models, and Google's own conversion of each (see src/lib/sheets/models.test.ts) */
+const MODELS = path.join(__dirname, "..", "fixtures", "xlsx", "models");
 
 async function upload(page: Page, file = WORKBOOK): Promise<void> {
   await page.locator("[data-testid=sx-file]").setInputFiles(file);
@@ -243,6 +246,55 @@ test.describe("sheets", () => {
     await expect(page.locator("[data-testid=sx-refused]")).toContainText("Number format on C3");
   });
 
+  test("a 16-tab financial model opens whole: every tab, its formulas across tabs, its notes and dropdowns", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await upload(page, path.join(MODELS, "fcff.xlsx"));
+    await expect(page.getByRole("tab")).toHaveCount(16);
+    await expect(page.locator("[data-testid=sx-stats]")).toContainText("16 sheets");
+    // A formula that reads another tab, as typed
+    await page.getByRole("tab", { name: "Input Summary" }).click();
+    await clickCell(page, "B2");
+    await expect(page.locator("[data-testid=sx-formula]")).toHaveText("='Valuation Model'!D23");
+    // The workbook's own red (an old Mac palette), and Google's font for one Sheets doesn't have
+    await page.getByRole("tab", { name: "Master Inputs Start here" }).click();
+    await expect(cell(page, "A1")).toHaveCSS("color", "rgb(221, 8, 6)");
+    // The build goes tab by tab; the list of sections names them
+    await expect(page.locator(".sx-section").first()).toContainText("Read me first");
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    const sent = api.sheetStarts[0].workbook as unknown as { sheets: { name: string; spans?: unknown[]; validations?: unknown[] }[] };
+    expect(sent.sheets.length).toBe(16);
+    expect(sent.sheets[1].validations?.length).toBeGreaterThan(0);
+    expect(sent.sheets[0].spans?.length).toBeGreaterThan(0);
+  });
+
+  test("an old .xls file is converted by Google Sheets, and what it becomes is shown and synced", async ({ app, page, api }) => {
+    void app;
+    api.sheetImport = fs.readFileSync(path.join(MODELS, "lbo.google-import.xlsx"));
+    await openSheets(page, api);
+    await upload(page, path.join(MODELS, "lbo.xls"));
+    expect(api.sheetImports).toEqual([{ name: "lbo.xls", bytes: fs.statSync(path.join(MODELS, "lbo.xls")).size }]);
+    await expect(page.getByRole("tab")).toHaveCount(10);
+    await expect(page.getByRole("tab").first()).toHaveText("Input");
+    await expect(page.locator("[data-testid=sx-stats]")).toContainText("10 sheets");
+    // The new Google Sheet is named for the file
+    await expect(page.locator(".sx-title-input")).toHaveValue("lbo");
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    const sent = api.sheetStarts[0].workbook as unknown as { sheets: unknown[]; names: unknown[] };
+    expect(sent.sheets.length).toBe(10);
+    expect(sent.names.length).toBe(82);
+  });
+
+  test("an .xls Google can't convert says so and nothing is shown", async ({ app, page, api }) => {
+    void app;
+    await openSheets(page, api);
+    await page.locator("[data-testid=sx-file]").setInputFiles(path.join(MODELS, "lbo.xls"));
+    await expect(page.locator(".sx-upload-error")).toContainText("Google Sheets couldn't open this file");
+    await expect(page.locator(".sx-grid")).toHaveCount(0);
+  });
+
   test("a refused start says why and keeps the workbook", async ({ app, page, api }) => {
     void app;
     api.sheetStartFailure = { status: 503, error: "The Google Sheets API is turned off for this SyncStream deployment." };
@@ -270,6 +322,55 @@ test.describe("sheets", () => {
     await page.reload();
     await expect(cell(page, "A1")).toHaveText("Default");
     await expect(page.locator("[data-testid=sx-stats]")).toHaveText("4 sheets · 202 cells · 20 formulas");
+  });
+});
+
+test.describe("compare & sync, sheets", () => {
+  test("a Google Sheet is brought up to a reference workbook: only what it is missing is marked, planned and sent", async ({ app, page, api }) => {
+    void app;
+    const now = Date.now();
+    api.history = [
+      { id: "sheet_a", kind: "sheet", documentId: "spreadsheet-older-0001", documentName: "Sales model", status: "done", createdAt: now - 86_400_000, startAt: now - 86_400_000, finishedAt: now - 86_000_000, totalChars: 100, charsSent: 100 },
+      { id: "sync_b", kind: "doc", documentId: "doc-1", documentName: "An essay", status: "done", createdAt: now, startAt: now, finishedAt: now, totalChars: 10, charsSent: 10 },
+    ];
+    api.sheetExport = fs.readFileSync(path.join(__dirname, "..", "fixtures", "xlsx", "features-older.xlsx"));
+    await page.context().addCookies([{ name: "google_access_token", value: "e2e-token", domain: "localhost", path: "/" }]);
+    await api.install(page);
+    // The switch on Compare & Sync goes between documents and spreadsheets
+    await page.goto("/dashboard/compare");
+    await page.getByRole("navigation", { name: "What to compare" }).getByRole("link", { name: "Sheets" }).click();
+    await expect(page).toHaveURL(/\/dashboard\/compare\/sheets$/);
+    await expect(page.getByRole("heading", { name: "Compare & Sync" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "What to compare" }).getByRole("link", { name: "Sheets" })).toHaveAttribute("aria-current", "page");
+
+    // The reference, then the spreadsheet to update: only ones SyncStream made are offered
+    await page.locator("[data-testid=sx-file]").setInputFiles(FEATURES);
+    await expect(page.locator(".sx-grid")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start sync" })).toBeDisabled();
+    const target = page.getByLabel("Your spreadsheet");
+    expect(await target.locator("option").allTextContents()).toEqual(["Choose a Google Sheet", "Sales model"]);
+    await target.selectOption("spreadsheet-older-0001");
+    expect(api.sheetExports).toEqual(["spreadsheet-older-0001"]);
+    const summary = page.locator("[data-testid=sx-compare-summary]");
+    await expect(summary).toContainText("1 new tab (Rules)");
+    await expect(summary).toContainText("to type");
+    // The cell that will be typed is marked: the one number that differs on the tab it has
+    const marked = await page.locator(".sx-pending").evaluateAll((els) => els.map((e) => e.getAttribute("data-pending")));
+    expect(marked).toEqual(["B3"]);
+    // What it already holds shows from the first step; the marked cell fills in when its step comes
+    await page.locator("[data-testid=sx-scrub]").fill("0");
+    await expect(cell(page, "A2")).not.toHaveText("");
+    await expect(cell(page, "B3")).toHaveCount(0);
+    const slider = page.locator("[data-testid=sx-scrub]");
+    await slider.fill((await slider.getAttribute("max"))!);
+    await expect(cell(page, "B3")).toHaveText("80");
+
+    await page.getByRole("button", { name: "Start sync" }).click();
+    await expect(page.locator("[data-testid=sx-job-title]")).toBeVisible();
+    const sent = api.sheetStarts[0];
+    expect(sent.target).toBe("spreadsheet-older-0001");
+    expect(sent.have?.sheets.map((s) => s.name)).toEqual(["Sales"]);
+    expect(sent.workbook.sheets.map((s) => s.name)).toEqual(["Sales", "Rules"]);
   });
 });
 
